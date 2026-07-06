@@ -1,0 +1,2 @@
+-- Baseline remoto já aplicado em produção.
+-- Mantido localmente para sincronizar o histórico do Supabase CLI.

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from supabase import create_client
 from yt_dlp import YoutubeDL
 
@@ -72,6 +73,46 @@ def log(*args):
     print(f"[{now_iso()}]", *args, flush=True)
 
 
+def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str]:
+    """Converte erros técnicos em código estável + mensagem operacional."""
+    raw = str(exc_or_message or "").strip()
+    msg = raw.lower()
+
+    if context == "env":
+        return "WORKER_ENV_MISSING", "Falha no importador: variável de ambiente obrigatória ausente."
+    if "timed out" in msg or "timeout" in msg:
+        return "IMPORT_TIMEOUT", "Falha no importador: tempo limite excedido."
+    if "private" in msg or "unavailable" in msg or "not available" in msg or "sign in" in msg:
+        return "PLAYLIST_PRIVATE_OR_UNAVAILABLE", "Falha ao importar: playlist privada ou indisponível."
+    if "unsupported url" in msg or "invalid url" in msg or "no suitable extractor" in msg:
+        return "INVALID_URL", "Link inválido ou plataforma não suportada."
+    if "permission denied" in msg or "row-level security" in msg or "rls" in msg:
+        return "SUPABASE_PERMISSION_DENIED", "Falha no Supabase: permissão negada."
+    if isinstance(exc_or_message, ClientError):
+        code = exc_or_message.response.get("Error", {}).get("Code", "")
+        if code in {"AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch"}:
+            return "R2_ACCESS_DENIED", "Falha ao salvar no R2: acesso negado."
+        return "R2_ERROR", "Falha ao salvar no R2."
+    if "youtube" in msg or "yt_dlp" in msg or "yt-dlp" in msg:
+        return "YOUTUBE_ERROR", "Falha no YouTube ao ler ou baixar a playlist."
+    if "supabase" in msg or "postgrest" in msg or "duplicate key" in msg:
+        return "SUPABASE_ERROR", "Falha no Supabase ao gravar a importação."
+    return "IMPORTER_ERROR", raw or "Falha ao importar playlist."
+
+
+def error_details(exc_or_message, **context) -> dict:
+    raw = str(exc_or_message or "")
+    details = {
+        "raw_error": raw[:2000],
+        "context": {k: v for k, v in context.items() if v is not None},
+    }
+    if isinstance(exc_or_message, Exception):
+        details["exception_type"] = exc_or_message.__class__.__name__
+        stack = traceback.format_exception(type(exc_or_message), exc_or_message, exc_or_message.__traceback__)
+        details["stack"] = "".join(stack)[-4000:]
+    return details
+
+
 # --------------------------------------------------------------------------- #
 # Fila de jobs
 # --------------------------------------------------------------------------- #
@@ -99,6 +140,10 @@ def claim_next_job() -> dict | None:
                 "locked_at": now_iso(),
                 "attempts": (job.get("attempts") or 0) + 1,
                 "error": None,
+                "error_code": None,
+                "error_message": None,
+                "error_details": None,
+                "last_error_at": None,
                 "updated_at": now_iso(),
             }
         )
@@ -216,7 +261,16 @@ def process_job(job: dict):
     log(f"Job {job_id} — playlist {playlist_id}")
 
     if not url:
-        update_job(job_id, status="error", error="sem source_url", finished_at=now_iso())
+        update_job(
+            job_id,
+            status="error",
+            error="sem source_url",
+            error_code="INVALID_URL",
+            error_message="Link inválido ou plataforma não suportada.",
+            error_details=error_details("sem source_url", playlist_id=playlist_id, job_id=job_id),
+            last_error_at=now_iso(),
+            finished_at=now_iso(),
+        )
         return
 
     # Limpa faixas adicionadas anteriormente por este processo (retry limpo).
@@ -229,72 +283,146 @@ def process_job(job: dict):
     update_job(job_id, total=total, completed=0, failed=0)
     log(f"  {total} faixas na fila (limite {MAX_TRACKS})")
 
+    if total == 0:
+        update_job(
+            job_id,
+            status="error",
+            error="playlist vazia",
+            error_code="PLAYLIST_EMPTY",
+            error_message="Falha ao importar: playlist vazia ou sem músicas disponíveis.",
+            error_details=error_details("playlist vazia", playlist_id=playlist_id, job_id=job_id, url=url),
+            last_error_at=now_iso(),
+            finished_at=now_iso(),
+        )
+        return
+
     completed = 0
     failed = 0
     position = 0
 
+    reused = 0
     with tempfile.TemporaryDirectory() as workdir:
         for entry in entries:
-            mp3 = download_one(entry, workdir)
-            if not mp3:
-                failed += 1
-                update_job(job_id, failed=failed)
-                continue
-
+            vid = entry["id"]
+            # Chave GLOBAL por musica (nao por playlist): a mesma musica vira
+            # 1 unico arquivo no R2 e 1 unica linha em `tracks`, compartilhada
+            # por todas as playlists que a usam. Isso deduplica repetidas.
+            key = f"tracks/{vid}.mp3"
             try:
-                digest = sha256_of(mp3)
-                key = f"tracks/{playlist_id}/{entry['id']}.mp3"
-                upload_to_r2(mp3, key)
-
-                meta = {
-                    "youtube_id": entry["id"],
-                    "source": "youtube",
-                    "source_url": f"https://www.youtube.com/watch?v={entry['id']}",
-                }
-                if R2_PUBLIC_BASE_URL:
-                    meta["public_url"] = f"{R2_PUBLIC_BASE_URL}/{key}"
-
-                dur_ms = int(entry["duration"] * 1000) if entry.get("duration") else None
-                track = (
+                # 1) Ja existe essa musica (em qualquer playlist)? Reutiliza — nao rebaixa.
+                found = (
                     supabase.table("tracks")
-                    .insert(
-                        {
-                            "title": entry["title"][:300],
-                            "artist": (entry.get("artist") or None),
-                            "duration_ms": dur_ms,
-                            "storage_object_key": key,
-                            "content_hash": digest,
-                            "mime_type": "audio/mpeg",
-                            "status": "available",
-                            "metadata": meta,
-                        }
-                    )
+                    .select("id")
+                    .eq("storage_object_key", key)
+                    .limit(1)
                     .execute()
                 )
-                track_id = track.data[0]["id"]
+                if found.data:
+                    track_id = found.data[0]["id"]
+                    reused += 1
+                else:
+                    mp3 = download_one(entry, workdir)
+                    if not mp3:
+                        failed += 1
+                        update_job(
+                            job_id,
+                            failed=failed,
+                            error=f"falha ao baixar {vid}",
+                            error_code="YOUTUBE_ERROR",
+                            error_message="Falha no YouTube ao baixar uma ou mais músicas da playlist.",
+                            error_details=error_details(
+                                f"falha ao baixar {vid}",
+                                playlist_id=playlist_id,
+                                job_id=job_id,
+                                track_id=vid,
+                                url=url,
+                            ),
+                            last_error_at=now_iso(),
+                        )
+                        continue
+                    try:
+                        digest = sha256_of(mp3)
+                        upload_to_r2(mp3, key)
 
+                        meta = {
+                            "youtube_id": vid,
+                            "source": "youtube",
+                            "source_url": f"https://www.youtube.com/watch?v={vid}",
+                        }
+                        if R2_PUBLIC_BASE_URL:
+                            meta["public_url"] = f"{R2_PUBLIC_BASE_URL}/{key}"
+
+                        dur_ms = int(entry["duration"] * 1000) if entry.get("duration") else None
+                        # upsert por storage_object_key: se dois jobs correrem juntos,
+                        # nao cria duplicado (o segundo reaproveita a mesma linha).
+                        track = (
+                            supabase.table("tracks")
+                            .upsert(
+                                {
+                                    "title": entry["title"][:300],
+                                    "artist": (entry.get("artist") or None),
+                                    "duration_ms": dur_ms,
+                                    "storage_object_key": key,
+                                    "content_hash": digest,
+                                    "mime_type": "audio/mpeg",
+                                    "status": "available",
+                                    "metadata": meta,
+                                },
+                                on_conflict="storage_object_key",
+                            )
+                            .execute()
+                        )
+                        track_id = track.data[0]["id"]
+                    finally:
+                        if os.path.exists(mp3):
+                            os.remove(mp3)
+
+                # 2) Liga a faixa a ESTA playlist (no maximo uma vez por playlist).
+                #    on_conflict garante reprocesso idempotente, sem duplicar o vinculo.
                 position += 1
-                supabase.table("playlist_tracks").insert(
+                supabase.table("playlist_tracks").upsert(
                     {
                         "playlist_id": playlist_id,
                         "track_id": track_id,
                         "position": position,
                         "added_by_type": "system",
-                    }
+                    },
+                    on_conflict="playlist_id,track_id",
                 ).execute()
 
                 completed += 1
                 update_job(job_id, completed=completed)
-                log(f"  ✓ {position}/{total} {entry['title'][:60]}")
+                tag = "reuso" if found.data else "novo"
+                log(f"  ✓ {position}/{total} [{tag}] {entry['title'][:60]}")
             except Exception as exc:  # noqa: BLE001
                 failed += 1
-                update_job(job_id, failed=failed)
-                log(f"  ! erro ao salvar {entry['id']}: {exc}")
-            finally:
-                if os.path.exists(mp3):
-                    os.remove(mp3)
+                code, friendly = classify_error(exc)
+                update_job(
+                    job_id,
+                    failed=failed,
+                    error=str(exc),
+                    error_code=code,
+                    error_message=friendly,
+                    error_details=error_details(
+                        exc,
+                        playlist_id=playlist_id,
+                        job_id=job_id,
+                        track_id=entry.get("id"),
+                        url=url,
+                    ),
+                    last_error_at=now_iso(),
+                )
+                log(f"  ! erro ao salvar {entry['id']} [{code}]: {exc}")
 
     final_status = "done" if failed == 0 else ("partial" if completed > 0 else "error")
+    final_error_code = None if failed == 0 else ("PARTIAL_IMPORT_FAILED" if completed > 0 else "NO_TRACKS_DOWNLOADED")
+    final_error_message = None
+    if failed > 0:
+        final_error_message = (
+            f"Importação parcial: {completed} músicas importadas e {failed} falharam."
+            if completed > 0
+            else "Nenhuma música foi baixada da playlist."
+        )
     update_job(
         job_id,
         status=final_status,
@@ -302,18 +430,49 @@ def process_job(job: dict):
         failed=failed,
         finished_at=now_iso(),
         error=None if completed > 0 else "nenhuma faixa baixada",
+        error_code=final_error_code,
+        error_message=final_error_message,
+        error_details=None
+        if failed == 0
+        else {
+            "playlist_id": playlist_id,
+            "job_id": job_id,
+            "source_url": url,
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+        },
+        last_error_at=None if failed == 0 else now_iso(),
     )
-    log(f"Job {job_id} finalizado: {final_status} ({completed} ok, {failed} falhas)")
+    log(f"Job {job_id} finalizado: {final_status} ({completed} ok, {reused} reaproveitadas, {failed} falhas)")
 
 
 def fail_job(job: dict, exc: Exception):
     attempts = job.get("attempts") or 1
+    code, friendly = classify_error(exc)
     # Volta para a fila se ainda tem tentativas; senão marca erro definitivo.
     if attempts < MAX_ATTEMPTS:
-        update_job(job["id"], status="queued", error=f"retry: {exc}")
+        update_job(
+            job["id"],
+            status="queued",
+            error=f"retry: {exc}",
+            error_code=code,
+            error_message=friendly,
+            error_details=error_details(exc, job_id=job.get("id"), playlist_id=job.get("playlist_id")),
+            last_error_at=now_iso(),
+        )
         log(f"Job {job['id']} falhou (tentativa {attempts}); reenfileirado.")
     else:
-        update_job(job["id"], status="error", error=str(exc), finished_at=now_iso())
+        update_job(
+            job["id"],
+            status="error",
+            error=str(exc),
+            error_code=code,
+            error_message=friendly,
+            error_details=error_details(exc, job_id=job.get("id"), playlist_id=job.get("playlist_id")),
+            last_error_at=now_iso(),
+            finished_at=now_iso(),
+        )
         log(f"Job {job['id']} falhou definitivamente: {exc}")
 
 

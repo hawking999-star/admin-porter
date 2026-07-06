@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/sheet";
 import {
   listPlaylists,
+  retryPlaylistImport,
   reviewPlaylist,
   playlistTypeLabel,
   type Playlist,
@@ -99,6 +100,25 @@ function relOrDate(iso: string | null) {
   return fmtDate(iso);
 }
 
+function playlistImportError(p: Playlist): string | null {
+  return (
+    p.error_message?.trim() ||
+    p.download?.error_message?.trim() ||
+    p.download?.error?.trim() ||
+    null
+  );
+}
+
+function technicalErrorText(p: Playlist): string | null {
+  const code = p.error_code || p.download?.error_code;
+  const details = p.error_details || p.download?.error_details;
+  const parts = [
+    code ? `Código: ${code}` : null,
+    details ? `Detalhes: ${JSON.stringify(details)}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join("\n") : null;
+}
+
 const NOTES_KEY = "ptm:playlist-notes";
 function loadNotes(): Record<string, string> {
   try {
@@ -129,7 +149,10 @@ export function MusicasPage() {
     refetchInterval: (query) => {
       const rows = query.state.data as Playlist[] | undefined;
       const active = rows?.some(
-        (p) => p.download?.status === "queued" || p.download?.status === "running",
+        (p) =>
+          p.import_status === "processing" ||
+          p.download?.status === "queued" ||
+          p.download?.status === "running",
       );
       return active ? 5000 : false;
     },
@@ -171,6 +194,19 @@ export function MusicasPage() {
     },
   });
 
+  const retryMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) => retryPlaylistImport(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      toast.success("Importação reenfileirada");
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Erro ao reenfileirar importação";
+      toast.error("Não foi possível tentar novamente", { description: msg });
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+
   const withPlatform = useMemo(
     () => (data ?? []).map((p) => ({ p, platform: detectPlatform(p.source_url) })),
     [data],
@@ -182,7 +218,10 @@ export function MusicasPage() {
     const startToday = new Date();
     startToday.setHours(0, 0, 0, 0);
     return withPlatform.filter(({ p, platform }) => {
-      if (statusFilter !== "all" && p.approval_status !== statusFilter) return false;
+      if (statusFilter === "import_failed" && p.import_status !== "failed") return false;
+      if (statusFilter !== "all" && statusFilter !== "import_failed" && p.approval_status !== statusFilter) {
+        return false;
+      }
       if (typeFilter !== "all" && p.type !== typeFilter) return false;
       if (platformFilter !== "all" && platform !== platformFilter) return false;
       if (dateFilter !== "all") {
@@ -197,6 +236,12 @@ export function MusicasPage() {
         p.operator_name,
         p.unit_name,
         p.source_url,
+        p.approval_status,
+        p.import_status,
+        p.rejection_reason,
+        playlistImportError(p),
+        p.error_code,
+        p.download?.error_code,
         platform === "spotify" ? "spotify" : "",
         platform === "youtube" ? "youtube" : "",
       ]
@@ -217,6 +262,7 @@ export function MusicasPage() {
       pending: all.filter((p) => p.approval_status === "pending").length,
       approved: all.filter((p) => p.approval_status === "approved").length,
       rejected: all.filter((p) => p.approval_status === "rejected").length,
+      importFailed: all.filter((p) => p.import_status === "failed").length,
       today: sent.filter((p) => new Date(p.submitted_at!) >= startToday).length,
       week: sent.filter((p) => now - new Date(p.submitted_at!).getTime() <= 7 * 86400000).length,
     };
@@ -267,7 +313,7 @@ export function MusicasPage() {
       />
 
       {/* Cards de resumo */}
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatCard
           icon={<Clock className="h-5 w-5" />}
           iconClassName="bg-warning/20 text-warning-foreground"
@@ -293,6 +339,14 @@ export function MusicasPage() {
           onClick={() => toggle(statusFilter, "rejected", setStatusFilter)}
         />
         <StatCard
+          icon={<AlertTriangle className="h-5 w-5" />}
+          iconClassName="bg-destructive/10 text-destructive"
+          label="Importação falhou"
+          value={stats.importFailed}
+          active={statusFilter === "import_failed"}
+          onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)}
+        />
+        <StatCard
           icon={<CalendarDays className="h-5 w-5" />}
           label="Hoje"
           value={stats.today}
@@ -313,7 +367,7 @@ export function MusicasPage() {
         <div className="relative w-full max-w-md">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Buscar por operador, condomínio, link, spotify, youtube..."
+            placeholder="Buscar por operador, condomínio, link, status, erro..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8"
@@ -329,6 +383,9 @@ export function MusicasPage() {
           </FilterChip>
           <FilterChip active={statusFilter === "rejected"} onClick={() => toggle(statusFilter, "rejected", setStatusFilter)} icon={<XCircle />}>
             Rejeitadas
+          </FilterChip>
+          <FilterChip active={statusFilter === "import_failed"} onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)} icon={<AlertTriangle />}>
+            Importação falhou
           </FilterChip>
 
           <span className="mx-1 h-5 w-px bg-border" />
@@ -383,10 +440,11 @@ export function MusicasPage() {
               key={p.id}
               p={p}
               platform={platform}
-              busy={mutation.isPending}
+              busy={mutation.isPending || retryMutation.isPending}
               onOpen={() => openDetail(p)}
               onApprove={() => askApprove(p.id)}
               onReject={() => askReject(p.id)}
+              onRetry={() => retryMutation.mutate({ id: p.id })}
             />
           ))}
         </div>
@@ -402,9 +460,10 @@ export function MusicasPage() {
               note={noteDraft}
               onNoteChange={setNoteDraft}
               onSaveNote={() => saveNote(detail.id)}
-              busy={mutation.isPending}
+              busy={mutation.isPending || retryMutation.isPending}
               onApprove={() => askApprove(detail.id)}
               onReject={() => askReject(detail.id)}
+              onRetry={() => retryMutation.mutate({ id: detail.id })}
             />
           )}
         </SheetContent>
@@ -495,6 +554,7 @@ function PlaylistCard({
   onOpen,
   onApprove,
   onReject,
+  onRetry,
 }: {
   p: Playlist;
   platform: Platform;
@@ -502,11 +562,14 @@ function PlaylistCard({
   onOpen: () => void;
   onApprove: () => void;
   onReject: () => void;
+  onRetry: () => void;
 }) {
   const m = platformMeta(platform);
   // Decisão é definitiva: só uma playlist "pendente" pode ser aprovada/rejeitada.
   const canApprove = p.approval_status === "pending";
   const canReject = p.approval_status === "pending";
+  const canRetry = p.approval_status === "approved" && p.import_status === "failed";
+  const importError = playlistImportError(p);
   const stop = (fn: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     fn();
@@ -560,8 +623,18 @@ function PlaylistCard({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <StatusPill status={p.approval_status} />
           <span className="text-xs text-muted-foreground">· {relOrDate(p.submitted_at)}</span>
-          <DownloadPill download={p.download} />
+          <ImportPill p={p} />
         </div>
+
+        {p.import_status === "failed" && (
+          <div className="mt-2 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive ring-1 ring-destructive/20">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              <span className="font-semibold">Falha ao importar: </span>
+              {importError || "motivo técnico não informado pelo backend"}
+            </span>
+          </div>
+        )}
 
         {/* Motivo da rejeição — bem visível */}
         {p.approval_status === "rejected" && (
@@ -606,6 +679,11 @@ function PlaylistCard({
             <Check className="h-4 w-4" /> Aprovar
           </Button>
         )}
+        {canRetry && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={stop(onRetry)}>
+            <RefreshCw className="h-4 w-4" /> Tentar importar novamente
+          </Button>
+        )}
       </div>
     </Card>
   );
@@ -635,10 +713,18 @@ function IconAction({
   );
 }
 
-/* ------------------------------ Selo de download -------------------------- */
+/* ----------------------------- Selo de importação ------------------------- */
 
-function DownloadPill({ download }: { download: Playlist["download"] }) {
-  if (!download) return null;
+function ImportPill({ p }: { p: Playlist }) {
+  const download = p.download;
+  if (!download && p.approval_status !== "approved") return null;
+  if (!download) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-border">
+        <Download className="h-3.5 w-3.5" /> Importação não iniciada
+      </span>
+    );
+  }
   const { status, total, completed, failed } = download;
 
   const base =
@@ -647,7 +733,7 @@ function DownloadPill({ download }: { download: Playlist["download"] }) {
   if (status === "queued") {
     return (
       <span className={cn(base, "bg-muted text-muted-foreground ring-border")}>
-        <Download className="h-3.5 w-3.5" /> Na fila de download
+        <Download className="h-3.5 w-3.5" /> Importação na fila
       </span>
     );
   }
@@ -655,7 +741,7 @@ function DownloadPill({ download }: { download: Playlist["download"] }) {
     return (
       <span className={cn(base, "bg-primary/10 text-primary ring-primary/25")}>
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Baixando {completed}
+        Importando {completed}
         {total ? `/${total}` : ""}
       </span>
     );
@@ -663,7 +749,7 @@ function DownloadPill({ download }: { download: Playlist["download"] }) {
   if (status === "done") {
     return (
       <span className={cn(base, "bg-success/25 text-success-foreground ring-success/40")}>
-        <Download className="h-3.5 w-3.5" /> {completed} baixadas
+        <Download className="h-3.5 w-3.5" /> Importação concluída · {completed} músicas
       </span>
     );
   }
@@ -677,7 +763,7 @@ function DownloadPill({ download }: { download: Playlist["download"] }) {
   // error
   return (
     <span className={cn(base, "bg-destructive/10 text-destructive ring-destructive/25")}>
-      <AlertTriangle className="h-3.5 w-3.5" /> Download falhou
+      <AlertTriangle className="h-3.5 w-3.5" /> Importação falhou
     </span>
   );
 }
@@ -693,6 +779,7 @@ function DetailPanel({
   busy,
   onApprove,
   onReject,
+  onRetry,
 }: {
   p: Playlist;
   platform: Platform;
@@ -702,12 +789,16 @@ function DetailPanel({
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
+  onRetry: () => void;
 }) {
   const embed = buildEmbed(p.source_url, platform);
   const m = platformMeta(platform);
   // Decisão é definitiva: só uma playlist "pendente" pode ser aprovada/rejeitada.
   const canApprove = p.approval_status === "pending";
   const canReject = p.approval_status === "pending";
+  const canRetry = p.approval_status === "approved" && p.import_status === "failed";
+  const importError = playlistImportError(p);
+  const technicalError = technicalErrorText(p);
 
   return (
     <div className="flex h-full flex-col">
@@ -731,6 +822,7 @@ function DetailPanel({
           {m.icon({ className: cn("size-3.5", m.fg) })} {m.label}
         </span>
         <StatusPill status={p.approval_status} />
+        <ImportPill p={p} />
       </div>
 
       {/* Link completo */}
@@ -764,6 +856,30 @@ function DetailPanel({
           <p className="text-sm text-muted-foreground">O operador ainda não enviou um link.</p>
         )}
       </div>
+
+      {(p.import_status === "failed" || p.approval_status === "rejected") && (
+        <div className="mt-5 rounded-lg border border-border bg-muted/30 p-3">
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Motivo
+          </p>
+          {p.approval_status === "rejected" ? (
+            <p className="text-sm text-destructive">
+              {p.rejection_reason?.trim() || "Motivo da rejeição não informado."}
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-destructive">
+                Falha ao importar: {importError || "motivo técnico não informado pelo backend"}
+              </p>
+              {technicalError && (
+                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 text-xs text-muted-foreground">
+                  {technicalError}
+                </pre>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Preview */}
       {embed && (
@@ -801,6 +917,18 @@ function DetailPanel({
         </ol>
       </div>
 
+      <div className="mt-5">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Auditoria</p>
+        <div className="grid gap-2 text-sm">
+          <InfoRow label="Solicitada em" value={fmtDate(p.submitted_at)} />
+          <InfoRow label="Revisada em" value={fmtDate(p.reviewed_at)} />
+          <InfoRow label="Revisada por" value={p.reviewed_by_name ?? "—"} />
+          <InfoRow label="Importação iniciada" value={fmtDate(p.import_started_at ?? p.download?.started_at ?? null)} />
+          <InfoRow label="Importação finalizada" value={fmtDate(p.import_finished_at ?? p.download?.finished_at ?? null)} />
+          <InfoRow label="Último erro" value={fmtDate(p.last_error_at ?? p.download?.last_error_at ?? null)} />
+        </div>
+      </div>
+
       {/* Observações internas (local) */}
       <div className="mt-5">
         <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -820,7 +948,7 @@ function DetailPanel({
       </div>
 
       {/* Ações */}
-      {(canApprove || canReject) && (
+      {(canApprove || canReject || canRetry) && (
         <div className="mt-auto flex gap-2 pt-6">
           {canReject && (
             <Button variant="outline" className="flex-1 text-destructive hover:bg-destructive/10 hover:text-destructive" disabled={busy} onClick={onReject}>
@@ -832,8 +960,22 @@ function DetailPanel({
               <Check className="h-4 w-4" /> Aprovar
             </Button>
           )}
+          {canRetry && (
+            <Button className="flex-1" variant="outline" disabled={busy} onClick={onRetry}>
+              <RefreshCw className="h-4 w-4" /> Tentar importar novamente
+            </Button>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border/60 pb-1 last:border-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right font-medium text-foreground">{value}</span>
     </div>
   );
 }
