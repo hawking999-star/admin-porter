@@ -166,3 +166,99 @@ export async function retryPlaylistImport(id: string): Promise<void> {
   });
   if (error) throw error;
 }
+
+export type MusicTrack = {
+  playlist_track_id: string;
+  track_id: string;
+  position: number;
+  title: string;
+  artist: string | null;
+  duration_ms: number | null;
+  source_url: string | null;
+  public_url: string | null;
+  status: string;
+  added_by_type: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type MusicLibraryPlaylist = {
+  id: string;
+  name: string;
+  type: PlaylistType;
+  status: string;
+  approval_status: PlaylistApproval;
+  import_status: PlaylistImportStatus;
+  source_url: string | null;
+  platform: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  import_started_at: string | null;
+  import_finished_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  last_error_at: string | null;
+  track_count: number;
+  latest_job: Record<string, unknown> | null;
+  tracks: MusicTrack[];
+};
+
+export type OperatorRequestHistory = {
+  id: string;
+  name: string;
+  type: PlaylistType;
+  approval_status: PlaylistApproval;
+  import_status: PlaylistImportStatus;
+  source_url: string | null;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  rejection_reason: string | null;
+  error_message: string | null;
+};
+
+export type OperatorMusicLibrary = {
+  id: string;
+  display_name: string;
+  username: string | null;
+  email: string | null;
+  active: boolean;
+  role: string;
+  unit_id: string;
+  unit_name: string | null;
+  unit_city: string | null;
+  unit_state: string | null;
+  updated_at: string;
+  playlists: MusicLibraryPlaylist[];
+  request_history: OperatorRequestHistory[];
+};
+
+export async function listOperatorMusicLibrary(): Promise<OperatorMusicLibrary[]> {
+  const { data, error } = await supabase.rpc("admin_music_library");
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []) as OperatorMusicLibrary[];
+}
+
+export async function renameMusicPlaylist(id: string, name: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_rename_music_playlist", {
+    p_playlist: id,
+    p_name: name,
+  });
+  if (error) throw error;
+}
+
+export async function removePlaylistTrack(playlistTrackId: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_remove_playlist_track", {
+    p_playlist_track: playlistTrackId,
+  });
+  if (error) throw error;
+}
+
+export async function archiveSecondaryPlaylist(id: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_archive_secondary_playlist", {
+    p_playlist: id,
+  });
+  if (error) throw error;
+}
