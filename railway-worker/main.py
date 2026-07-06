@@ -52,6 +52,25 @@ MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
 AUDIO_BITRATE = int(env("AUDIO_BITRATE", "128"))  # kbps do mp3
 POLL_SECONDS = int(env("POLL_SECONDS", "10"))
 MAX_ATTEMPTS = int(env("MAX_ATTEMPTS", "3"))
+YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
+YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
+
+
+def ensure_youtube_cookiefile() -> str | None:
+    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        return YOUTUBE_COOKIES_FILE
+    if not YOUTUBE_COOKIES.strip():
+        return None
+    path = os.path.join(tempfile.gettempdir(), "youtube_cookies.txt")
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(YOUTUBE_COOKIES)
+            if not YOUTUBE_COOKIES.endswith("\n"):
+                f.write("\n")
+    return path
+
+
+YOUTUBE_COOKIEFILE = ensure_youtube_cookiefile()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
@@ -82,6 +101,13 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return "WORKER_ENV_MISSING", "Falha no importador: variável de ambiente obrigatória ausente."
     if "timed out" in msg or "timeout" in msg:
         return "IMPORT_TIMEOUT", "Falha no importador: tempo limite excedido."
+    if "confirm you're not a bot" in msg or "confirm you’re not a bot" in msg or "sign in to confirm" in msg:
+        if not YOUTUBE_COOKIEFILE:
+            return (
+                "YOUTUBE_COOKIES_MISSING",
+                "Falha ao importar: YouTube exigiu autenticação e a variável YOUTUBE_COOKIES não está configurada.",
+            )
+        return "PLAYLIST_PRIVATE_OR_UNAVAILABLE", "Falha ao importar: playlist privada ou indisponível."
     if "private" in msg or "unavailable" in msg or "not available" in msg or "sign in" in msg:
         return "PLAYLIST_PRIVATE_OR_UNAVAILABLE", "Falha ao importar: playlist privada ou indisponível."
     if "unsupported url" in msg or "invalid url" in msg or "no suitable extractor" in msg:
@@ -174,6 +200,8 @@ def list_playlist_entries(url: str) -> list[dict]:
         "skip_download": True,
         "playlistend": MAX_TRACKS,
     }
+    if YOUTUBE_COOKIEFILE:
+        opts["cookiefile"] = YOUTUBE_COOKIEFILE
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     entries = info.get("entries")
@@ -199,7 +227,7 @@ def list_playlist_entries(url: str) -> list[dict]:
     return out
 
 
-def download_one(entry: dict, workdir: str) -> str | None:
+def download_one(entry: dict, workdir: str) -> str:
     """Baixa uma faixa como mp3 (bitrate fixo AUDIO_BITRATE) e devolve o caminho,
     ou None se falhar / passar do limite de tamanho."""
     vid = entry["id"]
@@ -220,21 +248,23 @@ def download_one(entry: dict, workdir: str) -> str | None:
             }
         ],
     }
+    if YOUTUBE_COOKIEFILE:
+        opts["cookiefile"] = YOUTUBE_COOKIEFILE
     try:
         with YoutubeDL(opts) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={vid}"])
     except Exception as exc:  # noqa: BLE001
         log(f"  ! falha ao baixar {vid}: {exc}")
-        return None
+        raise RuntimeError(f"yt-dlp falhou ao baixar {vid}: {exc}") from exc
 
     mp3 = os.path.join(workdir, f"{vid}.mp3")
     if not os.path.exists(mp3):
-        return None
+        raise FileNotFoundError(f"yt-dlp não gerou o arquivo mp3 para {vid}")
     size = os.path.getsize(mp3)
     if size > MAX_FILE_BYTES:
         log(f"  ! {vid} passou de {MAX_FILE_MB} MB ({size/1048576:.1f} MB) — descartado")
         os.remove(mp3)
-        return None
+        raise ValueError(f"arquivo acima do limite de {MAX_FILE_MB} MB")
     return mp3
 
 
@@ -299,6 +329,9 @@ def process_job(job: dict):
     completed = 0
     failed = 0
     position = 0
+    first_error_code = None
+    first_error_message = None
+    first_error_details = None
 
     reused = 0
     with tempfile.TemporaryDirectory() as workdir:
@@ -322,24 +355,6 @@ def process_job(job: dict):
                     reused += 1
                 else:
                     mp3 = download_one(entry, workdir)
-                    if not mp3:
-                        failed += 1
-                        update_job(
-                            job_id,
-                            failed=failed,
-                            error=f"falha ao baixar {vid}",
-                            error_code="YOUTUBE_ERROR",
-                            error_message="Falha no YouTube ao baixar uma ou mais músicas da playlist.",
-                            error_details=error_details(
-                                f"falha ao baixar {vid}",
-                                playlist_id=playlist_id,
-                                job_id=job_id,
-                                track_id=vid,
-                                url=url,
-                            ),
-                            last_error_at=now_iso(),
-                        )
-                        continue
                     try:
                         digest = sha256_of(mp3)
                         upload_to_r2(mp3, key)
@@ -397,31 +412,38 @@ def process_job(job: dict):
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 code, friendly = classify_error(exc)
+                details = error_details(
+                    exc,
+                    playlist_id=playlist_id,
+                    job_id=job_id,
+                    track_id=entry.get("id"),
+                    url=url,
+                )
+                if first_error_code is None:
+                    first_error_code = code
+                    first_error_message = friendly
+                    first_error_details = details
                 update_job(
                     job_id,
                     failed=failed,
                     error=str(exc),
                     error_code=code,
                     error_message=friendly,
-                    error_details=error_details(
-                        exc,
-                        playlist_id=playlist_id,
-                        job_id=job_id,
-                        track_id=entry.get("id"),
-                        url=url,
-                    ),
+                    error_details=details,
                     last_error_at=now_iso(),
                 )
                 log(f"  ! erro ao salvar {entry['id']} [{code}]: {exc}")
 
     final_status = "done" if failed == 0 else ("partial" if completed > 0 else "error")
-    final_error_code = None if failed == 0 else ("PARTIAL_IMPORT_FAILED" if completed > 0 else "NO_TRACKS_DOWNLOADED")
+    final_error_code = None
+    if failed > 0:
+        final_error_code = "PARTIAL_IMPORT_FAILED" if completed > 0 else (first_error_code or "NO_TRACKS_DOWNLOADED")
     final_error_message = None
     if failed > 0:
         final_error_message = (
             f"Importação parcial: {completed} músicas importadas e {failed} falharam."
             if completed > 0
-            else "Nenhuma música foi baixada da playlist."
+            else (first_error_message or "Nenhuma música foi baixada da playlist.")
         )
     update_job(
         job_id,
@@ -432,15 +454,16 @@ def process_job(job: dict):
         error=None if completed > 0 else "nenhuma faixa baixada",
         error_code=final_error_code,
         error_message=final_error_message,
-        error_details=None
-        if failed == 0
-        else {
-            "playlist_id": playlist_id,
-            "job_id": job_id,
-            "source_url": url,
-            "total": total,
-            "completed": completed,
-            "failed": failed,
+        error_details=None if failed == 0 else {
+            "summary": {
+                "playlist_id": playlist_id,
+                "job_id": job_id,
+                "source_url": url,
+                "total": total,
+                "completed": completed,
+                "failed": failed,
+            },
+            "first_error": first_error_details,
         },
         last_error_at=None if failed == 0 else now_iso(),
     )
