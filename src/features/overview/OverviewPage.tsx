@@ -1,203 +1,318 @@
-import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
-  Building2,
   Users,
   Radio,
-  MessageSquare,
+  Headphones,
+  Inbox,
+  Circle,
   Shield,
   Clock,
-  Circle,
+  MessageSquare,
+  Music,
+  UserCog,
+  RotateCw,
+  ChevronRight,
+  AlertTriangle,
+  CheckCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   fetchOverviewCounts,
-  fetchOperatorStatuses,
+  fetchOperatorStates,
   fetchRecentActivity,
+  fetchDailySummary,
+  deriveAttention,
+  attentionReasonLabel,
+  fmtRelative,
+  fmtDuration,
   statusLabel,
+  STATUS_DOT,
+  STATUS_BAR,
   type StatusGroup,
+  type OperatorStatusRow,
   type RecentActivity,
+  type ActivityKind,
+  type DailyMetric,
 } from "./queries";
 
-/* -------------------------------- Helpers -------------------------------- */
+/* ------------------------------ Card de métrica -------------------------- */
 
-function fmtRelative(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "agora";
-  if (mins < 60) return `${mins}min`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d`;
-}
-
-const STATUS_DOT: Record<string, string> = {
-  active: "text-success",
-  in_call: "text-primary",
-  idle: "text-warning",
-  blocked: "text-destructive",
-  outside_shift: "text-muted-foreground",
-  offline: "text-muted-foreground/40",
-};
-
-/* ------------------------------ Stat Card ------------------------------- */
-
-function StatCard({
+function MetricCard({
   icon,
+  iconClass,
   label,
   value,
-  iconClass,
+  hint,
   loading,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  value: number | string;
+  icon: ReactNode;
   iconClass: string;
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
   loading?: boolean;
 }) {
   return (
     <Card className="shadow-sm">
-      <CardContent className="flex items-center gap-4 p-5">
+      <CardContent className="flex items-start gap-4 p-5">
         <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", iconClass)}>
           {icon}
         </div>
-        <div>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-muted-foreground">{label}</div>
           {loading ? (
-            <Skeleton className="mb-1 h-7 w-10" />
+            <Skeleton className="mt-1.5 h-7 w-16" />
           ) : (
-            <div className="text-2xl font-bold leading-none tracking-tight">{value}</div>
+            <div className="mt-0.5 text-3xl font-bold leading-none tracking-tight">{value}</div>
           )}
-          <div className="mt-1 text-xs text-muted-foreground">{label}</div>
+          {hint && <div className="mt-2 text-xs text-muted-foreground">{loading ? null : hint}</div>}
         </div>
       </CardContent>
     </Card>
   );
 }
 
-/* -------------------------- Status Operadores --------------------------- */
+/* ---------------------- Card de operação (3 métricas) -------------------- */
 
-function StatusSection({ groups, loading }: { groups: StatusGroup[]; loading: boolean }) {
-  if (loading) {
-    return (
-      <Card className="shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">Status dos operadores</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-8 w-full" />
+function OperationCard({ groups, loading }: { groups: StatusGroup[]; loading: boolean }) {
+  const get = (s: string) => groups.find((g) => g.status === s)?.count ?? 0;
+  const rows = [
+    { label: "Em atendimento", value: get("in_call"), dot: STATUS_DOT.in_call },
+    { label: "Ociosos", value: get("idle"), dot: STATUS_DOT.idle },
+    { label: "Fora do turno", value: get("outside_shift"), dot: STATUS_DOT.outside_shift },
+  ];
+  return (
+    <Card className="shadow-sm">
+      <CardContent className="p-5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-secondary">
+            <Headphones className="h-5 w-5" />
+          </div>
+          <div className="text-xs font-medium text-muted-foreground">Operação agora</div>
+        </div>
+        <div className="mt-4 space-y-2">
+          {rows.map((r) => (
+            <div key={r.label} className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-sm text-foreground">
+                <Circle className={cn("h-2 w-2 fill-current", r.dot)} />
+                {r.label}
+              </span>
+              {loading ? (
+                <Skeleton className="h-4 w-6" />
+              ) : (
+                <span className="text-sm font-semibold tabular-nums">{r.value}</span>
+              )}
+            </div>
           ))}
-        </CardContent>
-      </Card>
-    );
-  }
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
-  const total = groups.reduce((s, g) => s + g.count, 0);
+/* ------------------------- Card de pendências ---------------------------- */
 
+function PendingCard({
+  feedback,
+  playlists,
+  loading,
+}: {
+  feedback: number;
+  playlists: number | null;
+  loading: boolean;
+}) {
+  return (
+    <Card className="shadow-sm">
+      <CardContent className="p-5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-warning/15 text-warning">
+            <Inbox className="h-5 w-5" />
+          </div>
+          <div className="text-xs font-medium text-muted-foreground">Pendências</div>
+        </div>
+        <div className="mt-4 space-y-2">
+          <Link
+            to="/feedback"
+            className="flex items-center justify-between rounded-md px-1 py-0.5 text-sm transition-colors hover:text-primary"
+          >
+            <span className="flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-muted-foreground" /> Feedbacks
+            </span>
+            {loading ? <Skeleton className="h-4 w-6" /> : <span className="font-semibold tabular-nums">{feedback}</span>}
+          </Link>
+          <Link
+            to="/musicas"
+            className="flex items-center justify-between rounded-md px-1 py-0.5 text-sm transition-colors hover:text-primary"
+          >
+            <span className="flex items-center gap-2">
+              <Music className="h-4 w-4 text-muted-foreground" /> Playlists p/ aprovar
+            </span>
+            {loading ? (
+              <Skeleton className="h-4 w-6" />
+            ) : (
+              <span className="font-semibold tabular-nums">{playlists ?? "—"}</span>
+            )}
+          </Link>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* -------------------------- Status dos operadores ------------------------ */
+
+function StatusPanel({ groups, total, loading }: { groups: StatusGroup[]; total: number; loading: boolean }) {
   return (
     <Card className="shadow-sm">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-semibold">Status dos operadores</CardTitle>
-          <span className="text-xs text-muted-foreground">{total} registrados</span>
+          {!loading && <span className="text-xs text-muted-foreground">{total} registrados</span>}
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
-        {groups.map((g) => (
-          <div
-            key={g.status}
-            className="flex items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-muted/50"
-          >
-            <div className="flex items-center gap-2.5">
-              <Circle className={cn("h-2.5 w-2.5 fill-current", STATUS_DOT[g.status] ?? "text-muted-foreground")} />
-              <span className="text-sm">{g.label}</span>
-            </div>
-            <Badge variant="secondary" className="min-w-[2rem] justify-center font-mono text-xs">
-              {g.count}
-            </Badge>
-          </div>
-        ))}
-
-        {/* mini-bar visual */}
-        {total > 0 && (
-          <div className="flex h-2 overflow-hidden rounded-full bg-muted mt-2">
-            {groups
-              .filter((g) => g.count > 0)
-              .map((g) => {
-                const pct = (g.count / total) * 100;
-                const colors: Record<string, string> = {
-                  active: "bg-success",
-                  in_call: "bg-primary",
-                  idle: "bg-warning",
-                  blocked: "bg-destructive",
-                  outside_shift: "bg-muted-foreground/30",
-                  offline: "bg-muted-foreground/20",
-                };
-                return (
+        {loading ? (
+          Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)
+        ) : total === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Nenhum operador com presença registrada ainda.
+          </p>
+        ) : (
+          <>
+            <div className="mb-3 flex h-2.5 overflow-hidden rounded-full bg-muted">
+              {groups
+                .filter((g) => g.count > 0)
+                .map((g) => (
                   <div
                     key={g.status}
-                    className={cn("transition-all", colors[g.status] ?? "bg-muted-foreground/20")}
-                    style={{ width: `${pct}%` }}
+                    className={cn("transition-all", STATUS_BAR[g.status] ?? "bg-muted-foreground/25")}
+                    style={{ width: `${(g.count / total) * 100}%` }}
                     title={`${g.label}: ${g.count}`}
                   />
-                );
-              })}
-          </div>
+                ))}
+            </div>
+            {groups.map((g) => (
+              <div
+                key={g.status}
+                className="flex items-center justify-between rounded-lg px-2 py-1.5 transition-colors hover:bg-muted/50"
+              >
+                <span className="flex items-center gap-2.5 text-sm">
+                  <Circle className={cn("h-2.5 w-2.5 fill-current", STATUS_DOT[g.status] ?? "text-muted-foreground")} />
+                  {g.label}
+                </span>
+                <Badge variant="secondary" className="min-w-[2rem] justify-center font-mono text-xs">
+                  {g.count}
+                </Badge>
+              </div>
+            ))}
+          </>
         )}
       </CardContent>
     </Card>
   );
 }
 
-/* -------------------------- Atividade Recente ---------------------------- */
+/* -------------------------- Operadores em atenção ------------------------ */
 
-function ActivitySection({ items, loading }: { items: RecentActivity[]; loading: boolean }) {
-  if (loading) {
-    return (
-      <Card className="shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">Atividade recente</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full" />
-          ))}
-        </CardContent>
-      </Card>
-    );
-  }
+function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading: boolean }) {
+  const attention = useMemo(() => deriveAttention(rows), [rows]);
 
+  return (
+    <Card className="shadow-sm">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+            <AlertTriangle className="h-4 w-4 text-warning" />
+            Operadores em atenção
+          </CardTitle>
+          {!loading && attention.length > 0 && (
+            <Badge variant="secondary" className="font-mono text-xs">
+              {attention.length}
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-1.5">
+        {loading ? (
+          Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
+        ) : attention.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+            <CheckCircle2 className="h-8 w-8 text-success" />
+            <p className="text-sm text-muted-foreground">Nenhuma ocorrência crítica no momento.</p>
+          </div>
+        ) : (
+          attention.map((a) => (
+            <Link
+              key={a.operator_id}
+              to="/usuarios"
+              className="flex items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/50"
+            >
+              <Circle className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_DOT[a.status] ?? "text-muted-foreground")} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{a.display_name}</div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {attentionReasonLabel(a)}
+                  {a.unit_name ? ` · ${a.unit_name}` : ""}
+                </div>
+              </div>
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{fmtDuration(a.since)}</span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/50" />
+            </Link>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/* --------------------------- Atividade recente --------------------------- */
+
+const ACTIVITY_ICON: Record<ActivityKind, ReactNode> = {
+  session: <Radio className="h-3.5 w-3.5 text-secondary" />,
+  feedback: <MessageSquare className="h-3.5 w-3.5 text-primary" />,
+  playlist: <Music className="h-3.5 w-3.5 text-primary" />,
+  audit: <Shield className="h-3.5 w-3.5 text-muted-foreground" />,
+};
+
+function ActivityPanel({ items, loading }: { items: RecentActivity[]; loading: boolean }) {
   return (
     <Card className="shadow-sm">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-semibold">Atividade recente</CardTitle>
       </CardHeader>
       <CardContent>
-        {items.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">Nenhuma atividade registrada.</p>
+        {loading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-11 w-full" />
+            ))}
+          </div>
+        ) : items.length === 0 ? (
+          <div className="flex items-center gap-2 py-8 text-center text-sm text-muted-foreground">
+            <Clock className="mx-auto h-4 w-4" />
+            <span className="mx-auto">Nenhuma atividade recente registrada.</span>
+          </div>
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {items.map((item) => (
               <div
                 key={item.id}
-                className="flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/50"
+                className="flex items-start gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/50"
               >
                 <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted">
-                  {item.kind === "audit" ? (
-                    <Shield className="h-3.5 w-3.5 text-muted-foreground" />
-                  ) : (
-                    <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
+                  {ACTIVITY_ICON[item.kind]}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{item.title}</div>
-                  {item.detail && (
-                    <div className="truncate text-xs text-muted-foreground">{item.detail}</div>
-                  )}
+                  <div className="truncate text-sm">{item.title}</div>
+                  {item.detail && <div className="truncate text-xs text-muted-foreground">{item.detail}</div>}
                 </div>
                 <span className="shrink-0 text-xs text-muted-foreground">{fmtRelative(item.occurred_at)}</span>
               </div>
@@ -209,67 +324,119 @@ function ActivitySection({ items, loading }: { items: RecentActivity[]; loading:
   );
 }
 
-/* -------------------------------- Página -------------------------------- */
+/* ----------------------------- Resumo do dia ----------------------------- */
+
+function DailySummaryPanel({ metrics, loading }: { metrics: DailyMetric[]; loading: boolean }) {
+  return (
+    <Card className="shadow-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-semibold">Resumo do dia</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {loading
+            ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-16 w-full rounded-lg" />)
+            : metrics.map((m) => (
+                <div key={m.label} className="rounded-lg border border-border bg-muted/30 p-3">
+                  <div className="text-2xl font-bold leading-none tracking-tight tabular-nums">
+                    {m.value === null ? <span className="text-base text-muted-foreground">—</span> : m.value}
+                  </div>
+                  <div className="mt-1.5 text-xs leading-tight text-muted-foreground">
+                    {m.value === null ? "Sem dados hoje" : m.label}
+                  </div>
+                </div>
+              ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* -------------------------------- Página --------------------------------- */
 
 export function OverviewPage() {
-  const counts = useQuery({
-    queryKey: ["overview", "counts"],
-    queryFn: fetchOverviewCounts,
-    staleTime: 30_000,
-  });
+  const queryClient = useQueryClient();
 
-  const statuses = useQuery({
-    queryKey: ["overview", "statuses"],
-    queryFn: fetchOperatorStatuses,
-    staleTime: 15_000,
-  });
+  const counts = useQuery({ queryKey: ["overview", "counts"], queryFn: fetchOverviewCounts, staleTime: 30_000 });
+  const states = useQuery({ queryKey: ["overview", "states"], queryFn: fetchOperatorStates, staleTime: 15_000 });
+  const activity = useQuery({ queryKey: ["overview", "activity"], queryFn: fetchRecentActivity, staleTime: 30_000 });
+  const daily = useQuery({ queryKey: ["overview", "daily"], queryFn: fetchDailySummary, staleTime: 60_000 });
 
-  const activity = useQuery({
-    queryKey: ["overview", "activity"],
-    queryFn: fetchRecentActivity,
-    staleTime: 30_000,
-  });
+  const isFetching =
+    counts.isFetching || states.isFetching || activity.isFetching || daily.isFetching;
+
+  const lastUpdated = useMemo(() => {
+    const ts = [counts.dataUpdatedAt, states.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt].filter(
+      Boolean,
+    );
+    return ts.length ? new Date(Math.max(...ts)).toISOString() : null;
+  }, [counts.dataUpdatedAt, states.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt]);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["overview"] });
+
+  const groups = states.data?.groups ?? [];
+  const total = states.data?.total ?? 0;
+  const rows = states.data?.rows ?? [];
 
   return (
     <>
-      <PageHeader title="Visão Geral" description="Resumo da operação em tempo real." />
+      <PageHeader
+        title="Visão Geral"
+        description="Acompanhamento em tempo real da operação, presença dos operadores e alertas recentes."
+        action={
+          <div className="flex items-center gap-3">
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              Atualizado {lastUpdated ? fmtRelative(lastUpdated) : "agora"}
+            </span>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching}>
+              <RotateCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
+              Atualizar
+            </Button>
+          </div>
+        }
+      />
 
-      {/* Cards de resumo */}
-      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          icon={<Building2 className="h-5 w-5" />}
-          label="Condomínios ativos"
-          value={counts.data?.units ?? 0}
-          iconClass="bg-primary/10 text-primary"
-          loading={counts.isLoading}
-        />
-        <StatCard
+      {/* Cards principais */}
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
           icon={<Users className="h-5 w-5" />}
+          iconClass="bg-primary/10 text-primary"
           label="Operadores ativos"
           value={counts.data?.operators ?? 0}
-          iconClass="bg-secondary/10 text-secondary"
           loading={counts.isLoading}
+          hint={
+            <span className="flex items-center gap-1.5">
+              <Circle className="h-2 w-2 fill-current text-success" />
+              {counts.data?.operatorsOnline ?? 0} online agora
+            </span>
+          }
         />
-        <StatCard
+        <MetricCard
           icon={<Radio className="h-5 w-5" />}
+          iconClass="bg-secondary/10 text-secondary"
           label="Sessões ativas"
           value={counts.data?.activeSessions ?? 0}
-          iconClass="bg-success/30 text-success-foreground"
           loading={counts.isLoading}
+          hint={`${counts.data?.sessionsEndedToday ?? 0} encerradas hoje`}
         />
-        <StatCard
-          icon={<MessageSquare className="h-5 w-5" />}
-          label="Feedbacks pendentes"
-          value={counts.data?.pendingFeedback ?? 0}
-          iconClass="bg-destructive/10 text-destructive"
+        <OperationCard groups={groups} loading={states.isLoading} />
+        <PendingCard
+          feedback={counts.data?.pendingFeedback ?? 0}
+          playlists={counts.data?.pendingPlaylists ?? null}
           loading={counts.isLoading}
         />
       </div>
 
-      {/* Duas colunas: status + atividade */}
+      {/* Status + Atenção */}
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <StatusPanel groups={groups} total={total} loading={states.isLoading} />
+        <AttentionPanel rows={rows} loading={states.isLoading} />
+      </div>
+
+      {/* Atividade + Resumo do dia */}
       <div className="grid gap-6 lg:grid-cols-2">
-        <StatusSection groups={statuses.data ?? []} loading={statuses.isLoading} />
-        <ActivitySection items={activity.data ?? []} loading={activity.isLoading} />
+        <ActivityPanel items={activity.data ?? []} loading={activity.isLoading} />
+        <DailySummaryPanel metrics={daily.data ?? []} loading={daily.isLoading} />
       </div>
     </>
   );

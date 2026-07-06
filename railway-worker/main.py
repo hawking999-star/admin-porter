@@ -361,7 +361,7 @@ def process_job(job: dict):
             # por todas as playlists que a usam. Isso deduplica repetidas.
             key = f"tracks/{vid}.mp3"
             try:
-                # 1) Ja existe essa musica (em qualquer playlist)? Reutiliza — nao rebaixa.
+                # 1) Ja existe essa musica (em qualquer playlist)? Reutiliza - nao rebaixa.
                 found = (
                     supabase.table("tracks")
                     .select("id")
@@ -427,7 +427,7 @@ def process_job(job: dict):
                 completed += 1
                 update_job(job_id, completed=completed)
                 tag = "reuso" if found.data else "novo"
-                log(f"  ✓ {position}/{total} [{tag}] {entry['title'][:60]}")
+                log(f"  ok {position}/{total} [{tag}] {entry['title'][:60]}")
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 code, friendly = classify_error(exc)
@@ -492,7 +492,7 @@ def process_job(job: dict):
 def fail_job(job: dict, exc: Exception):
     attempts = job.get("attempts") or 1
     code, friendly = classify_error(exc)
-    # Volta para a fila se ainda tem tentativas; senão marca erro definitivo.
+    # Volta para a fila se ainda tem tentativas; senao marca erro definitivo.
     if attempts < MAX_ATTEMPTS:
         update_job(
             job["id"],
