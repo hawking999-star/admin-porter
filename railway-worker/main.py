@@ -101,6 +101,11 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return "WORKER_ENV_MISSING", "Falha no importador: variável de ambiente obrigatória ausente."
     if "timed out" in msg or "timeout" in msg:
         return "IMPORT_TIMEOUT", "Falha no importador: tempo limite excedido."
+    if "requested format is not available" in msg or "no video formats found" in msg:
+        return (
+            "YOUTUBE_FORMAT_UNAVAILABLE",
+            "Falha no YouTube: nenhum formato de áudio disponível para download no ambiente do importador.",
+        )
     if "confirm you're not a bot" in msg or "confirm you’re not a bot" in msg or "sign in to confirm" in msg:
         if not YOUTUBE_COOKIEFILE:
             return (
@@ -233,26 +238,40 @@ def download_one(entry: dict, workdir: str) -> str:
     vid = entry["id"]
     kbps = AUDIO_BITRATE
     out_tmpl = os.path.join(workdir, f"{vid}.%(ext)s")
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "format": "bestaudio/best",
-        "outtmpl": out_tmpl,
-        "max_filesize": MAX_FILE_BYTES * 4,  # corta downloads absurdos na fonte
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": str(kbps),
-            }
-        ],
-    }
-    if YOUTUBE_COOKIEFILE:
-        opts["cookiefile"] = YOUTUBE_COOKIEFILE
-    try:
-        with YoutubeDL(opts) as ydl:
+    def build_opts(use_cookie: bool) -> dict:
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "format": "bestaudio[acodec!=none]/best[acodec!=none]/bestaudio/best",
+            "outtmpl": out_tmpl,
+            "max_filesize": MAX_FILE_BYTES * 4,  # corta downloads absurdos na fonte
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": str(kbps),
+                }
+            ],
+        }
+        if use_cookie and YOUTUBE_COOKIEFILE:
+            opts["cookiefile"] = YOUTUBE_COOKIEFILE
+        return opts
+
+    def run_download(use_cookie: bool):
+        with YoutubeDL(build_opts(use_cookie)) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={vid}"])
+
+    try:
+        try:
+            run_download(use_cookie=True)
+        except Exception as exc:  # noqa: BLE001
+            if YOUTUBE_COOKIEFILE and "requested format is not available" in str(exc).lower():
+                log(f"  ! {vid}: cookie não trouxe formato de áudio; tentando sem cookies")
+                run_download(use_cookie=False)
+            else:
+                raise
     except Exception as exc:  # noqa: BLE001
         log(f"  ! falha ao baixar {vid}: {exc}")
         raise RuntimeError(f"yt-dlp falhou ao baixar {vid}: {exc}") from exc
