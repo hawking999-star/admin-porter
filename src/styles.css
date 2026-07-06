@@ -1,0 +1,179 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-challenges: var(--chart-challenges);
+  --color-chart-success: var(--chart-success);
+  --color-chart-danger: var(--chart-danger);
+  --color-chart-warning: var(--chart-warning);
+  --color-chart-active: var(--chart-active);
+  --color-chart-idle: var(--chart-idle);
+  --color-chart-neutral: var(--chart-neutral);
+}
+
+/* ============================================================
+   PORTER MUSIC — DESIGN SYSTEM
+   Fonte única de verdade para todas as cores do admin.
+   Nunca use hex direto nos componentes — sempre um token abaixo.
+   ============================================================ */
+:root {
+  --porter-navy: #020B3A;
+  --porter-navy-light: #041A73;
+  --porter-blue: #0D5BFF;
+  --porter-blue-hover: #1E90FF;
+  --porter-green: #C7F34B;
+  --porter-background: #F5F7FA;
+  --porter-surface: #FFFFFF;
+  --porter-text: #1F2937;
+  --porter-text-muted: #6B7280;
+  --porter-border: #E5E7EB;
+  --porter-danger: #DC2626;
+  --porter-warning: #F59E0B;
+}
+
+/* Mapeamento dos tokens Porter → tokens semânticos usados pelos componentes */
+:root {
+  --radius: 0.625rem;
+
+  /* Surfaces */
+  --background: var(--porter-background);
+  --foreground: var(--porter-text);
+  --card: var(--porter-surface);
+  --card-foreground: var(--porter-text);
+  --popover: var(--porter-surface);
+  --popover-foreground: var(--porter-text);
+
+  /* Primary — azul Porter (botões primários); hover padronizado */
+  --primary: var(--porter-blue);
+  --primary-hover: var(--porter-blue-hover);
+  --primary-foreground: var(--porter-surface);
+
+  /* Secondary — navy claro */
+  --secondary: var(--porter-navy-light);
+  --secondary-foreground: var(--porter-surface);
+
+  --muted: color-mix(in srgb, var(--porter-border) 55%, var(--porter-surface));
+  --muted-foreground: var(--porter-text-muted);
+
+  /* Accent — superfície de hover sutil (menus, ghost buttons) derivada do azul */
+  --accent: color-mix(in srgb, var(--porter-blue) 9%, var(--porter-surface));
+  --accent-foreground: var(--porter-navy);
+
+  /* Estados semânticos */
+  --destructive: var(--porter-danger);
+  --destructive-foreground: var(--porter-surface);
+  --success: var(--porter-green);
+  --success-foreground: var(--porter-navy);
+  --warning: var(--porter-warning);
+  --warning-foreground: var(--porter-navy);
+
+  --border: var(--porter-border);
+  --input: var(--porter-border);
+  --ring: var(--porter-blue);
+
+  /* Sidebar — navy profundo, item ativo em navy-light com texto verde-limão */
+  --sidebar: var(--porter-navy);
+  --sidebar-foreground: var(--porter-background);
+  --sidebar-border: color-mix(in srgb, var(--porter-navy-light) 70%, transparent);
+  --sidebar-accent: var(--porter-navy-light);
+  --sidebar-accent-foreground: var(--porter-green);
+
+  /* Charts — paleta operacional derivada dos tokens Porter */
+  --chart-challenges: var(--porter-blue);
+  --chart-success: var(--porter-green);
+  --chart-danger: var(--porter-danger);
+  --chart-warning: var(--porter-warning);
+  --chart-active: var(--porter-navy-light);
+  --chart-idle: var(--porter-blue-hover);
+  --chart-neutral: var(--porter-text-muted);
+
+  --chart-1: var(--chart-challenges);
+  --chart-2: var(--chart-success);
+  --chart-3: var(--chart-warning);
+  --chart-4: var(--chart-danger);
+  --chart-5: var(--chart-active);
+}
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html, body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+
+  /* Tabela de usuários compacta: mantém apenas as colunas principais.
+     Colunas removidas visualmente: Última atividade, Sessão, Playlist,
+     Timeouts, Bloq. até e Último desafio. */
+  table:has(thead th:nth-child(17)) th:nth-child(8),
+  table:has(thead th:nth-child(17)) td:nth-child(8),
+  table:has(thead th:nth-child(17)) th:nth-child(9),
+  table:has(thead th:nth-child(17)) td:nth-child(9),
+  table:has(thead th:nth-child(17)) th:nth-child(10),
+  table:has(thead th:nth-child(17)) td:nth-child(10),
+  table:has(thead th:nth-child(17)) th:nth-child(13),
+  table:has(thead th:nth-child(17)) td:nth-child(13),
+  table:has(thead th:nth-child(17)) th:nth-child(14),
+  table:has(thead th:nth-child(17)) td:nth-child(14),
+  table:has(thead th:nth-child(17)) th:nth-child(15),
+  table:has(thead th:nth-child(17)) td:nth-child(15) {
+    display: none;
+  }
+}

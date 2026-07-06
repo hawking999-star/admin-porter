@@ -1,0 +1,360 @@
+"""
+Porter Music — Worker de download (Railway)
+
+O que faz, em uma frase: fica de olho na fila `download_jobs` no Supabase; quando
+aparece uma playlist aprovada do YouTube, baixa o áudio (máx. 170 faixas, cada uma
+<= 15 MB), sobe cada arquivo para o Cloudflare R2 e grava em `tracks` + `playlist_tracks`.
+
+Não precisa mexer no código para operar. Tudo é controlado por variáveis de ambiente
+(veja .env.example). É só rodar: `python main.py`.
+"""
+
+import hashlib
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+from datetime import datetime, timezone
+
+import boto3
+from botocore.config import Config as BotoConfig
+from supabase import create_client
+from yt_dlp import YoutubeDL
+
+# --------------------------------------------------------------------------- #
+# Configuração (tudo via variáveis de ambiente)
+# --------------------------------------------------------------------------- #
+
+def env(name: str, default: str | None = None, required: bool = False) -> str:
+    val = os.environ.get(name, default)
+    if required and not val:
+        print(f"[FATAL] Falta a variável de ambiente: {name}", flush=True)
+        sys.exit(1)
+    return val or ""
+
+SUPABASE_URL = env("SUPABASE_URL", required=True)
+SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", required=True)
+
+R2_ACCOUNT_ID = env("R2_ACCOUNT_ID", required=True)
+R2_ACCESS_KEY_ID = env("R2_ACCESS_KEY_ID", required=True)
+R2_SECRET_ACCESS_KEY = env("R2_SECRET_ACCESS_KEY", required=True)
+R2_BUCKET = env("R2_BUCKET", required=True)
+# Opcional: URL pública/base do bucket (ex.: https://pub-xxxx.r2.dev). Se setado,
+# guardamos a URL completa em tracks.metadata.public_url.
+R2_PUBLIC_BASE_URL = env("R2_PUBLIC_BASE_URL", "").rstrip("/")
+
+MAX_TRACKS = int(env("MAX_TRACKS", "170"))
+MAX_FILE_MB = float(env("MAX_FILE_MB", "15"))
+MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
+POLL_SECONDS = int(env("POLL_SECONDS", "10"))
+MAX_ATTEMPTS = int(env("MAX_ATTEMPTS", "3"))
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+    aws_access_key_id=R2_ACCESS_KEY_ID,
+    aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+    region_name="auto",
+    config=BotoConfig(retries={"max_attempts": 3, "mode": "standard"}),
+)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def log(*args):
+    print(f"[{now_iso()}]", *args, flush=True)
+
+
+# --------------------------------------------------------------------------- #
+# Fila de jobs
+# --------------------------------------------------------------------------- #
+
+def claim_next_job() -> dict | None:
+    """Pega o próximo job 'queued' e marca como 'running' de forma atômica."""
+    res = (
+        supabase.table("download_jobs")
+        .select("*")
+        .eq("status", "queued")
+        .order("created_at")
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    job = res.data[0]
+
+    claim = (
+        supabase.table("download_jobs")
+        .update(
+            {
+                "status": "running",
+                "started_at": now_iso(),
+                "locked_at": now_iso(),
+                "attempts": (job.get("attempts") or 0) + 1,
+                "error": None,
+                "updated_at": now_iso(),
+            }
+        )
+        .eq("id", job["id"])
+        .eq("status", "queued")  # só ganha se ninguém pegou antes
+        .execute()
+    )
+    if not claim.data:
+        return None  # outro worker pegou
+    return claim.data[0]
+
+
+def update_job(job_id: str, **fields):
+    fields["updated_at"] = now_iso()
+    supabase.table("download_jobs").update(fields).eq("id", job_id).execute()
+
+
+# --------------------------------------------------------------------------- #
+# YouTube / download
+# --------------------------------------------------------------------------- #
+
+def list_playlist_entries(url: str) -> list[dict]:
+    """Retorna até MAX_TRACKS entradas (id, title, duration) da playlist/vídeo."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+        "playlistend": MAX_TRACKS,
+    }
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    entries = info.get("entries")
+    if entries is None:  # link de vídeo único
+        entries = [info]
+    out = []
+    for e in entries:
+        if not e:
+            continue
+        vid = e.get("id")
+        if not vid:
+            continue
+        out.append(
+            {
+                "id": vid,
+                "title": e.get("title") or vid,
+                "artist": e.get("uploader") or e.get("channel"),
+                "duration": e.get("duration"),  # segundos, pode ser None
+            }
+        )
+        if len(out) >= MAX_TRACKS:
+            break
+    return out
+
+
+def target_bitrate_kbps(duration_s: float | None) -> int:
+    """Escolhe um bitrate para o mp3 caber em MAX_FILE_MB (entre 96 e 192 kbps)."""
+    if not duration_s or duration_s <= 0:
+        return 128
+    budget_bits = MAX_FILE_BYTES * 8 * 0.92  # margem de 8% p/ tags/overhead
+    kbps = int(budget_bits / duration_s / 1000)
+    return max(96, min(192, kbps))
+
+
+def download_one(entry: dict, workdir: str) -> str | None:
+    """Baixa uma faixa como mp3 e devolve o caminho, ou None se falhar/passar do limite."""
+    vid = entry["id"]
+    kbps = target_bitrate_kbps(entry.get("duration"))
+    out_tmpl = os.path.join(workdir, f"{vid}.%(ext)s")
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "format": "bestaudio/best",
+        "outtmpl": out_tmpl,
+        "max_filesize": MAX_FILE_BYTES * 4,  # corta downloads absurdos na fonte
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": str(kbps),
+            }
+        ],
+    }
+    try:
+        with YoutubeDL(opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={vid}"])
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ! falha ao baixar {vid}: {exc}")
+        return None
+
+    mp3 = os.path.join(workdir, f"{vid}.mp3")
+    if not os.path.exists(mp3):
+        return None
+    size = os.path.getsize(mp3)
+    if size > MAX_FILE_BYTES:
+        log(f"  ! {vid} passou de {MAX_FILE_MB} MB ({size/1048576:.1f} MB) — descartado")
+        os.remove(mp3)
+        return None
+    return mp3
+
+
+def sha256_of(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def upload_to_r2(path: str, key: str):
+    s3.upload_file(path, R2_BUCKET, key, ExtraArgs={"ContentType": "audio/mpeg"})
+
+
+# --------------------------------------------------------------------------- #
+# Processamento de um job
+# --------------------------------------------------------------------------- #
+
+def process_job(job: dict):
+    job_id = job["id"]
+    playlist_id = job["playlist_id"]
+    url = job.get("source_url")
+    log(f"Job {job_id} — playlist {playlist_id}")
+
+    if not url:
+        update_job(job_id, status="error", error="sem source_url", finished_at=now_iso())
+        return
+
+    # Limpa faixas adicionadas anteriormente por este processo (retry limpo).
+    supabase.table("playlist_tracks").delete().eq("playlist_id", playlist_id).eq(
+        "added_by_type", "system"
+    ).execute()
+
+    entries = list_playlist_entries(url)
+    total = len(entries)
+    update_job(job_id, total=total, completed=0, failed=0)
+    log(f"  {total} faixas na fila (limite {MAX_TRACKS})")
+
+    completed = 0
+    failed = 0
+    position = 0
+
+    with tempfile.TemporaryDirectory() as workdir:
+        for entry in entries:
+            mp3 = download_one(entry, workdir)
+            if not mp3:
+                failed += 1
+                update_job(job_id, failed=failed)
+                continue
+
+            try:
+                digest = sha256_of(mp3)
+                key = f"tracks/{playlist_id}/{entry['id']}.mp3"
+                upload_to_r2(mp3, key)
+
+                meta = {
+                    "youtube_id": entry["id"],
+                    "source": "youtube",
+                    "source_url": f"https://www.youtube.com/watch?v={entry['id']}",
+                }
+                if R2_PUBLIC_BASE_URL:
+                    meta["public_url"] = f"{R2_PUBLIC_BASE_URL}/{key}"
+
+                dur_ms = int(entry["duration"] * 1000) if entry.get("duration") else None
+                track = (
+                    supabase.table("tracks")
+                    .insert(
+                        {
+                            "title": entry["title"][:300],
+                            "artist": (entry.get("artist") or None),
+                            "duration_ms": dur_ms,
+                            "storage_object_key": key,
+                            "content_hash": digest,
+                            "mime_type": "audio/mpeg",
+                            "status": "available",
+                            "metadata": meta,
+                        }
+                    )
+                    .execute()
+                )
+                track_id = track.data[0]["id"]
+
+                position += 1
+                supabase.table("playlist_tracks").insert(
+                    {
+                        "playlist_id": playlist_id,
+                        "track_id": track_id,
+                        "position": position,
+                        "added_by_type": "system",
+                    }
+                ).execute()
+
+                completed += 1
+                update_job(job_id, completed=completed)
+                log(f"  ✓ {position}/{total} {entry['title'][:60]}")
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                update_job(job_id, failed=failed)
+                log(f"  ! erro ao salvar {entry['id']}: {exc}")
+            finally:
+                if os.path.exists(mp3):
+                    os.remove(mp3)
+
+    final_status = "done" if failed == 0 else ("partial" if completed > 0 else "error")
+    update_job(
+        job_id,
+        status=final_status,
+        completed=completed,
+        failed=failed,
+        finished_at=now_iso(),
+        error=None if completed > 0 else "nenhuma faixa baixada",
+    )
+    log(f"Job {job_id} finalizado: {final_status} ({completed} ok, {failed} falhas)")
+
+
+def fail_job(job: dict, exc: Exception):
+    attempts = job.get("attempts") or 1
+    # Volta para a fila se ainda tem tentativas; senão marca erro definitivo.
+    if attempts < MAX_ATTEMPTS:
+        update_job(job["id"], status="queued", error=f"retry: {exc}")
+        log(f"Job {job['id']} falhou (tentativa {attempts}); reenfileirado.")
+    else:
+        update_job(job["id"], status="error", error=str(exc), finished_at=now_iso())
+        log(f"Job {job['id']} falhou definitivamente: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# Loop principal
+# --------------------------------------------------------------------------- #
+
+def check_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+    except Exception:  # noqa: BLE001
+        log("[FATAL] ffmpeg não encontrado no ambiente.")
+        sys.exit(1)
+
+
+def main():
+    check_ffmpeg()
+    log("Worker iniciado. Aguardando jobs...")
+    log(f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa")
+    while True:
+        try:
+            job = claim_next_job()
+            if not job:
+                time.sleep(POLL_SECONDS)
+                continue
+            try:
+                process_job(job)
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                fail_job(job, exc)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[loop] erro inesperado: {exc}")
+            time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()
