@@ -48,6 +48,7 @@ R2_PUBLIC_BASE_URL = env("R2_PUBLIC_BASE_URL", "").rstrip("/")
 MAX_TRACKS = int(env("MAX_TRACKS", "170"))
 MAX_FILE_MB = float(env("MAX_FILE_MB", "15"))
 MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
+AUDIO_BITRATE = int(env("AUDIO_BITRATE", "128"))  # kbps do mp3
 POLL_SECONDS = int(env("POLL_SECONDS", "10"))
 MAX_ATTEMPTS = int(env("MAX_ATTEMPTS", "3"))
 
@@ -153,19 +154,11 @@ def list_playlist_entries(url: str) -> list[dict]:
     return out
 
 
-def target_bitrate_kbps(duration_s: float | None) -> int:
-    """Escolhe um bitrate para o mp3 caber em MAX_FILE_MB (entre 96 e 192 kbps)."""
-    if not duration_s or duration_s <= 0:
-        return 128
-    budget_bits = MAX_FILE_BYTES * 8 * 0.92  # margem de 8% p/ tags/overhead
-    kbps = int(budget_bits / duration_s / 1000)
-    return max(96, min(192, kbps))
-
-
 def download_one(entry: dict, workdir: str) -> str | None:
-    """Baixa uma faixa como mp3 e devolve o caminho, ou None se falhar/passar do limite."""
+    """Baixa uma faixa como mp3 (bitrate fixo AUDIO_BITRATE) e devolve o caminho,
+    ou None se falhar / passar do limite de tamanho."""
     vid = entry["id"]
-    kbps = target_bitrate_kbps(entry.get("duration"))
+    kbps = AUDIO_BITRATE
     out_tmpl = os.path.join(workdir, f"{vid}.%(ext)s")
     opts = {
         "quiet": True,

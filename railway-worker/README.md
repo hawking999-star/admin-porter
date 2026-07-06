@@ -75,12 +75,13 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 |---|---|---|
 | `MAX_TRACKS` | 170 | Máx. de faixas por playlist |
 | `MAX_FILE_MB` | 15 | Tamanho máximo de cada mp3 |
+| `AUDIO_BITRATE` | 128 | Qualidade do mp3, em kbps |
 | `POLL_SECONDS` | 10 | De quanto em quanto tempo checa a fila |
 | `MAX_ATTEMPTS` | 3 | Tentativas antes de marcar erro |
 
 ## Como ele respeita os limites
 
 - **170 faixas:** só lê as primeiras 170 da playlist (`playlistend`).
-- **15 MB/faixa:** calcula o bitrate do mp3 pela duração pra caber em 15 MB
-  (entre 96 e 192 kbps) e, por segurança, descarta qualquer arquivo que ainda
-  passe de 15 MB.
+- **Qualidade 128 kbps:** todo mp3 sai em 128 kbps (mude em `AUDIO_BITRATE` se quiser).
+- **15 MB/faixa:** por segurança, descarta qualquer arquivo que ainda passe de 15 MB
+  (a 128 kbps isso só aconteceria em faixas com mais de ~15 min).
