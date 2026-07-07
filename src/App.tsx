@@ -18,9 +18,35 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
 });
 
+function AccessDenied() {
+  const { signOut, authError, permissionError } = useAuth();
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="w-full max-w-md rounded-lg border border-border bg-card p-6 text-center shadow-sm">
+        <h1 className="font-display text-xl font-semibold text-foreground">Acesso negado</h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {permissionError ?? "Você não tem permissão para acessar o PTM ADMIN."}
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Entre com uma conta administrativa ativa.
+        </p>
+        {authError && <p className="mt-3 text-xs text-destructive">{authError}</p>}
+        <button
+          type="button"
+          className="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          onClick={() => void signOut()}
+        >
+          Sair
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Protected({ children }: { children: React.ReactNode }) {
-  const { session, loading } = useAuth();
-  if (loading) {
+  const { session, isLoading, isAuthorizedAdmin } = useAuth();
+  if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
         Carregando...
@@ -28,6 +54,7 @@ function Protected({ children }: { children: React.ReactNode }) {
     );
   }
   if (!session) return <LoginPage />;
+  if (!isAuthorizedAdmin) return <AccessDenied />;
   return <>{children}</>;
 }
 

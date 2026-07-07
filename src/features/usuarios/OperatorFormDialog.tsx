@@ -213,7 +213,8 @@ export function OperatorFormDialog({
                   <Label htmlFor="password">Senha</Label>
                   <Input
                     id="password"
-                    type="text"
+                    type="password"
+                    autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Mínimo 6 caracteres"

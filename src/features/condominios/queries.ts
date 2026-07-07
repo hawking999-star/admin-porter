@@ -69,11 +69,28 @@ export async function listUnits(): Promise<Unit[]> {
 }
 
 export async function createUnit(input: UnitInput): Promise<void> {
-  const { error } = await supabase.from("units").insert(input);
+  const { error } = await supabase.rpc("admin_create_unit", {
+    p_code: input.code,
+    p_name: input.name,
+    p_address: input.address,
+    p_city: input.city,
+    p_state: input.state,
+    p_timezone: input.timezone,
+    p_active: input.active,
+  });
   if (error) throw error;
 }
 
 export async function updateUnit(id: string, input: UnitInput): Promise<void> {
-  const { error } = await supabase.from("units").update(input).eq("id", id);
+  const { error } = await supabase.rpc("admin_update_unit", {
+    p_unit: id,
+    p_code: input.code,
+    p_name: input.name,
+    p_address: input.address,
+    p_city: input.city,
+    p_state: input.state,
+    p_timezone: input.timezone,
+    p_active: input.active,
+  });
   if (error) throw error;
 }

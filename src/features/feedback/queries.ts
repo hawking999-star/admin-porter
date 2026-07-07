@@ -63,11 +63,9 @@ export async function listFeedback(): Promise<Feedback[]> {
 }
 
 export async function updateFeedbackStatus(id: string, status: FeedbackStatus): Promise<void> {
-  const patch: Record<string, unknown> = {
-    status,
-    updated_at: new Date().toISOString(),
-  };
-  patch.resolved_at = status === "resolved" ? new Date().toISOString() : null;
-  const { error } = await supabase.from("feedback").update(patch).eq("id", id);
+  const { error } = await supabase.rpc("admin_update_feedback_status", {
+    p_feedback: id,
+    p_status: status,
+  });
   if (error) throw error;
 }

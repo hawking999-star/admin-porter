@@ -207,7 +207,15 @@ export async function provisionOperator(input: OperatorProvisionInput): Promise<
 }
 
 export async function updateOperator(id: string, input: OperatorUpdateInput): Promise<void> {
-  const { error } = await supabase.from("operators").update(input).eq("id", id);
+  const { error } = await supabase.rpc("admin_update_operator", {
+    p_operator: id,
+    p_display_name: input.display_name,
+    p_username: input.username,
+    p_unit_id: input.unit_id,
+    p_role: input.role,
+    p_session_policy: input.session_policy,
+    p_active: input.active,
+  });
   if (error) throw error;
 }
 
@@ -247,6 +255,12 @@ export async function listAdminUsers(): Promise<AdminUser[]> {
 }
 
 export async function updateAdminUser(id: string, input: AdminUserInput): Promise<void> {
-  const { error } = await supabase.from("admin_users").update(input).eq("id", id);
+  const { error } = await supabase.rpc("admin_update_admin_user", {
+    p_admin_user: id,
+    p_display_name: input.display_name,
+    p_role: input.role,
+    p_active: input.active,
+    p_mfa_required: input.mfa_required,
+  });
   if (error) throw error;
 }
