@@ -32,9 +32,34 @@ Variables. São 6 obrigatórios:
 4. `R2_ACCESS_KEY_ID` e 5. `R2_SECRET_ACCESS_KEY` — em **R2 → Manage R2 API Tokens
    → Create API Token** (permissão *Object Read & Write*). Ele mostra os dois valores
    **uma vez só** — copie na hora.
-6. `R2_PUBLIC_BASE_URL` *(opcional)* — se você ligar o acesso público do bucket
-   (aba **Settings → Public access / r2.dev**), cole a URL (ex.: `https://pub-xxxx.r2.dev`).
-   Serve pra guardar o link tocável de cada música. Pode deixar em branco por enquanto.
+6. `R2_PUBLIC_BASE_URL` *(obrigatorio para tocar no app)* - se voce ligar o acesso publico do bucket
+   (aba **Settings -> Public access / r2.dev**), cole a URL (ex.: `https://pub-xxxx.r2.dev`).
+   Serve pra guardar o link tocavel de cada musica em `tracks.metadata.public_url`.
+
+### CORS do R2 para o player
+
+Alem do acesso publico, configure CORS no bucket R2. Sem isso, o arquivo pode abrir
+via URL direta, mas o app Electron/browser pode falhar ao carregar o audio se usar
+`fetch`, blob, Web Audio ou validacao de cabecalhos antes de tocar.
+
+Configuracao recomendada do bucket:
+
+```json
+[
+  {
+    "AllowedOrigins": ["*"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["Range", "Content-Type"],
+    "ExposeHeaders": [
+      "Accept-Ranges",
+      "Content-Length",
+      "Content-Range",
+      "Content-Type"
+    ],
+    "MaxAgeSeconds": 86400
+  }
+]
+```
 
 ---
 

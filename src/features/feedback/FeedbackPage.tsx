@@ -3,11 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Search,
-  MessageSquare,
-  Lightbulb,
-  AlertTriangle,
-  Heart,
   BellDot,
+  CheckCircle2,
+  AlertTriangle,
+  CalendarClock,
   Building2,
   Inbox,
 } from "lucide-react";
@@ -16,6 +15,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatCard, EmptyState } from "@/components/shared";
 import {
   Select,
   SelectContent,
@@ -32,7 +32,6 @@ import {
   type FeedbackStatus,
 } from "./queries";
 import {
-  StatCard,
   FeedbackTypeIcon,
   FeedbackTypeBadge,
   OperatorAvatar,
@@ -222,12 +221,13 @@ export function FeedbackPage() {
 
   const stats = useMemo(() => {
     const all = data ?? [];
+    const startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
     return {
-      total: all.length,
-      suggestions: all.filter((f) => f.type === "suggestion").length,
+      pending: all.filter((f) => f.status === "new").length,
+      resolved: all.filter((f) => f.status === "resolved").length,
       problems: all.filter((f) => f.type === "problem").length,
-      praises: all.filter((f) => f.type === "praise").length,
-      unread: all.filter((f) => f.status === "new").length,
+      today: all.filter((f) => new Date(f.created_at) >= startToday).length,
     };
   }, [data]);
 
@@ -238,42 +238,39 @@ export function FeedbackPage() {
         description="Retornos enviados pelos operadores dentro do app."
       />
 
-      {/* Cards de estatísticas */}
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+      {/* Cards de resumo */}
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          icon={<MessageSquare className="h-5 w-5" />}
-          label="Total"
-          value={isLoading ? "—" : stats.total}
-          sublabel="Todos os feedbacks"
-          iconClassName="bg-secondary/10 text-secondary"
+          icon={<BellDot className="h-5 w-5" />}
+          label="Pendentes"
+          value={stats.pending}
+          hint="Aguardando leitura"
+          iconClassName="bg-warning/15 text-warning-foreground"
+          loading={isLoading}
         />
         <StatCard
-          icon={<Lightbulb className="h-5 w-5" />}
-          label="Sugestões"
-          value={isLoading ? "—" : stats.suggestions}
-          sublabel="Ideias de melhoria"
-          iconClassName="bg-primary/10 text-primary"
+          icon={<CheckCircle2 className="h-5 w-5" />}
+          label="Resolvidos"
+          value={stats.resolved}
+          hint="Já respondidos"
+          iconClassName="bg-success/30 text-success-foreground"
+          loading={isLoading}
         />
         <StatCard
           icon={<AlertTriangle className="h-5 w-5" />}
           label="Problemas"
-          value={isLoading ? "—" : stats.problems}
-          sublabel="Relatos de erro"
+          value={stats.problems}
+          hint="Relatos de erro"
           iconClassName="bg-destructive/10 text-destructive"
+          loading={isLoading}
         />
         <StatCard
-          icon={<Heart className="h-5 w-5" />}
-          label="Elogios"
-          value={isLoading ? "—" : stats.praises}
-          sublabel="Reconhecimentos"
-          iconClassName="bg-success/30 text-success-foreground"
-        />
-        <StatCard
-          icon={<BellDot className="h-5 w-5" />}
-          label="Não lidos"
-          value={isLoading ? "—" : stats.unread}
-          sublabel="Aguardando leitura"
+          icon={<CalendarClock className="h-5 w-5" />}
+          label="Recebidos hoje"
+          value={stats.today}
+          hint="Nas últimas horas"
           iconClassName="bg-primary/10 text-primary"
+          loading={isLoading}
         />
       </div>
 
@@ -335,16 +332,12 @@ export function FeedbackPage() {
             Array.from({ length: 4 }).map((_, i) => <FeedbackCardSkeleton key={i} />)}
 
           {!isLoading && filtered.length === 0 && (
-            <Card className="p-6">
-              <div className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground">
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                  <Inbox className="h-6 w-6" />
-                </div>
-                <p className="text-sm font-medium">Nenhum feedback por aqui ainda.</p>
-                <p className="max-w-xs text-xs">
-                  Os retornos enviados pelos operadores dentro do app aparecerão nesta lista.
-                </p>
-              </div>
+            <Card className="shadow-sm">
+              <EmptyState
+                icon={<Inbox className="h-6 w-6" />}
+                title="Nenhum feedback por aqui ainda."
+                description="Os retornos enviados pelos operadores dentro do app aparecerão nesta lista."
+              />
             </Card>
           )}
 

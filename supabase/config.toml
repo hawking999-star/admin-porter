@@ -1,0 +1,4 @@
+project_id = "aifadvyxsefxfcgzgqol"
+
+[functions.get-current-app-release]
+verify_jwt = false

@@ -44,9 +44,9 @@ export const navGroups: NavGroup[] = [
     label: "Sistema",
     items: [
       { to: "/analytics", label: "Analytics", description: "Relatórios e métricas", icon: BarChart3 },
-      { to: "/logs", label: "Logs", description: "Eventos e diagnóstico", icon: ClipboardList },
+      { to: "/logs", label: "Logs", description: "Eventos e diagnóstico", icon: ClipboardList, ready: true },
       { to: "/auditoria", label: "Auditoria", description: "Ações administrativas", icon: ClipboardList },
-      { to: "/atualizacoes", label: "Atualizações", description: "Versões do app", icon: BellRing },
+      { to: "/atualizacoes", label: "Atualizações", description: "Versões do app", icon: BellRing, ready: true },
       { to: "/integracao", label: "Integração", description: "Diagnóstico técnico", icon: Code2 },
     ],
   },

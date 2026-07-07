@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Youtube, Link2, Music2, type LucideProps } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Card } from "@/components/ui/card";
 
 /* ------------------------------------------------------------------ */
 /*  Avatar com iniciais do operador                                    */
@@ -164,51 +163,6 @@ export function StatusPill({ status, className }: { status: string; className?: 
       <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
       {m.label}
     </span>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Card de estatística (padrão PTM Admin)                             */
-/* ------------------------------------------------------------------ */
-
-export function StatCard({
-  icon,
-  label,
-  value,
-  iconClassName,
-  active,
-  onClick,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: number | string;
-  iconClassName?: string;
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  const clickable = Boolean(onClick);
-  return (
-    <Card
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-3.5 p-4 shadow-sm transition-all duration-200",
-        clickable && "cursor-pointer hover:-translate-y-px hover:shadow-md",
-        active ? "border-primary ring-1 ring-primary/30" : "hover:border-primary/40",
-      )}
-    >
-      <div
-        className={cn(
-          "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
-          iconClassName ?? "bg-primary/10 text-primary",
-        )}
-      >
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="font-display text-2xl font-semibold leading-tight tracking-tight">{value}</p>
-        <p className="truncate text-sm font-medium text-muted-foreground">{label}</p>
-      </div>
-    </Card>
   );
 }
 

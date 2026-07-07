@@ -1,7 +1,6 @@
-import type { ComponentType, ReactNode } from "react";
+import type { ComponentType } from "react";
 import { Lightbulb, AlertTriangle, Heart, type LucideProps } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Card } from "@/components/ui/card";
 import { feedbackTypeLabel } from "./queries";
 
 /* ------------------------------------------------------------------ */
@@ -108,41 +107,5 @@ export function OperatorAvatar({ name, className }: { name: string | null; class
     >
       {initialsOf(name)}
     </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Card de estatística                                                */
-/* ------------------------------------------------------------------ */
-
-export function StatCard({
-  icon,
-  label,
-  value,
-  sublabel,
-  iconClassName,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: number | string;
-  sublabel: string;
-  iconClassName?: string;
-}) {
-  return (
-    <Card className="flex items-center gap-4 p-5 shadow-sm transition-shadow duration-200 hover:shadow-md">
-      <div
-        className={cn(
-          "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
-          iconClassName ?? "bg-primary/10 text-primary",
-        )}
-      >
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-muted-foreground">{label}</p>
-        <p className="font-display text-2xl font-semibold leading-tight tracking-tight">{value}</p>
-        <p className="truncate text-xs text-muted-foreground">{sublabel}</p>
-      </div>
-    </Card>
   );
 }

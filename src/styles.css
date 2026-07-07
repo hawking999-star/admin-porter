@@ -158,22 +158,4 @@
     font-family: var(--font-display);
     letter-spacing: -0.01em;
   }
-
-  /* Tabela de usuários compacta: mantém apenas as colunas principais.
-     Colunas removidas visualmente: Última atividade, Sessão, Playlist,
-     Timeouts, Bloq. até e Último desafio. */
-  table:has(thead th:nth-child(17)) th:nth-child(8),
-  table:has(thead th:nth-child(17)) td:nth-child(8),
-  table:has(thead th:nth-child(17)) th:nth-child(9),
-  table:has(thead th:nth-child(17)) td:nth-child(9),
-  table:has(thead th:nth-child(17)) th:nth-child(10),
-  table:has(thead th:nth-child(17)) td:nth-child(10),
-  table:has(thead th:nth-child(17)) th:nth-child(13),
-  table:has(thead th:nth-child(17)) td:nth-child(13),
-  table:has(thead th:nth-child(17)) th:nth-child(14),
-  table:has(thead th:nth-child(17)) td:nth-child(14),
-  table:has(thead th:nth-child(17)) th:nth-child(15),
-  table:has(thead th:nth-child(17)) td:nth-child(15) {
-    display: none;
-  }
 }

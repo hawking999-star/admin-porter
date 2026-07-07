@@ -14,7 +14,6 @@ import {
   CheckCircle2,
   XCircle,
   ListMusic,
-  CalendarDays,
   Building2,
   Inbox,
   Save,
@@ -67,8 +66,8 @@ import {
   type OperatorRequestHistory,
   type Playlist,
 } from "./queries";
+import { StatCard } from "@/components/shared";
 import {
-  StatCard,
   OperatorAvatar,
   PlatformIcon,
   StatusPill,
@@ -128,6 +127,21 @@ function durationText(ms: number | null) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+const TRACK_STATUS_PT: Record<string, string> = {
+  ready: "Pronta",
+  available: "Disponível",
+  processing: "Processando",
+  pending: "Pendente",
+  failed: "Falhou",
+  unavailable: "Indisponível",
+  archived: "Arquivada",
+};
+
+function trackStatusLabel(status: string | null | undefined) {
+  if (!status) return "—";
+  return TRACK_STATUS_PT[status] ?? status.replace(/_/g, " ");
 }
 
 function playlistLibraryError(p: MusicLibraryPlaylist): string | null {
@@ -462,6 +476,7 @@ export function MusicasPage() {
         action={
           <Button
             variant="outline"
+            size="sm"
             onClick={() => {
               refetch();
               libraryQuery.refetch();
@@ -474,7 +489,7 @@ export function MusicasPage() {
         }
       />
 
-      <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 p-1">
+      <div className="mb-6 inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-muted/50 p-1">
         <AreaButton
           active={activeArea === "requests"}
           icon={<Inbox className="h-4 w-4" />}
@@ -491,102 +506,69 @@ export function MusicasPage() {
         </AreaButton>
       </div>
 
-      {/* Cards de resumo */}
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
-        <StatCard
-          icon={<Clock className="h-5 w-5" />}
-          iconClassName="bg-warning/20 text-warning-foreground"
-          label="Pendentes"
-          value={stats.pending}
-          active={statusFilter === "pending"}
-          onClick={() => toggle(statusFilter, "pending", setStatusFilter)}
-        />
-        <StatCard
-          icon={<CheckCircle2 className="h-5 w-5" />}
-          iconClassName="bg-success/30 text-success-foreground"
-          label="Aprovadas"
-          value={stats.approved}
-          active={statusFilter === "approved"}
-          onClick={() => toggle(statusFilter, "approved", setStatusFilter)}
-        />
-        <StatCard
-          icon={<XCircle className="h-5 w-5" />}
-          iconClassName="bg-destructive/10 text-destructive"
-          label="Rejeitadas"
-          value={stats.rejected}
-          active={statusFilter === "rejected"}
-          onClick={() => toggle(statusFilter, "rejected", setStatusFilter)}
-        />
-        <StatCard
-          icon={<AlertTriangle className="h-5 w-5" />}
-          iconClassName="bg-destructive/10 text-destructive"
-          label="Importação falhou"
-          value={stats.importFailed}
-          active={statusFilter === "import_failed"}
-          onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)}
-        />
-        <StatCard
-          icon={<CalendarDays className="h-5 w-5" />}
-          label="Hoje"
-          value={stats.today}
-          active={dateFilter === "today"}
-          onClick={() => toggle(dateFilter, "today", setDateFilter)}
-        />
-        <StatCard
-          icon={<CalendarDays className="h-5 w-5" />}
-          label="Esta semana"
-          value={stats.week}
-          active={dateFilter === "7d"}
-          onClick={() => toggle(dateFilter, "7d", setDateFilter)}
-        />
-        <StatCard
-          icon={<Users className="h-5 w-5" />}
-          iconClassName="bg-primary/10 text-primary"
-          label="Operadores"
-          value={libraryStats.operators}
-          active={activeArea === "library"}
-          onClick={() => setActiveArea("library")}
-        />
-        <StatCard
-          icon={<Music className="h-5 w-5" />}
-          iconClassName="bg-success/20 text-success-foreground"
-          label="Músicas"
-          value={libraryStats.totalTracks}
-          active={activeArea === "library"}
-          onClick={() => setActiveArea("library")}
-        />
-      </div>
+      {/* Cards de resumo — 4 principais (clique filtra a lista) */}
+      {activeArea === "requests" && (
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            icon={<Clock className="h-5 w-5" />}
+            iconClassName="bg-warning/20 text-warning-foreground"
+            label="Pendentes"
+            value={stats.pending}
+            hint="Aguardando aprovação"
+            active={statusFilter === "pending"}
+            onClick={() => toggle(statusFilter, "pending", setStatusFilter)}
+          />
+          <StatCard
+            icon={<CheckCircle2 className="h-5 w-5" />}
+            iconClassName="bg-success/30 text-success-foreground"
+            label="Aprovadas"
+            value={stats.approved}
+            hint={`${stats.today} enviadas hoje`}
+            active={statusFilter === "approved"}
+            onClick={() => toggle(statusFilter, "approved", setStatusFilter)}
+          />
+          <StatCard
+            icon={<XCircle className="h-5 w-5" />}
+            iconClassName="bg-destructive/10 text-destructive"
+            label="Rejeitadas"
+            value={stats.rejected}
+            active={statusFilter === "rejected"}
+            onClick={() => toggle(statusFilter, "rejected", setStatusFilter)}
+          />
+          <StatCard
+            icon={<AlertTriangle className="h-5 w-5" />}
+            iconClassName="bg-destructive/10 text-destructive"
+            label="Importações com erro"
+            value={stats.importFailed}
+            active={statusFilter === "import_failed"}
+            onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)}
+          />
+        </div>
+      )}
 
       {/* Busca + filtros rápidos */}
       {activeArea === "requests" ? (
         <>
-      <div className="mb-4 space-y-3">
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Buscar por operador, condomínio, link, status, erro..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8"
-          />
+      <div className="mb-5 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative w-full max-w-md">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por operador, condomínio, link, status, erro..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-10 rounded-lg pl-9"
+            />
+          </div>
+          {data && (
+            <span className="ml-auto text-sm text-muted-foreground">
+              {filtered.length} de {data.length}
+            </span>
+          )}
         </div>
 
+        {/* Status é filtrado pelos cards acima; aqui ficam só tipo, plataforma e período */}
         <div className="flex flex-wrap items-center gap-1.5">
-          <FilterChip active={statusFilter === "pending"} onClick={() => toggle(statusFilter, "pending", setStatusFilter)} icon={<Clock />}>
-            Pendentes
-          </FilterChip>
-          <FilterChip active={statusFilter === "approved"} onClick={() => toggle(statusFilter, "approved", setStatusFilter)} icon={<CheckCircle2 />}>
-            Aprovadas
-          </FilterChip>
-          <FilterChip active={statusFilter === "rejected"} onClick={() => toggle(statusFilter, "rejected", setStatusFilter)} icon={<XCircle />}>
-            Rejeitadas
-          </FilterChip>
-          <FilterChip active={statusFilter === "import_failed"} onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)} icon={<AlertTriangle />}>
-            Importação falhou
-          </FilterChip>
-
-          <span className="mx-1 h-5 w-px bg-border" />
-
           <FilterChip active={typeFilter === "principal"} onClick={() => toggle(typeFilter, "principal", setTypeFilter)}>
             Principal
           </FilterChip>
@@ -594,7 +576,7 @@ export function MusicasPage() {
             Secundária
           </FilterChip>
 
-          <span className="mx-1 h-5 w-px bg-border" />
+          <span className="mx-1.5 h-5 w-px bg-border" />
 
           <FilterChip active={platformFilter === "spotify"} onClick={() => toggle(platformFilter, "spotify", setPlatformFilter)} icon={<SpotifyIcon />}>
             Spotify
@@ -603,7 +585,7 @@ export function MusicasPage() {
             YouTube
           </FilterChip>
 
-          <span className="mx-1 h-5 w-px bg-border" />
+          <span className="mx-1.5 h-5 w-px bg-border" />
 
           <FilterChip active={dateFilter === "today"} onClick={() => toggle(dateFilter, "today", setDateFilter)}>
             Hoje
@@ -649,6 +631,37 @@ export function MusicasPage() {
 
         </>
       ) : (
+        <>
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            icon={<Users className="h-5 w-5" />}
+            iconClassName="bg-primary/10 text-primary"
+            label="Operadores"
+            value={libraryStats.operators}
+            loading={libraryQuery.isLoading}
+          />
+          <StatCard
+            icon={<Library className="h-5 w-5" />}
+            iconClassName="bg-secondary/10 text-secondary"
+            label="Com playlists"
+            value={libraryStats.withPlaylists}
+            loading={libraryQuery.isLoading}
+          />
+          <StatCard
+            icon={<Music className="h-5 w-5" />}
+            iconClassName="bg-success/25 text-success-foreground"
+            label="Músicas importadas"
+            value={libraryStats.totalTracks}
+            loading={libraryQuery.isLoading}
+          />
+          <StatCard
+            icon={<AlertTriangle className="h-5 w-5" />}
+            iconClassName="bg-destructive/10 text-destructive"
+            label="Importações com erro"
+            value={libraryStats.failedImports}
+            loading={libraryQuery.isLoading}
+          />
+        </div>
         <MusicLibrarySection
           operators={filteredOperators}
           search={librarySearch}
@@ -672,6 +685,7 @@ export function MusicasPage() {
             setActiveArea("requests");
           }}
         />
+        </>
       )}
 
       {/* Drawer de detalhes */}
@@ -944,16 +958,16 @@ function MusicLibrarySection({
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="relative w-full max-w-lg">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+        <div className="relative w-full max-w-md">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Buscar operador, usuário, email, condomínio ou playlist..."
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="pl-8"
+            className="h-10 rounded-lg pl-9"
           />
         </div>
-        <Button variant="outline" onClick={onRefresh} disabled={refreshing}>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
           <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
           Atualizar biblioteca
         </Button>
@@ -1043,7 +1057,7 @@ function OperatorLibraryCard({
         <MiniMetric label="Status" value={status} tone={totals.failed ? "danger" : totals.processing ? "info" : "default"} />
       </div>
 
-      <div className="flex shrink-0 flex-wrap gap-2 md:flex-col">
+      <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto md:flex-col">
         <Button size="sm" onClick={onOpen} disabled={busy}>
           <Eye className="h-4 w-4" />
           Ver biblioteca
@@ -1068,7 +1082,7 @@ function MiniMetric({
 }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2">
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      <p className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
       <p
         className={cn(
           "truncate text-sm font-semibold",
@@ -1339,7 +1353,7 @@ function PlaylistLibraryDetail({
                         <p className="text-xs text-muted-foreground">{track.artist ?? "artista não informado"}</p>
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{durationText(track.duration_ms)}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{track.status}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{trackStatusLabel(track.status)}</td>
                       <td className="px-3 py-2">
                         <div className="flex justify-end gap-1">
                           {track.source_url && (
@@ -1403,7 +1417,7 @@ function PlaylistCard({
     <Card
       onClick={onOpen}
       className={cn(
-        "group flex cursor-pointer items-center gap-4 p-4 shadow-sm",
+        "group flex cursor-pointer flex-col items-start gap-4 p-4 shadow-sm sm:flex-row sm:items-center",
         "transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/60 hover:shadow-md",
       )}
     >
@@ -1412,7 +1426,7 @@ function PlaylistCard({
       <div className="min-w-0 flex-1">
         {/* topo: operador + tipo + condomínio */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-[15px] font-semibold text-foreground">{p.operator_name ?? "—"}</span>
+          <span className="min-w-0 break-words text-[15px] font-semibold text-foreground">{p.operator_name ?? "—"}</span>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
             {playlistTypeLabel(p.type)}
           </span>
@@ -1425,7 +1439,7 @@ function PlaylistCard({
         {/* destaque: o link */}
         <div className="mt-1.5">
           {p.source_url ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5">
               <span className={cn("shrink-0", m.fg)}>{m.icon({ className: cn("size-4", m.fg) })}</span>
               <span className="truncate text-sm font-medium text-foreground" title={p.source_url}>
                 {p.source_url}
@@ -1473,7 +1487,7 @@ function PlaylistCard({
       </div>
 
       {/* ações */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex w-full shrink-0 flex-wrap items-center justify-end gap-1 sm:w-auto">
         {p.source_url && platform !== "invalid" && (
           <IconAction title="Abrir link" onClick={stop(() => window.open(p.source_url!, "_blank", "noopener,noreferrer"))}>
             <ExternalLink className="h-4 w-4" />

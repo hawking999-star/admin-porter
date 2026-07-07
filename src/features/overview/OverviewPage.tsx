@@ -62,19 +62,21 @@ function MetricCard({
 }) {
   return (
     <Card className="shadow-sm">
-      <CardContent className="flex items-start gap-4 p-5">
-        <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", iconClass)}>
-          {icon}
-        </div>
-        <div className="min-w-0 flex-1">
+      <CardContent className="p-5">
+        <div className="flex items-center gap-2.5">
+          <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", iconClass)}>
+            {icon}
+          </div>
           <div className="text-xs font-medium text-muted-foreground">{label}</div>
-          {loading ? (
-            <Skeleton className="mt-1.5 h-7 w-16" />
-          ) : (
-            <div className="mt-0.5 text-3xl font-bold leading-none tracking-tight">{value}</div>
-          )}
-          {hint && <div className="mt-2 text-xs text-muted-foreground">{loading ? null : hint}</div>}
         </div>
+        {loading ? (
+          <Skeleton className="mt-4 h-8 w-16" />
+        ) : (
+          <div className="mt-4 font-display text-3xl font-bold leading-none tracking-tight tabular-nums">
+            {value}
+          </div>
+        )}
+        {hint && !loading && <div className="mt-2 text-xs text-muted-foreground">{hint}</div>}
       </CardContent>
     </Card>
   );
@@ -226,7 +228,7 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
   const attention = useMemo(() => deriveAttention(rows), [rows]);
 
   return (
-    <Card className="shadow-sm">
+    <Card className={cn("shadow-sm", !loading && attention.length > 0 && "border-warning/50")}>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-sm font-semibold">
@@ -234,9 +236,9 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
             Operadores em atenção
           </CardTitle>
           {!loading && attention.length > 0 && (
-            <Badge variant="secondary" className="font-mono text-xs">
+            <span className="inline-flex min-w-[2rem] items-center justify-center rounded-full bg-warning/15 px-2 py-0.5 font-mono text-xs font-semibold text-warning-foreground ring-1 ring-warning/40">
               {attention.length}
-            </Badge>
+            </span>
           )}
         </div>
       </CardHeader>
@@ -296,12 +298,12 @@ function ActivityPanel({ items, loading }: { items: RecentActivity[]; loading: b
             ))}
           </div>
         ) : items.length === 0 ? (
-          <div className="flex items-center gap-2 py-8 text-center text-sm text-muted-foreground">
-            <Clock className="mx-auto h-4 w-4" />
-            <span className="mx-auto">Nenhuma atividade recente registrada.</span>
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
+            <Clock className="h-6 w-6 text-muted-foreground/60" />
+            <p className="text-sm text-muted-foreground">Nenhuma atividade recente registrada.</p>
           </div>
         ) : (
-          <div className="space-y-0.5">
+          <div className="max-h-[340px] space-y-0.5 overflow-y-auto pr-1">
             {items.map((item) => (
               <div
                 key={item.id}

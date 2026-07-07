@@ -189,3 +189,24 @@ Regras por papel (conforme dev / doc 04):
 | `playlist_requests` / `feedback_submissions` (negócio) | ⏳ pendente de definição (dev) |
 
 **Do lado do app:** adicionar a mensagem para `UNIT_NOT_ACTIVE` (o dev apontou que ainda não está mapeada).
+
+---
+
+## 9. Atualizações do app / Worker — pronto no Admin, pendente deploy/config
+
+O Admin/Supabase passa a controlar qual versão do app é liberada. O upload no R2 não libera atualização sozinho.
+
+- Tabela governada: `app_releases`
+- Auditoria: `app_release_audit`
+- Edge Function: `get-current-app-release`
+- Secret interno: `PORTER_UPDATE_INTERNAL_SECRET`
+- Handoff completo: `docs/relatorio-releases-app.md`
+
+Contrato do Worker:
+
+```http
+GET https://aifadvyxsefxfcgzgqol.supabase.co/functions/v1/get-current-app-release?channel=stable
+X-Porter-Update-Secret: <PORTER_UPDATE_INTERNAL_SECRET>
+```
+
+O Worker deve usar `manifest_key` para montar `/stable/latest.yml`. O último arquivo enviado ao R2 não é necessariamente a versão liberada.
