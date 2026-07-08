@@ -11,8 +11,9 @@ import { MusicasPage } from "@/features/musicas/MusicasPage";
 import { OverviewPage } from "@/features/overview/OverviewPage";
 import { LogsPage } from "@/features/logs/LogsPage";
 import { AtualizacoesPage } from "@/features/atualizacoes/AtualizacoesPage";
+import { AnalyticsPage } from "@/features/analytics/AnalyticsPage";
 import { ComingSoonPage } from "@/components/shared";
-import { BarChart3, Puzzle, ClipboardList, Code2 } from "lucide-react";
+import { Puzzle, ClipboardList, Code2 } from "lucide-react";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -79,11 +80,11 @@ export default function App() {
                 element={
                   <ComingSoonPage
                     title="Challenges"
-                    description="Desafios e regras de engajamento para os operadores."
+                    description="Desafios e regras de engajamento para os Operadores."
                     icon={Puzzle}
                     planned={[
                       "Criação de desafios e regras",
-                      "Metas por operador e por condomínio",
+                      "Metas por Operador e por condomínio",
                       "Acompanhamento do progresso",
                       "Recompensas e reconhecimento",
                       "Histórico de desafios encerrados",
@@ -93,23 +94,7 @@ export default function App() {
               />
               <Route path="/musicas" element={<MusicasPage />} />
               <Route path="/feedback" element={<FeedbackPage />} />
-              <Route
-                path="/analytics"
-                element={
-                  <ComingSoonPage
-                    title="Analytics"
-                    description="Indicadores avançados da operação, presença e engajamento dos operadores."
-                    icon={BarChart3}
-                    planned={[
-                      "Métricas por condomínio",
-                      "Evolução das sessões ao longo do tempo",
-                      "Tempo ocioso e em atendimento",
-                      "Ranking operacional dos operadores",
-                      "Exportação de relatórios",
-                    ]}
-                  />
-                }
-              />
+              <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route
                 path="/auditoria"
@@ -127,10 +112,7 @@ export default function App() {
                   />
                 }
               />
-              <Route
-                path="/atualizacoes"
-                element={<AtualizacoesPage />}
-              />
+              <Route path="/atualizacoes" element={<AtualizacoesPage />} />
               <Route
                 path="/integracao"
                 element={

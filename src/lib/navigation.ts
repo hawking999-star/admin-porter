@@ -17,7 +17,7 @@ export type NavItem = {
   label: string;
   description: string;
   icon: LucideIcon;
-  /** false = tela ainda não construída (mostra "Em breve") */
+  /** false = tela ainda nao construida (mostra "Em breve") */
   ready?: boolean;
 };
 
@@ -36,14 +36,14 @@ export const navGroups: NavGroup[] = [
     label: "Engajamento",
     items: [
       { to: "/challenges", label: "Challenges", description: "Desafios e regras", icon: Puzzle },
-      { to: "/musicas", label: "Músicas", description: "Playlists dos operadores", icon: Music, ready: true },
-      { to: "/feedback", label: "Feedback", description: "Retornos dos operadores", icon: MessageSquare, ready: true },
+      { to: "/musicas", label: "Músicas", description: "Playlists dos Operadores", icon: Music, ready: true },
+      { to: "/feedback", label: "Feedback", description: "Retornos dos Operadores", icon: MessageSquare, ready: true },
     ],
   },
   {
     label: "Sistema",
     items: [
-      { to: "/analytics", label: "Analytics", description: "Relatórios e métricas", icon: BarChart3 },
+      { to: "/analytics", label: "Analytics", description: "Relatórios e métricas", icon: BarChart3, ready: true },
       { to: "/logs", label: "Logs", description: "Eventos e diagnóstico", icon: ClipboardList, ready: true },
       { to: "/auditoria", label: "Auditoria", description: "Ações administrativas", icon: ClipboardList },
       { to: "/atualizacoes", label: "Atualizações", description: "Versões do app", icon: BellRing, ready: true },
