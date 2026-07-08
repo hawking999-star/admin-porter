@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -53,7 +53,8 @@ import {
 } from "@/components/ui/sheet";
 import {
   archiveSecondaryPlaylist,
-  listOperatorMusicLibrary,
+  countPlaylistStats,
+  listOperatorMusicLibraryPage,
   listPlaylists,
   removePlaylistTrack,
   renameMusicPlaylist,
@@ -66,7 +67,8 @@ import {
   type OperatorRequestHistory,
   type Playlist,
 } from "./queries";
-import { StatCard } from "@/components/shared";
+import { PaginationFooter, StatCard } from "@/components/shared";
+import { useDebounce } from "@/hooks/useDebounce";
 import {
   OperatorAvatar,
   PlatformIcon,
@@ -204,42 +206,20 @@ async function copy(text: string) {
 
 export function MusicasPage() {
   const qc = useQueryClient();
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["playlists"],
-    queryFn: listPlaylists,
-    staleTime: 30_000,
-    // enquanto houver download na fila/rodando, atualiza sozinho a cada 5s
-    refetchInterval: (query) => {
-      const rows = query.state.data as Playlist[] | undefined;
-      const active = rows?.some(
-        (p) =>
-          p.import_status === "processing" ||
-          p.download?.status === "queued" ||
-          p.download?.status === "running",
-      );
-      return active ? 5000 : false;
-    },
-  });
-  const libraryQuery = useQuery({
-    queryKey: ["music-library"],
-    queryFn: listOperatorMusicLibrary,
-    staleTime: 30_000,
-    refetchInterval: (query) => {
-      const rows = query.state.data as OperatorMusicLibrary[] | undefined;
-      const active = rows?.some((operator) =>
-        operator.playlists.some((p) => p.import_status === "processing"),
-      );
-      return active ? 5000 : false;
-    },
-  });
-
   const [activeArea, setActiveArea] = useState<"requests" | "library">("requests");
   const [search, setSearch] = useState("");
   const [librarySearch, setLibrarySearch] = useState("");
+  const [requestsPage, setRequestsPage] = useState(1);
+  const [libraryPage, setLibraryPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [platformFilter, setPlatformFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
+  const [operatorRequestFilter, setOperatorRequestFilter] = useState<string | null>(null);
+  const requestsPageSize = 20;
+  const libraryPageSize = 12;
+  const debouncedSearch = useDebounce(search, 350);
+  const debouncedLibrarySearch = useDebounce(librarySearch, 350);
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [selectedOperatorId, setSelectedOperatorId] = useState<string | null>(null);
@@ -258,11 +238,95 @@ export function MusicasPage() {
   const [notes, setNotes] = useState<Record<string, string>>(() => loadNotes());
   const [noteDraft, setNoteDraft] = useState("");
 
+  useEffect(() => {
+    setRequestsPage(1);
+  }, [debouncedSearch, statusFilter, typeFilter, platformFilter, dateFilter, operatorRequestFilter]);
+
+  useEffect(() => {
+    setLibraryPage(1);
+  }, [debouncedLibrarySearch]);
+
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+    queryKey: [
+      "playlists",
+      requestsPage,
+      requestsPageSize,
+      debouncedSearch,
+      statusFilter,
+      typeFilter,
+      platformFilter,
+      dateFilter,
+      operatorRequestFilter,
+    ],
+    queryFn: () =>
+      listPlaylists({
+        page: requestsPage,
+        pageSize: requestsPageSize,
+        search: debouncedSearch,
+        operatorId: operatorRequestFilter,
+        status: statusFilter,
+        type: typeFilter,
+        platform: platformFilter,
+        date: dateFilter as "all" | "today" | "7d" | "30d",
+      }),
+    staleTime: 30_000,
+    enabled: activeArea === "requests",
+    refetchInterval: (query) => {
+      const rows = query.state.data?.rows;
+      const active = rows?.some(
+        (p) =>
+          p.import_status === "processing" ||
+          p.download?.status === "queued" ||
+          p.download?.status === "running",
+      );
+      return active ? 5000 : false;
+    },
+  });
+  const statsQuery = useQuery({
+    queryKey: ["playlist-stats"],
+    queryFn: countPlaylistStats,
+    staleTime: 30_000,
+  });
+  const libraryQuery = useQuery({
+    queryKey: ["music-library", libraryPage, libraryPageSize, debouncedLibrarySearch],
+    queryFn: () =>
+      listOperatorMusicLibraryPage({
+        page: libraryPage,
+        pageSize: libraryPageSize,
+        search: debouncedLibrarySearch,
+      }),
+    staleTime: 30_000,
+    enabled: activeArea === "library",
+    refetchInterval: (query) => {
+      const rows = query.state.data?.rows;
+      const active = rows?.some((operator) =>
+        operator.playlists.some((p) => p.import_status === "processing"),
+      );
+      return active ? 5000 : false;
+    },
+  });
+
   const toggle = (cur: string, val: string, set: (v: string) => void) =>
     set(cur === val ? "all" : val);
+  const requestHasFilters =
+    Boolean(debouncedSearch.trim()) ||
+    statusFilter !== "all" ||
+    typeFilter !== "all" ||
+    platformFilter !== "all" ||
+    dateFilter !== "all" ||
+    Boolean(operatorRequestFilter);
+  const clearRequestFilters = () => {
+    setSearch("");
+    setStatusFilter("all");
+    setTypeFilter("all");
+    setPlatformFilter("all");
+    setDateFilter("all");
+    setOperatorRequestFilter(null);
+  };
 
   const invalidateMusic = () => {
     qc.invalidateQueries({ queryKey: ["playlists"] });
+    qc.invalidateQueries({ queryKey: ["playlist-stats"] });
     qc.invalidateQueries({ queryKey: ["music-library"] });
   };
 
@@ -339,111 +403,46 @@ export function MusicasPage() {
     },
   });
 
+  const playlists = data?.rows ?? [];
+  const playlistsTotal = data?.total ?? 0;
   const withPlatform = useMemo(
-    () => (data ?? []).map((p) => ({ p, platform: detectPlatform(p.source_url) })),
-    [data],
+    () => playlists.map((p) => ({ p, platform: detectPlatform(p.source_url) })),
+    [playlists],
   );
-
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    const now = Date.now();
-    const startToday = new Date();
-    startToday.setHours(0, 0, 0, 0);
-    return withPlatform.filter(({ p, platform }) => {
-      if (statusFilter === "import_failed" && p.import_status !== "failed") return false;
-      if (statusFilter !== "all" && statusFilter !== "import_failed" && p.approval_status !== statusFilter) {
-        return false;
-      }
-      if (typeFilter !== "all" && p.type !== typeFilter) return false;
-      if (platformFilter !== "all" && platform !== platformFilter) return false;
-      if (dateFilter !== "all") {
-        if (!p.submitted_at) return false;
-        const t = new Date(p.submitted_at).getTime();
-        if (dateFilter === "today" && new Date(p.submitted_at) < startToday) return false;
-        if (dateFilter === "7d" && now - t > 7 * 86400000) return false;
-        if (dateFilter === "30d" && now - t > 30 * 86400000) return false;
-      }
-      if (!term) return true;
-      const hay = [
-        p.operator_name,
-        p.unit_name,
-        p.source_url,
-        p.approval_status,
-        p.import_status,
-        p.rejection_reason,
-        playlistImportError(p),
-        p.error_code,
-        p.download?.error_code,
-        platform === "spotify" ? "spotify" : "",
-        platform === "youtube" ? "youtube" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(term);
-    });
-  }, [withPlatform, search, statusFilter, typeFilter, platformFilter, dateFilter]);
-
-  const stats = useMemo(() => {
-    const all = data ?? [];
-    const startToday = new Date();
-    startToday.setHours(0, 0, 0, 0);
-    const now = Date.now();
-    const sent = all.filter((p) => p.submitted_at);
-    return {
-      pending: all.filter((p) => p.approval_status === "pending").length,
-      approved: all.filter((p) => p.approval_status === "approved").length,
-      rejected: all.filter((p) => p.approval_status === "rejected").length,
-      importFailed: all.filter((p) => p.import_status === "failed").length,
-      today: sent.filter((p) => new Date(p.submitted_at!) >= startToday).length,
-      week: sent.filter((p) => now - new Date(p.submitted_at!).getTime() <= 7 * 86400000).length,
-    };
-  }, [data]);
+  const filtered = withPlatform;
+  const stats = statsQuery.data ?? {
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+    importFailed: 0,
+    today: 0,
+    week: 0,
+  };
 
   const libraryStats = useMemo(() => {
-    const rows = libraryQuery.data ?? [];
+    const rows = libraryQuery.data?.rows ?? [];
     return {
-      operators: rows.length,
+      operators: libraryQuery.data?.total ?? 0,
       withPlaylists: rows.filter((operator) => operator.playlists.length > 0).length,
       totalTracks: rows.reduce((sum, operator) => sum + operatorTotals(operator).tracks, 0),
       failedImports: rows.reduce((sum, operator) => sum + operatorTotals(operator).failed, 0),
     };
   }, [libraryQuery.data]);
 
-  const filteredOperators = useMemo(() => {
-    const term = librarySearch.trim().toLowerCase();
-    const rows = libraryQuery.data ?? [];
-    if (!term) return rows;
-    return rows.filter((operator) => {
-      const hay = [
-        operator.display_name,
-        operator.username,
-        operator.email,
-        operator.unit_name,
-        operator.unit_city,
-        operator.unit_state,
-        operator.active ? "ativo" : "inativo",
-        ...operator.playlists.map((p) => p.name),
-        ...operator.playlists.map((p) => p.source_url),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(term);
-    });
-  }, [libraryQuery.data, librarySearch]);
+  const operators = libraryQuery.data?.rows ?? [];
+  const operatorsTotal = libraryQuery.data?.total ?? 0;
 
   const detail = useMemo(
-    () => (data ?? []).find((p) => p.id === detailId) ?? null,
-    [data, detailId],
+    () => playlists.find((p) => p.id === detailId) ?? null,
+    [playlists, detailId],
   );
   const selectedOperator = useMemo(
-    () => (libraryQuery.data ?? []).find((operator) => operator.id === selectedOperatorId) ?? null,
-    [libraryQuery.data, selectedOperatorId],
+    () => operators.find((operator) => operator.id === selectedOperatorId) ?? null,
+    [operators, selectedOperatorId],
   );
   const confirmPlaylist = useMemo(
-    () => (data ?? []).find((p) => p.id === confirmState?.id) ?? null,
-    [data, confirmState],
+    () => playlists.find((p) => p.id === confirmState?.id) ?? null,
+    [playlists, confirmState],
   );
 
   const saveNote = (id: string) => {
@@ -517,6 +516,7 @@ export function MusicasPage() {
             hint="Aguardando aprovação"
             active={statusFilter === "pending"}
             onClick={() => toggle(statusFilter, "pending", setStatusFilter)}
+            loading={statsQuery.isLoading}
           />
           <StatCard
             icon={<CheckCircle2 className="h-5 w-5" />}
@@ -526,6 +526,7 @@ export function MusicasPage() {
             hint={`${stats.today} enviadas hoje`}
             active={statusFilter === "approved"}
             onClick={() => toggle(statusFilter, "approved", setStatusFilter)}
+            loading={statsQuery.isLoading}
           />
           <StatCard
             icon={<XCircle className="h-5 w-5" />}
@@ -534,6 +535,7 @@ export function MusicasPage() {
             value={stats.rejected}
             active={statusFilter === "rejected"}
             onClick={() => toggle(statusFilter, "rejected", setStatusFilter)}
+            loading={statsQuery.isLoading}
           />
           <StatCard
             icon={<AlertTriangle className="h-5 w-5" />}
@@ -542,6 +544,7 @@ export function MusicasPage() {
             value={stats.importFailed}
             active={statusFilter === "import_failed"}
             onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)}
+            loading={statsQuery.isLoading}
           />
         </div>
       )}
@@ -560,10 +563,13 @@ export function MusicasPage() {
               className="h-10 rounded-lg pl-9"
             />
           </div>
-          {data && (
-            <span className="ml-auto text-sm text-muted-foreground">
-              {filtered.length} de {data.length}
-            </span>
+          <span className="ml-auto text-sm text-muted-foreground">
+            {filtered.length} de {playlistsTotal}
+          </span>
+          {requestHasFilters && (
+            <Button variant="outline" size="sm" onClick={clearRequestFilters}>
+              Limpar filtros
+            </Button>
           )}
         </div>
 
@@ -629,6 +635,16 @@ export function MusicasPage() {
         </div>
       )}
 
+      {!isError && (
+        <PaginationFooter
+          page={requestsPage}
+          pageSize={requestsPageSize}
+          total={playlistsTotal}
+          isLoading={isLoading || isFetching}
+          onPageChange={setRequestsPage}
+        />
+      )}
+
         </>
       ) : (
         <>
@@ -663,8 +679,11 @@ export function MusicasPage() {
           />
         </div>
         <MusicLibrarySection
-          operators={filteredOperators}
+          operators={operators}
           search={librarySearch}
+          page={libraryPage}
+          pageSize={libraryPageSize}
+          total={operatorsTotal}
           loading={libraryQuery.isLoading}
           error={libraryQuery.error as Error | null}
           refreshing={libraryQuery.isFetching}
@@ -675,13 +694,15 @@ export function MusicasPage() {
             retryMutation.isPending
           }
           onSearchChange={setLibrarySearch}
+          onPageChange={setLibraryPage}
           onRefresh={() => libraryQuery.refetch()}
           onOpenOperator={(operator) => {
             setSelectedOperatorId(operator.id);
             setSelectedPlaylistId(operator.playlists[0]?.id ?? null);
           }}
           onViewRequests={(operator) => {
-            setSearch(operator.display_name);
+            setSearch("");
+            setOperatorRequestFilter(operator.id);
             setActiveArea("requests");
           }}
         />
@@ -935,22 +956,30 @@ function AreaButton({
 function MusicLibrarySection({
   operators,
   search,
+  page,
+  pageSize,
+  total,
   loading,
   error,
   refreshing,
   busy,
   onSearchChange,
+  onPageChange,
   onRefresh,
   onOpenOperator,
   onViewRequests,
 }: {
   operators: OperatorMusicLibrary[];
   search: string;
+  page: number;
+  pageSize: number;
+  total: number;
   loading: boolean;
   error: Error | null;
   refreshing: boolean;
   busy: boolean;
   onSearchChange: (value: string) => void;
+  onPageChange: (page: number) => void;
   onRefresh: () => void;
   onOpenOperator: (operator: OperatorMusicLibrary) => void;
   onViewRequests: (operator: OperatorMusicLibrary) => void;
@@ -1001,6 +1030,15 @@ function MusicLibrarySection({
             />
           ))}
         </div>
+      )}
+      {!error && (
+        <PaginationFooter
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          isLoading={loading || refreshing}
+          onPageChange={onPageChange}
+        />
       )}
     </div>
   );

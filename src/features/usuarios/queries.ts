@@ -1,5 +1,15 @@
 import { supabase } from "@/lib/supabase";
 
+export type PaginatedResult<T> = {
+  rows: T[];
+  total: number;
+};
+
+export type PageParams = {
+  page: number;
+  pageSize: number;
+};
+
 /* ------------------------------- Rótulos --------------------------------- */
 
 export const OPERATOR_ROLES = [
@@ -134,16 +144,53 @@ export type OperatorUpdateInput = {
   active: boolean;
 };
 
-export async function listOperators(): Promise<Operator[]> {
-  const { data, error } = await supabase
+export type OperatorFilters = PageParams & {
+  search?: string;
+  unitId?: string;
+  active?: "all" | "active" | "inactive";
+  role?: "all" | string;
+};
+
+export type OperatorStats = {
+  active: number;
+  inactive: number;
+  supervisors: number;
+  noLogin: number;
+};
+
+function pageRange(page: number, pageSize: number) {
+  const from = Math.max(0, page - 1) * pageSize;
+  return { from, to: from + pageSize - 1 };
+}
+
+export async function listOperators(filters: OperatorFilters): Promise<PaginatedResult<Operator>> {
+  const { from, to } = pageRange(filters.page, filters.pageSize);
+  const term = filters.search?.trim();
+
+  let query = supabase
     .from("operators")
     .select(
       "id, display_name, username, unit_id, role, session_policy, active, auth_user_id, units(name, city, state), shifts(name, starts_at, ends_at)",
+      { count: "exact" },
     )
     .order("display_name");
+
+  if (term) {
+    const clean = term.replace(/[%,()]/g, "");
+    if (clean) {
+      const pattern = `%${clean}%`;
+      query = query.or(`display_name.ilike.${pattern},username.ilike.${pattern}`);
+    }
+  }
+  if (filters.unitId && filters.unitId !== "all") query = query.eq("unit_id", filters.unitId);
+  if (filters.active === "active") query = query.eq("active", true);
+  if (filters.active === "inactive") query = query.eq("active", false);
+  if (filters.role && filters.role !== "all") query = query.eq("role", filters.role);
+
+  const { data, error, count } = await query.range(from, to);
   if (error) throw error;
 
-  return (data ?? []).map((o: any) => ({
+  const rows = (data ?? []).map((o: any) => ({
     id: o.id,
     display_name: o.display_name,
     username: o.username ?? null,
@@ -159,6 +206,27 @@ export async function listOperators(): Promise<Operator[]> {
     shift_start: o.shifts?.starts_at ?? null,
     shift_end: o.shifts?.ends_at ?? null,
   }));
+
+  return { rows, total: count ?? 0 };
+}
+
+export async function countOperatorStats(): Promise<OperatorStats> {
+  const [active, inactive, supervisors, noLogin] = await Promise.all([
+    supabase.from("operators").select("id", { count: "exact", head: true }).eq("active", true),
+    supabase.from("operators").select("id", { count: "exact", head: true }).eq("active", false),
+    supabase.from("operators").select("id", { count: "exact", head: true }).eq("role", "supervisor"),
+    supabase.from("operators").select("id", { count: "exact", head: true }).is("auth_user_id", null),
+  ]);
+
+  const error = active.error ?? inactive.error ?? supervisors.error ?? noLogin.error;
+  if (error) throw error;
+
+  return {
+    active: active.count ?? 0,
+    inactive: inactive.count ?? 0,
+    supervisors: supervisors.count ?? 0,
+    noLogin: noLogin.count ?? 0,
+  };
 }
 
 /** Define/atualiza o turno do operador (12x36 fixo; 6x1 com horário). */

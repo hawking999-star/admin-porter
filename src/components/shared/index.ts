@@ -12,4 +12,5 @@ export { ErrorState, RetryButton } from "./ErrorState";
 export { SearchInput } from "./SearchInput";
 export { FilterBar } from "./FilterBar";
 export { DataTable } from "./DataTable";
+export { PaginationFooter } from "./PaginationFooter";
 export { PageHeader } from "@/components/layout/PageHeader";

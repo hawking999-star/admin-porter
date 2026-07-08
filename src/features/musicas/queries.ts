@@ -1,5 +1,15 @@
 import { supabase } from "@/lib/supabase";
 
+export type PaginatedResult<T> = {
+  rows: T[];
+  total: number;
+};
+
+export type PageParams = {
+  page: number;
+  pageSize: number;
+};
+
 /* -------------------------------- Rótulos -------------------------------- */
 
 export const PLAYLIST_STATUSES = [
@@ -67,6 +77,29 @@ export type Playlist = {
   download: DownloadJob | null;
 };
 
+export type PlaylistFilters = PageParams & {
+  search?: string;
+  operatorId?: string | null;
+  status?: "all" | string;
+  type?: "all" | string;
+  platform?: "all" | string;
+  date?: "all" | "today" | "7d" | "30d";
+};
+
+export type PlaylistStats = {
+  pending: number;
+  approved: number;
+  rejected: number;
+  importFailed: number;
+  today: number;
+  week: number;
+};
+
+function pageRange(page: number, pageSize: number) {
+  const from = Math.max(0, page - 1) * pageSize;
+  return { from, to: from + pageSize - 1 };
+}
+
 function importStatusFromDownload(download: DownloadJob | null): PlaylistImportStatus {
   if (!download) return "not_started";
   if (download.status === "queued" || download.status === "running") return "processing";
@@ -75,17 +108,48 @@ function importStatusFromDownload(download: DownloadJob | null): PlaylistImportS
   return "not_started";
 }
 
-export async function listPlaylists(): Promise<Playlist[]> {
-  const { data, error } = await supabase
+export async function listPlaylists(filters: PlaylistFilters): Promise<PaginatedResult<Playlist>> {
+  const { from, to } = pageRange(filters.page, filters.pageSize);
+  const term = filters.search?.trim();
+
+  let query = supabase
     .from("playlists")
     .select(
       "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, created_at)",
+      { count: "exact" },
     )
     .order("submitted_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
+
+  if (filters.status === "import_failed") query = query.eq("import_status", "failed");
+  if (filters.operatorId) query = query.eq("created_by_operator_id", filters.operatorId);
+  if (filters.status && filters.status !== "all" && filters.status !== "import_failed") {
+    query = query.eq("approval_status", filters.status);
+  }
+  if (filters.type && filters.type !== "all") query = query.eq("type", filters.type);
+  if (filters.platform === "spotify") query = query.ilike("source_url", "%spotify%");
+  if (filters.platform === "youtube") query = query.or("source_url.ilike.%youtube%,source_url.ilike.%youtu.be%");
+  if (filters.date && filters.date !== "all") {
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    if (filters.date === "7d") since.setDate(since.getDate() - 7);
+    if (filters.date === "30d") since.setDate(since.getDate() - 30);
+    query = query.gte("submitted_at", since.toISOString());
+  }
+  if (term) {
+    const clean = term.replace(/[%,()]/g, "");
+    if (clean) {
+      const pattern = `%${clean}%`;
+      query = query.or(
+        `source_url.ilike.${pattern},approval_status.ilike.${pattern},import_status.ilike.${pattern},rejection_reason.ilike.${pattern},error_message.ilike.${pattern},error_code.ilike.${pattern}`,
+      );
+    }
+  }
+
+  const { data, error, count } = await query.range(from, to);
   if (error) throw error;
 
-  return (data ?? []).map((p: any) => {
+  const rows = (data ?? []).map((p: any) => {
     // pega o job de download mais recente da playlist (se houver)
     const jobs = Array.isArray(p.download_jobs) ? p.download_jobs : [];
     const latest = jobs
@@ -145,6 +209,36 @@ export async function listPlaylists(): Promise<Playlist[]> {
       ),
     };
   });
+
+  return { rows, total: count ?? 0 };
+}
+
+export async function countPlaylistStats(): Promise<PlaylistStats> {
+  const startToday = new Date();
+  startToday.setHours(0, 0, 0, 0);
+  const startWeek = new Date();
+  startWeek.setDate(startWeek.getDate() - 7);
+
+  const [pending, approved, rejected, importFailed, today, week] = await Promise.all([
+    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "pending"),
+    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "approved"),
+    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "rejected"),
+    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("import_status", "failed"),
+    supabase.from("playlists").select("id", { count: "exact", head: true }).gte("submitted_at", startToday.toISOString()),
+    supabase.from("playlists").select("id", { count: "exact", head: true }).gte("submitted_at", startWeek.toISOString()),
+  ]);
+
+  const error = pending.error ?? approved.error ?? rejected.error ?? importFailed.error ?? today.error ?? week.error;
+  if (error) throw error;
+
+  return {
+    pending: pending.count ?? 0,
+    approved: approved.count ?? 0,
+    rejected: rejected.count ?? 0,
+    importFailed: importFailed.count ?? 0,
+    today: today.count ?? 0,
+    week: week.count ?? 0,
+  };
 }
 
 export async function reviewPlaylist(
@@ -235,10 +329,31 @@ export type OperatorMusicLibrary = {
   request_history: OperatorRequestHistory[];
 };
 
+export type MusicLibraryFilters = PageParams & {
+  search?: string;
+};
+
 export async function listOperatorMusicLibrary(): Promise<OperatorMusicLibrary[]> {
   const { data, error } = await supabase.rpc("admin_music_library");
   if (error) throw error;
   return (Array.isArray(data) ? data : []) as OperatorMusicLibrary[];
+}
+
+export async function listOperatorMusicLibraryPage(
+  filters: MusicLibraryFilters,
+): Promise<PaginatedResult<OperatorMusicLibrary>> {
+  const { data, error } = await supabase.rpc("admin_music_library_page", {
+    p_limit: filters.pageSize,
+    p_offset: Math.max(0, filters.page - 1) * filters.pageSize,
+    p_search: filters.search?.trim() || null,
+  });
+  if (error) throw error;
+
+  const payload = (data ?? {}) as { rows?: unknown; total?: unknown };
+  return {
+    rows: (Array.isArray(payload.rows) ? payload.rows : []) as OperatorMusicLibrary[],
+    total: typeof payload.total === "number" ? payload.total : 0,
+  };
 }
 
 export async function renameMusicPlaylist(id: string, name: string): Promise<void> {
