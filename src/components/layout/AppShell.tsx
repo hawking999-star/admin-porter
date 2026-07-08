@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { navGroups } from "@/lib/navigation";
+import { APP_ENVIRONMENT, APP_VERSION } from "@/lib/appInfo";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -10,7 +11,7 @@ export function AppShell() {
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
+      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col overflow-x-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
         <div className="flex items-center gap-2 px-5 py-5">
           <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground">
             PTM
@@ -63,21 +64,36 @@ export function AppShell() {
           ))}
         </nav>
 
-        <div className="border-t border-sidebar-border px-4 py-3">
-          <div className="mb-2 flex items-center gap-2 text-[11px] text-sidebar-foreground/60">
-            <span className="h-2 w-2 rounded-full bg-success" />
-            PRODUÇÃO · V0.1
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-xs text-sidebar-foreground/60">{session?.user.email}</span>
+        <div className="shrink-0 border-t border-sidebar-border px-4 pb-4 pt-3">
+          <dl className="space-y-2 text-[11px]">
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-sidebar-foreground/50">Ambiente</dt>
+              <dd className="flex items-center gap-1.5 font-medium text-sidebar-foreground/90">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
+                {APP_ENVIRONMENT}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-sidebar-foreground/50">Versão</dt>
+              <dd className="font-medium tabular-nums text-sidebar-foreground/90">v{APP_VERSION}</dd>
+            </div>
+          </dl>
+          <div className="mt-3 flex items-center gap-1.5 rounded-md border border-sidebar-border bg-sidebar-accent/40 py-1.5 pl-2.5 pr-1.5">
+            <span
+              className="min-w-0 flex-1 truncate text-xs text-sidebar-foreground/80"
+              title={session?.user.email ?? undefined}
+            >
+              {session?.user.email}
+            </span>
             <Button
               variant="ghost"
               size="icon"
               onClick={signOut}
               title="Sair"
-              className="text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+              aria-label="Sair"
+              className="h-7 w-7 shrink-0 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
             >
-              <LogOut className="h-4 w-4" />
+              <LogOut className="h-3.5 w-3.5" />
             </Button>
           </div>
         </div>
@@ -93,7 +109,7 @@ export function AppShell() {
               <div className="leading-tight">
                 <div className="font-display text-sm font-semibold">PTM Admin</div>
                 <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                  Produção · V0.1
+                  {APP_ENVIRONMENT} · v{APP_VERSION}
                 </div>
               </div>
             </div>
