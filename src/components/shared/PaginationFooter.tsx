@@ -1,4 +1,13 @@
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 type PaginationFooterProps = {
   page: number;
@@ -6,6 +15,7 @@ type PaginationFooterProps = {
   total: number;
   isLoading?: boolean;
   onPageChange: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
 };
 
 export function PaginationFooter({
@@ -14,6 +24,7 @@ export function PaginationFooter({
   total,
   isLoading = false,
   onPageChange,
+  onPageSizeChange,
 }: PaginationFooterProps) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -22,9 +33,27 @@ export function PaginationFooter({
   return (
     <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
       <span>
-        {total === 0 ? "Nenhum registro" : `${from}-${to} de ${total}`}
+        {total === 0 ? "Nenhum registro" : `Mostrando ${from}-${to} de ${total} registros`}
       </span>
       <div className="flex items-center gap-2">
+        {onPageSizeChange && (
+          <Select
+            value={String(pageSize)}
+            onValueChange={(value) => onPageSizeChange(Number(value))}
+            disabled={isLoading}
+          >
+            <SelectTrigger className="h-8 w-[118px] rounded-md">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PAGE_SIZE_OPTIONS.map((option) => (
+                <SelectItem key={option} value={String(option)}>
+                  {option} por pagina
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Button
           type="button"
           variant="outline"

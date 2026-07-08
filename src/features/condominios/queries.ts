@@ -98,7 +98,8 @@ export async function listUnits(filters: UnitFilters): Promise<PaginatedResult<U
       .from("operators")
       .select("unit_id")
       .eq("active", true)
-      .in("unit_id", unitIds);
+      .in("unit_id", unitIds)
+      .limit(10000);
     if (opErr) throw opErr;
 
     for (const op of (operators ?? []) as { unit_id: string | null }[]) {

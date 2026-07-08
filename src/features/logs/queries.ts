@@ -19,6 +19,22 @@ export type LogEntry = {
   detail: string | null;
 };
 
+export type LogFilters = {
+  page: number;
+  pageSize: number;
+  search?: string;
+  category?: LogCategory | "all";
+  level?: LogLevel | "all";
+  actor?: string;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+export type LogPage = {
+  rows: LogEntry[];
+  total: number;
+};
+
 export const LOG_CATEGORIES: { value: LogCategory | "all"; label: string }[] = [
   { value: "all", label: "Todas as categorias" },
   { value: "sessao", label: "Sessões" },
@@ -158,31 +174,113 @@ function sourceLabel(value: string | null | undefined): string | null {
 
 /* -------------------------------- Query ---------------------------------- */
 
-export async function fetchLogs(): Promise<LogEntry[]> {
+function cleanTerm(value: string | undefined) {
+  return value?.trim().replace(/[%,()]/g, "") ?? "";
+}
+
+function sourceRange(page: number, pageSize: number, sourceCount: number, singleSource: boolean) {
+  const size = singleSource ? pageSize : Math.max(1, Math.ceil(pageSize / sourceCount));
+  const from = Math.max(0, page - 1) * size;
+  return { from, to: from + size - 1 };
+}
+
+function applyDateRange(query: any, column: string, filters: LogFilters) {
+  let q = query;
+  if (filters.dateFrom) q = q.gte(column, new Date(`${filters.dateFrom}T00:00:00`).toISOString());
+  if (filters.dateTo) q = q.lte(column, new Date(`${filters.dateTo}T23:59:59`).toISOString());
+  return q;
+}
+
+function actorMatches(entry: LogEntry, actor: string) {
+  if (!actor) return true;
+  return (entry.actor ?? "").toLowerCase().includes(actor.toLowerCase());
+}
+
+function levelMatches(entry: LogEntry, level: LogLevel | "all" | undefined) {
+  return !level || level === "all" || entry.level === level;
+}
+
+function textMatches(entry: LogEntry, term: string) {
+  if (!term) return true;
+  const haystack = [entry.title, entry.detail, entry.actor, categoryLabel(entry.category), entry.level]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(term.toLowerCase());
+}
+
+export async function fetchLogs(filters: LogFilters): Promise<LogPage> {
+  const selectedSources =
+    filters.category && filters.category !== "all"
+      ? [filters.category]
+      : (["status", "sessao", "importacao", "evento"] as LogCategory[]);
+  const singleSource = selectedSources.length === 1;
+  const range = sourceRange(filters.page, filters.pageSize, selectedSources.length, singleSource);
+  const term = cleanTerm(filters.search);
+
+  const requests = {
+    status: selectedSources.includes("status")
+      ? applyDateRange(
+          supabase
+            .from("operator_status_history")
+            .select("id, from_status, to_status, reason_code, source, occurred_at, operators(display_name)", { count: "exact" })
+            .order("occurred_at", { ascending: false }),
+          "occurred_at",
+          filters,
+        )
+          .or(term ? `from_status.ilike.%${term}%,to_status.ilike.%${term}%,reason_code.ilike.%${term}%,source.ilike.%${term}%` : "id.not.is.null")
+          .range(range.from, range.to)
+      : Promise.resolve({ data: [], error: null, count: 0 }),
+    sessao: selectedSources.includes("sessao")
+      ? applyDateRange(
+          supabase
+            .from("operator_sessions")
+            .select("id, status, started_at, ended_at, end_reason, operators(display_name)", { count: "exact" })
+            .order("started_at", { ascending: false }),
+          "started_at",
+          filters,
+        )
+          .or(term ? `status.ilike.%${term}%,end_reason.ilike.%${term}%` : "id.not.is.null")
+          .range(range.from, range.to)
+      : Promise.resolve({ data: [], error: null, count: 0 }),
+    importacao: selectedSources.includes("importacao")
+      ? applyDateRange(
+          supabase
+            .from("download_jobs")
+            .select(
+              "id, status, total, completed, failed, error_message, error_code, created_at, started_at, finished_at, last_error_at, playlists(name)",
+              { count: "exact" },
+            )
+            .order("created_at", { ascending: false }),
+          "created_at",
+          filters,
+        )
+          .or(term ? `status.ilike.%${term}%,error_message.ilike.%${term}%,error_code.ilike.%${term}%` : "id.not.is.null")
+          .range(range.from, range.to)
+      : Promise.resolve({ data: [], error: null, count: 0 }),
+    evento: selectedSources.includes("evento")
+      ? applyDateRange(
+          supabase
+            .from("operational_events")
+            .select("id, event_type, occurred_at, operators(display_name)", { count: "exact" })
+            .order("occurred_at", { ascending: false }),
+          "occurred_at",
+          filters,
+        )
+          .or(term ? `event_type.ilike.%${term}%` : "id.not.is.null")
+          .range(range.from, range.to)
+      : Promise.resolve({ data: [], error: null, count: 0 }),
+  };
+
   const [statuses, sessions, jobs, events] = await Promise.all([
-    supabase
-      .from("operator_status_history")
-      .select("id, from_status, to_status, reason_code, source, occurred_at, operators(display_name)")
-      .order("occurred_at", { ascending: false })
-      .limit(80),
-    supabase
-      .from("operator_sessions")
-      .select("id, status, started_at, ended_at, end_reason, operators(display_name)")
-      .order("started_at", { ascending: false })
-      .limit(50),
-    supabase
-      .from("download_jobs")
-      .select(
-        "id, status, total, completed, failed, error_message, error_code, created_at, started_at, finished_at, last_error_at, playlists(name)",
-      )
-      .order("created_at", { ascending: false })
-      .limit(50),
-    supabase
-      .from("operational_events")
-      .select("id, event_type, occurred_at, operators(display_name)")
-      .order("occurred_at", { ascending: false })
-      .limit(80),
+    requests.status,
+    requests.sessao,
+    requests.importacao,
+    requests.evento,
   ]);
+
+  const error = statuses.error ?? sessions.error ?? jobs.error ?? events.error;
+  if (error) throw error;
 
   const out: LogEntry[] = [];
 
@@ -253,8 +351,16 @@ export async function fetchLogs(): Promise<LogEntry[]> {
     });
   }
 
-  return out
+  const rows = out
     .filter((x) => !!x.occurred_at)
+    .filter((x) => levelMatches(x, filters.level))
+    .filter((x) => textMatches(x, term))
+    .filter((x) => actorMatches(x, cleanTerm(filters.actor)))
     .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime())
-    .slice(0, 150);
+    .slice(0, filters.pageSize);
+
+  return {
+    rows,
+    total: (statuses.count ?? 0) + (sessions.count ?? 0) + (jobs.count ?? 0) + (events.count ?? 0),
+  };
 }

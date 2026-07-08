@@ -334,9 +334,14 @@ export type MusicLibraryFilters = PageParams & {
 };
 
 export async function listOperatorMusicLibrary(): Promise<OperatorMusicLibrary[]> {
-  const { data, error } = await supabase.rpc("admin_music_library");
+  const { data, error } = await supabase.rpc("admin_music_library_page", {
+    p_limit: 100,
+    p_offset: 0,
+    p_search: null,
+  });
   if (error) throw error;
-  return (Array.isArray(data) ? data : []) as OperatorMusicLibrary[];
+  const payload = (data ?? {}) as { rows?: unknown };
+  return (Array.isArray(payload.rows) ? payload.rows : []) as OperatorMusicLibrary[];
 }
 
 export async function listOperatorMusicLibraryPage(

@@ -98,7 +98,7 @@ export function UsuariosPage() {
 function OperadoresTab() {
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
-  const pageSize = 25;
+  const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [unitFilter, setUnitFilter] = useState(searchParams.get("unit") ?? "all");
@@ -310,7 +310,19 @@ function OperadoresTab() {
       {!isLoading && !isError && rows.length > 0 && (
         <p className="mt-3 text-xs text-muted-foreground">Clique na linha para editar, ou use o menu de ações para ativar/desativar.</p>
       )}
-      {!isError && <PaginationFooter page={page} pageSize={pageSize} total={total} isLoading={isLoading || isFetching} onPageChange={setPage} />}
+      {!isError && (
+        <PaginationFooter
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          isLoading={isLoading || isFetching}
+          onPageChange={setPage}
+          onPageSizeChange={(value) => {
+            setPageSize(value);
+            setPage(1);
+          }}
+        />
+      )}
 
       <OperatorFormDialog open={dialogOpen} onOpenChange={setDialogOpen} operator={editing} />
 
@@ -344,13 +356,17 @@ function OperadoresTab() {
 }
 
 function AcessosTab() {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
-    queryKey: ["admin-users"],
-    queryFn: listAdminUsers,
+    queryKey: ["admin-users", page, pageSize],
+    queryFn: () => listAdminUsers({ page, pageSize }),
     staleTime: 30_000,
   });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AdminUser | null>(null);
+  const rows = data?.rows ?? [];
+  const total = data?.total ?? 0;
 
   return (
     <>
@@ -377,7 +393,7 @@ function AcessosTab() {
               <TableRow key={i}><TableCell colSpan={4}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
             ))}
 
-            {!isLoading && (data ?? []).length === 0 && (
+            {!isLoading && rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={4}>
                   <EmptyState icon={<ShieldCheck className="h-6 w-6" />} title="Nenhum acesso ao painel cadastrado." description="Os acessos administrativos aparecerão aqui após serem criados." />
@@ -385,7 +401,7 @@ function AcessosTab() {
               </TableRow>
             )}
 
-            {!isLoading && (data ?? []).map((a) => (
+            {!isLoading && rows.map((a) => (
               <TableRow key={a.id} className="cursor-pointer" onClick={() => { setEditing(a); setDialogOpen(true); }}>
                 <TableCell className="font-medium">{a.display_name}</TableCell>
                 <TableCell>{adminRoleLabel(a.role)}</TableCell>
@@ -395,6 +411,20 @@ function AcessosTab() {
             ))}
           </TableBody>
         </DataTable>
+      )}
+
+      {!isError && (
+        <PaginationFooter
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          isLoading={isLoading || isFetching}
+          onPageChange={setPage}
+          onPageSizeChange={(value) => {
+            setPageSize(value);
+            setPage(1);
+          }}
+        />
       )}
 
       <p className="mt-3 text-xs text-muted-foreground">

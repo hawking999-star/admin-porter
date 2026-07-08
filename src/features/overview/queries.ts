@@ -118,7 +118,9 @@ export type OperatorStatesResult = {
 export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   const { data, error } = await supabase
     .from("operator_states")
-    .select("operator_id, status, effective_at, operators(display_name, units(name))");
+    .select("operator_id, status, effective_at, operators(display_name, units(name))")
+    .order("effective_at", { ascending: false, nullsFirst: false })
+    .limit(100);
   if (error) throw error;
 
   const rows: OperatorStatusRow[] = (data ?? []).map((r: any) => ({

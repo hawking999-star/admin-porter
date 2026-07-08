@@ -177,7 +177,7 @@ function FeedbackCardSkeleton() {
 
 export function FeedbackPage() {
   const qc = useQueryClient();
-  const pageSize = 20;
+  const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -307,7 +307,19 @@ export function FeedbackPage() {
         </div>
       )}
 
-      {!isError && <PaginationFooter page={page} pageSize={pageSize} total={total} isLoading={isLoading || isFetching} onPageChange={setPage} />}
+      {!isError && (
+        <PaginationFooter
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          isLoading={isLoading || isFetching}
+          onPageChange={setPage}
+          onPageSizeChange={(value) => {
+            setPageSize(value);
+            setPage(1);
+          }}
+        />
+      )}
     </>
   );
 }

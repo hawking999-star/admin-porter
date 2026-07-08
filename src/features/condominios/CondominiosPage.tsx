@@ -57,7 +57,7 @@ import { CondominioFormDialog } from "./CondominioFormDialog";
 export function CondominiosPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const pageSize = 25;
+  const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
   const [page, setPage] = useState(1);
@@ -233,7 +233,19 @@ export function CondominiosPage() {
       {!isLoading && !isError && rows.length > 0 && (
         <p className="mt-3 text-xs text-muted-foreground">Clique na linha para editar, ou use o menu de ações para ver operadores e ativar/desativar.</p>
       )}
-      {!isError && <PaginationFooter page={page} pageSize={pageSize} total={total} isLoading={isLoading || isFetching} onPageChange={setPage} />}
+      {!isError && (
+        <PaginationFooter
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          isLoading={isLoading || isFetching}
+          onPageChange={setPage}
+          onPageSizeChange={(value) => {
+            setPageSize(value);
+            setPage(1);
+          }}
+        />
+      )}
 
       <CondominioFormDialog open={dialogOpen} onOpenChange={setDialogOpen} unit={editing} />
 

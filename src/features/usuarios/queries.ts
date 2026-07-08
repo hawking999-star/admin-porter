@@ -50,7 +50,8 @@ export async function listUnitOptions(): Promise<UnitOption[]> {
     .from("units")
     .select("id, name, city, state, code")
     .eq("active", true)
-    .order("name");
+    .order("name")
+    .limit(500);
   if (error) throw error;
   return (data ?? []) as UnitOption[];
 }
@@ -320,14 +321,16 @@ export type AdminUserInput = {
   mfa_required: boolean;
 };
 
-export async function listAdminUsers(): Promise<AdminUser[]> {
-  const { data, error } = await supabase
+export async function listAdminUsers(filters: PageParams): Promise<PaginatedResult<AdminUser>> {
+  const { from, to } = pageRange(filters.page, filters.pageSize);
+  const { data, error, count } = await supabase
     .from("admin_users")
-    .select("id, display_name, role, active, mfa_required, auth_user_id")
-    .order("display_name");
+    .select("id, display_name, role, active, mfa_required, auth_user_id", { count: "exact" })
+    .order("display_name")
+    .range(from, to);
   if (error) throw error;
 
-  return (data ?? []).map((a: any) => ({
+  const rows = (data ?? []).map((a: any) => ({
     id: a.id,
     display_name: a.display_name,
     role: a.role,
@@ -335,6 +338,8 @@ export async function listAdminUsers(): Promise<AdminUser[]> {
     mfa_required: a.mfa_required,
     has_login: Boolean(a.auth_user_id),
   }));
+
+  return { rows, total: count ?? 0 };
 }
 
 export async function updateAdminUser(id: string, input: AdminUserInput): Promise<void> {

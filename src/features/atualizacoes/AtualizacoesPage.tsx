@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Search,
   ShieldAlert,
+  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -49,13 +50,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, StatCard, ErrorState, RetryButton } from "@/components/shared";
+import { EmptyState, StatCard, ErrorState, RetryButton, PaginationFooter } from "@/components/shared";
+import { useDebounce } from "@/hooks/useDebounce";
 import {
   approveAppRelease,
   blockAppRelease,
+  countAppReleaseStats,
   createAppRelease,
+  getCurrentAppRelease,
   listAppReleases,
+  listReleasedNotes,
+  parseLatestYml,
   releaseAppRelease,
+  releaseContractErrors,
+  releaseFormErrors,
   releaseRequiredFieldsReady,
   rollbackAppRelease,
   sendAppReleaseToTesting,
@@ -127,14 +135,32 @@ function toInput(release: AppRelease): AppReleaseInput {
 
 export function AtualizacoesPage() {
   const qc = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState<ReleaseStatus | "all">("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const debouncedSearch = useDebounce(search, 350);
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["app-releases"],
-    queryFn: listAppReleases,
+    queryKey: ["app-releases", page, pageSize, debouncedSearch, status],
+    queryFn: () => listAppReleases({ page, pageSize, search: debouncedSearch, status }),
     staleTime: 20_000,
   });
+  const statsQuery = useQuery({
+    queryKey: ["app-release-stats"],
+    queryFn: countAppReleaseStats,
+    staleTime: 30_000,
+  });
+  const currentQuery = useQuery({
+    queryKey: ["app-release-current"],
+    queryFn: getCurrentAppRelease,
+    staleTime: 30_000,
+  });
+  const releasedNotesQuery = useQuery({
+    queryKey: ["app-release-notes"],
+    queryFn: listReleasedNotes,
+    staleTime: 30_000,
+  });
 
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<string>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AppRelease | null>(null);
   const [confirm, setConfirm] = useState<null | {
@@ -143,41 +169,23 @@ export function AtualizacoesPage() {
   }>(null);
   const [blockReason, setBlockReason] = useState("");
 
-  const releases = data ?? [];
-  const current = releases.find((r) => r.is_current && r.status === "released") ?? null;
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, status]);
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    return releases.filter((release) => {
-      if (status !== "all" && release.status !== status) return false;
-      if (!term) return true;
-      return [
-        release.version,
-        release.title,
-        release.channel,
-        release.status,
-        release.manifest_key,
-        release.installer_key,
-        release.release_notes,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(term);
-    });
-  }, [releases, search, status]);
+  const releases = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  const current = currentQuery.data ?? null;
+  const stats = statsQuery.data ?? { drafts: 0, approved: 0, released: 0 };
+  const releasedNotes = releasedNotesQuery.data ?? [];
+  const hasFilters = Boolean(debouncedSearch.trim()) || status !== "all";
 
-  const stats = useMemo(
-    () => ({
-      total: releases.length,
-      drafts: releases.filter((r) => r.status === "draft" || r.status === "testing").length,
-      approved: releases.filter((r) => r.status === "approved").length,
-      released: releases.filter((r) => r.status === "released").length,
-    }),
-    [releases],
-  );
-
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["app-releases"] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["app-releases"] });
+    qc.invalidateQueries({ queryKey: ["app-release-stats"] });
+    qc.invalidateQueries({ queryKey: ["app-release-current"] });
+    qc.invalidateQueries({ queryKey: ["app-release-notes"] });
+  };
 
   const actionMutation = useMutation({
     mutationFn: async () => {
@@ -212,10 +220,6 @@ export function AtualizacoesPage() {
       });
     },
   });
-
-  const releasedNotes = releases
-    .filter((r) => r.status === "released" && r.release_notes?.trim())
-    .sort((a, b) => +new Date(b.released_at ?? b.created_at) - +new Date(a.released_at ?? a.created_at));
 
   return (
     <>
@@ -283,7 +287,7 @@ export function AtualizacoesPage() {
             className="h-10 rounded-lg pl-9"
           />
         </div>
-        <Select value={status} onValueChange={setStatus}>
+        <Select value={status} onValueChange={(value) => setStatus(value as ReleaseStatus | "all")}>
           <SelectTrigger className="h-10 w-[180px] rounded-lg">
             <SelectValue />
           </SelectTrigger>
@@ -299,7 +303,12 @@ export function AtualizacoesPage() {
           {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
           Atualizar
         </Button>
-        {data && <span className="ml-auto text-sm text-muted-foreground">{filtered.length} de {data.length}</span>}
+        {hasFilters && (
+          <Button variant="outline" size="sm" onClick={() => { setSearch(""); setStatus("all"); }}>
+            Limpar filtros
+          </Button>
+        )}
+        {data && <span className="ml-auto text-sm text-muted-foreground">{releases.length} de {total}</span>}
       </div>
 
       {isError ? (
@@ -334,7 +343,7 @@ export function AtualizacoesPage() {
                     </TableRow>
                   ))}
 
-                {!isLoading && filtered.length === 0 && (
+                {!isLoading && releases.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6}>
                       <EmptyState
@@ -347,7 +356,7 @@ export function AtualizacoesPage() {
                 )}
 
                 {!isLoading &&
-                  filtered.map((release) => (
+                  releases.map((release) => (
                     <ReleaseRow
                       key={release.id}
                       release={release}
@@ -367,6 +376,20 @@ export function AtualizacoesPage() {
             </Table>
           </div>
         </Card>
+      )}
+
+      {!isError && (
+        <PaginationFooter
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          isLoading={isLoading || isFetching}
+          onPageChange={setPage}
+          onPageSizeChange={(value) => {
+            setPageSize(value);
+            setPage(1);
+          }}
+        />
       )}
 
       {releasedNotes.length > 0 && (
@@ -524,10 +547,40 @@ function ReleaseDialog({
   onSaved: () => void;
 }) {
   const [input, setInput] = useState<AppReleaseInput>(EMPTY_INPUT);
+  const [ymlText, setYmlText] = useState("");
 
   useEffect(() => {
     setInput(release ? toInput(release) : EMPTY_INPUT);
+    setYmlText("");
   }, [release, open]);
+
+  const applyYml = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      toast.error("Cole o conteúdo do latest.yml ou selecione o arquivo.");
+      return;
+    }
+    try {
+      const fields = parseLatestYml(trimmed, input.channel);
+      setInput((cur) => ({ ...cur, ...fields }));
+      toast.success(`Campos preenchidos da versão ${fields.version}`, {
+        description: "Confira as chaves do R2 (installer/blockmap/manifest) antes de salvar.",
+      });
+    } catch (err) {
+      toast.error("latest.yml inválido", {
+        description: err instanceof Error ? err.message : "Não foi possível ler o arquivo.",
+      });
+    }
+  };
+
+  const onPickFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // permite reselecionar o mesmo arquivo
+    if (!file) return;
+    const text = await file.text();
+    setYmlText(text);
+    applyYml(text);
+  };
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -551,6 +604,8 @@ function ReleaseDialog({
   const update = <K extends keyof AppReleaseInput>(key: K, value: AppReleaseInput[K]) =>
     setInput((cur) => ({ ...cur, [key]: value }));
 
+  const formErrors = releaseFormErrors(input);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
@@ -560,6 +615,35 @@ function ReleaseDialog({
             A versão só chega ao Worker depois de aprovada e liberada explicitamente.
           </DialogDescription>
         </DialogHeader>
+
+        <div className="rounded-lg border border-dashed border-border bg-muted/30 p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <Upload className="h-4 w-4 text-primary" />
+            <span className="text-sm font-medium">Importar do latest.yml</span>
+          </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Cole o conteúdo do <code>latest.yml</code> gerado pelo build (ou selecione o arquivo) para
+            preencher versão, SHA-512, tamanho e as chaves do R2 automaticamente — sem digitação manual.
+          </p>
+          <Textarea
+            value={ymlText}
+            onChange={(e) => setYmlText(e.target.value)}
+            rows={4}
+            placeholder={"version: 1.0.6\npath: Porter-Music-Setup-1.0.6-x64.exe\nsha512: ...\nfiles:\n  - size: 123456789"}
+            className="mb-2 font-mono text-xs"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" onClick={() => applyYml(ymlText)}>
+              Preencher campos
+            </Button>
+            <Button asChild type="button" size="sm" variant="outline">
+              <label className="cursor-pointer">
+                Selecionar arquivo .yml
+                <input type="file" accept=".yml,.yaml,text/yaml" className="hidden" onChange={onPickFile} />
+              </label>
+            </Button>
+          </div>
+        </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Versão">
@@ -571,7 +655,10 @@ function ReleaseDialog({
             />
           </Field>
           <Field label="Canal">
-            <Input value={input.channel} onChange={(e) => update("channel", e.target.value)} placeholder="stable" />
+            <Input value={input.channel} disabled readOnly />
+            <p className="text-xs text-muted-foreground">
+              Fixo em <code>stable</code> — as chaves do R2 seguem o prefixo <code>stable/</code>.
+            </p>
           </Field>
           <Field label="Título">
             <Input value={input.title} onChange={(e) => update("title", e.target.value)} />
@@ -622,11 +709,22 @@ function ReleaseDialog({
           </Field>
         </div>
 
+        {formErrors.length > 0 && (
+          <ul className="list-disc space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 pl-6 text-xs text-destructive">
+            {formErrors.map((err) => (
+              <li key={err}>{err}</li>
+            ))}
+          </ul>
+        )}
+
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancelar
           </Button>
-          <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+          <Button
+            onClick={() => mutation.mutate()}
+            disabled={mutation.isPending || formErrors.length > 0}
+          >
             {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             Salvar
           </Button>
@@ -679,12 +777,15 @@ function ConfirmActionDialog({
           : "Bloquear versão?";
   const description =
     action === "release"
-      ? "A versão anterior será marcada como substituída e esta será a única ativa do canal."
+      ? "Após confirmar, os PCs passam a encontrar esta atualização ao abrir o Porter Music. A release anterior deste canal deixa de ser a atual."
       : action === "rollback"
         ? "A versão atual será substituída por esta versão anterior em uma única transação."
         : action === "block"
           ? "A versão bloqueada não será entregue pelo endpoint interno."
           : "A versão ficará pronta para liberação, mas ainda não será entregue ao Worker.";
+
+  const release = confirm?.release ?? null;
+  const contractErrors = release && action === "release" ? releaseContractErrors(release) : [];
 
   return (
     <AlertDialog open={Boolean(confirm)} onOpenChange={(open) => !open && onCancel()}>
@@ -692,9 +793,49 @@ function ConfirmActionDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>
-            {confirm?.release.version} · {description}
+            {release?.version} · {description}
           </AlertDialogDescription>
         </AlertDialogHeader>
+
+        {action === "release" && release && (
+          <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Versão</span>
+              <span className="font-semibold">{release.version}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Canal</span>
+              <span className="font-medium">{release.channel}</span>
+            </div>
+            <div className="grid gap-1 border-t border-border pt-2 font-mono text-xs">
+              <div className="break-all">
+                <span className="text-muted-foreground">manifest_key: </span>
+                {release.manifest_key ?? "-"}
+              </div>
+              <div className="break-all">
+                <span className="text-muted-foreground">installer_key: </span>
+                {release.installer_key ?? "-"}
+              </div>
+              <div className="break-all">
+                <span className="text-muted-foreground">blockmap_key: </span>
+                {release.blockmap_key ?? "-"}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Confirme que os 3 objetos acima já foram enviados ao bucket R2 privado (
+              <code>npm run release:publish:r2</code>). O Admin não acessa o R2 diretamente — a
+              existência dos arquivos depende de confirmação operacional.
+            </p>
+          </div>
+        )}
+
+        {action === "release" && contractErrors.length > 0 && (
+          <ul className="list-disc space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 pl-6 text-xs text-destructive">
+            {contractErrors.map((err) => (
+              <li key={err}>{err}</li>
+            ))}
+          </ul>
+        )}
 
         {action === "block" && (
           <div className="grid gap-2">
@@ -710,7 +851,11 @@ function ConfirmActionDialog({
               event.preventDefault();
               onConfirm();
             }}
-            disabled={busy || (action === "block" && !reason.trim())}
+            disabled={
+              busy ||
+              (action === "block" && !reason.trim()) ||
+              (action === "release" && contractErrors.length > 0)
+            }
             className={cn(action === "block" && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
           >
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}

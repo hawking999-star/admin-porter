@@ -211,13 +211,13 @@ export function MusicasPage() {
   const [librarySearch, setLibrarySearch] = useState("");
   const [requestsPage, setRequestsPage] = useState(1);
   const [libraryPage, setLibraryPage] = useState(1);
+  const [requestsPageSize, setRequestsPageSize] = useState(25);
+  const [libraryPageSize, setLibraryPageSize] = useState(25);
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [platformFilter, setPlatformFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
   const [operatorRequestFilter, setOperatorRequestFilter] = useState<string | null>(null);
-  const requestsPageSize = 20;
-  const libraryPageSize = 12;
   const debouncedSearch = useDebounce(search, 350);
   const debouncedLibrarySearch = useDebounce(librarySearch, 350);
 
@@ -646,6 +646,10 @@ export function MusicasPage() {
           total={playlistsTotal}
           isLoading={isLoading || isFetching}
           onPageChange={setRequestsPage}
+          onPageSizeChange={(value) => {
+            setRequestsPageSize(value);
+            setRequestsPage(1);
+          }}
         />
       )}
 
@@ -699,6 +703,10 @@ export function MusicasPage() {
           }
           onSearchChange={setLibrarySearch}
           onPageChange={setLibraryPage}
+          onPageSizeChange={(value) => {
+            setLibraryPageSize(value);
+            setLibraryPage(1);
+          }}
           onRefresh={() => libraryQuery.refetch()}
           onOpenOperator={(operator) => {
             setSelectedOperatorId(operator.id);
@@ -969,6 +977,7 @@ function MusicLibrarySection({
   busy,
   onSearchChange,
   onPageChange,
+  onPageSizeChange,
   onRefresh,
   onOpenOperator,
   onViewRequests,
@@ -984,6 +993,7 @@ function MusicLibrarySection({
   busy: boolean;
   onSearchChange: (value: string) => void;
   onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onRefresh: () => void;
   onOpenOperator: (operator: OperatorMusicLibrary) => void;
   onViewRequests: (operator: OperatorMusicLibrary) => void;
@@ -1048,6 +1058,7 @@ function MusicLibrarySection({
           total={total}
           isLoading={loading || refreshing}
           onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
         />
       )}
     </div>
