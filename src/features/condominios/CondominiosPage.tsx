@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Search, Building, Building2, Users, Power, PowerOff, MoreHorizontal, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -91,7 +92,7 @@ export function CondominiosPage() {
     },
     onError: (err: unknown) => {
       toast.error("Não foi possível atualizar", {
-        description: err instanceof Error ? err.message : "Erro inesperado",
+        description: errorMessage(err),
       });
     },
   });

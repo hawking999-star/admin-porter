@@ -15,6 +15,7 @@ import {
   Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { errorMessage, isNonEditableReleaseError } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -202,8 +203,9 @@ export function AtualizacoesPage() {
       setBlockReason("");
     },
     onError: (err: unknown) => {
+      invalidate();
       toast.error("Não foi possível concluir", {
-        description: err instanceof Error ? err.message : "Erro inesperado",
+        description: errorMessage(err),
       });
     },
   });
@@ -215,8 +217,9 @@ export function AtualizacoesPage() {
       toast.success("Versão enviada para teste");
     },
     onError: (err: unknown) => {
+      invalidate();
       toast.error("Não foi possível enviar para teste", {
-        description: err instanceof Error ? err.message : "Erro inesperado",
+        description: errorMessage(err),
       });
     },
   });
@@ -420,6 +423,11 @@ export function AtualizacoesPage() {
           setEditing(null);
           invalidate();
         }}
+        onStale={() => {
+          setDialogOpen(false);
+          setEditing(null);
+          invalidate();
+        }}
       />
 
       <ConfirmActionDialog
@@ -540,11 +548,13 @@ function ReleaseDialog({
   onOpenChange,
   release,
   onSaved,
+  onStale,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   release: AppRelease | null;
   onSaved: () => void;
+  onStale: () => void;
 }) {
   const [input, setInput] = useState<AppReleaseInput>(EMPTY_INPUT);
   const [ymlText, setYmlText] = useState("");
@@ -596,8 +606,12 @@ function ReleaseDialog({
     },
     onError: (err: unknown) => {
       toast.error("Não foi possível salvar", {
-        description: err instanceof Error ? err.message : "Erro inesperado",
+        description: errorMessage(err),
       });
+      // Se a versão não está mais em rascunho/teste (ex.: bloqueada ou liberada
+      // em outra aba), o formulário está desatualizado: fecha e recarrega a lista
+      // para que o botão "Editar" desapareça e reflita o status real.
+      if (isNonEditableReleaseError(err)) onStale();
     },
   });
 

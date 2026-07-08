@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -147,7 +148,7 @@ function OperadoresTab() {
     },
     onError: (err: unknown) => {
       toast.error("Não foi possível atualizar", {
-        description: err instanceof Error ? err.message : "Erro inesperado",
+        description: errorMessage(err),
       });
     },
   });
