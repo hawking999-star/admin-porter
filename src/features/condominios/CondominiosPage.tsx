@@ -1,12 +1,24 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Plus, Search, Building2, Users, MapPin, Power } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
+import { Plus, Search, Building, Building2, Users, Power, PowerOff, MoreHorizontal, Pencil } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatCard, StatusBadge, EmptyState, PaginationFooter } from "@/components/shared";
+import {
+  StatCard,
+  StatusBadge,
+  EmptyState,
+  ErrorState,
+  RetryButton,
+  SearchInput,
+  FilterBar,
+  DataTable,
+  PaginationFooter,
+} from "@/components/shared";
 import {
   Select,
   SelectContent,
@@ -15,7 +27,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   TableBody,
   TableCell,
   TableHead,
@@ -23,23 +51,26 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useDebounce } from "@/hooks/useDebounce";
-import { countUnitStats, listUnits, timezoneLabel, type Unit } from "./queries";
+import { countUnitStats, listUnits, setUnitActive, timezoneLabel, type Unit } from "./queries";
 import { CondominioFormDialog } from "./CondominioFormDialog";
 
 export function CondominiosPage() {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
   const pageSize = 25;
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
   const [page, setPage] = useState(1);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Unit | null>(null);
+  const [confirmToggle, setConfirmToggle] = useState<Unit | null>(null);
   const debouncedSearch = useDebounce(search, 350);
 
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch, activeFilter]);
 
-  const { data, isLoading, isError, error, isFetching } = useQuery({
+  const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ["units", page, pageSize, debouncedSearch, activeFilter],
     queryFn: () => listUnits({ page, pageSize, search: debouncedSearch, active: activeFilter }),
     staleTime: 30_000,
@@ -50,9 +81,25 @@ export function CondominiosPage() {
     staleTime: 30_000,
   });
 
+  const toggleMutation = useMutation({
+    mutationFn: ({ unit, active }: { unit: Unit; active: boolean }) => setUnitActive(unit, active),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["units"] });
+      qc.invalidateQueries({ queryKey: ["unit-stats"] });
+      toast.success(vars.active ? "Condomínio ativado" : "Condomínio desativado");
+      setConfirmToggle(null);
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível atualizar", {
+        description: err instanceof Error ? err.message : "Erro inesperado",
+      });
+    },
+  });
+
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
   const stats = statsQuery.data ?? { active: 0, inactive: 0, operators: 0, cities: null };
+  const totalUnits = stats.active + stats.inactive;
   const hasFilters = Boolean(debouncedSearch.trim()) || activeFilter !== "all";
 
   const clearFilters = () => {
@@ -71,28 +118,24 @@ export function CondominiosPage() {
   return (
     <>
       <PageHeader
-        title="Condominios"
-        description="Unidades vinculadas a operacao e aos operadores."
-        action={<Button onClick={openNew}><Plus className="h-4 w-4" /> Novo condominio</Button>}
+        title="Condomínios"
+        description="Unidades vinculadas à operação e aos operadores."
+        action={<Button onClick={openNew}><Plus className="h-4 w-4" /> Novo condomínio</Button>}
       />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={<Building2 className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Condominios ativos" value={stats.active} loading={statsQuery.isLoading} />
+        <StatCard icon={<Building2 className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Condomínios ativos" value={stats.active} loading={statsQuery.isLoading} />
         <StatCard icon={<Users className="h-5 w-5" />} iconClassName="bg-secondary/10 text-secondary" label="Operadores vinculados" value={stats.operators} loading={statsQuery.isLoading} />
-        <StatCard icon={<MapPin className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Cidades atendidas" value={stats.cities ?? "-"} hint="Confirmar via SQL remoto" loading={statsQuery.isLoading} />
-        <StatCard icon={<Power className="h-5 w-5" />} iconClassName="bg-muted text-muted-foreground" label="Condominios inativos" value={stats.inactive} loading={statsQuery.isLoading} />
+        <StatCard icon={<Building className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Total de condomínios" value={totalUnits} loading={statsQuery.isLoading} />
+        <StatCard icon={<Power className="h-5 w-5" />} iconClassName="bg-muted text-muted-foreground" label="Condomínios inativos" value={stats.inactive} loading={statsQuery.isLoading} />
       </div>
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar por nome, codigo ou cidade..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-10 rounded-lg pl-9"
-          />
-        </div>
+      <FilterBar resultText={!isError ? `${rows.length} de ${total}` : undefined}>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Buscar por nome, código ou cidade..."
+        />
         <Select value={activeFilter} onValueChange={(value) => setActiveFilter(value as "all" | "active" | "inactive")}>
           <SelectTrigger className="h-10 w-[150px] rounded-lg">
             <SelectValue placeholder="Status" />
@@ -104,66 +147,121 @@ export function CondominiosPage() {
           </SelectContent>
         </Select>
         {hasFilters && <Button variant="outline" onClick={clearFilters}>Limpar filtros</Button>}
-        <span className="ml-auto text-sm text-muted-foreground">{rows.length} de {total}</span>
-      </div>
+      </FilterBar>
 
-      <Card className="overflow-hidden shadow-sm">
-        {isError ? (
-          <div className="p-6 text-sm text-destructive">Erro ao carregar: {(error as Error)?.message}</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <Table className="min-w-[760px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nome</TableHead>
-                  <TableHead>Codigo</TableHead>
-                  <TableHead>Cidade</TableHead>
-                  <TableHead>Operadores</TableHead>
-                  <TableHead>Fuso</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading && Array.from({ length: 4 }).map((_, i) => (
-                  <TableRow key={i}><TableCell colSpan={6}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
-                ))}
+      {isError ? (
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar os condomínios."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={() => refetch()} disabled={isFetching} />}
+          />
+        </Card>
+      ) : (
+        <DataTable minWidth={860}>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nome</TableHead>
+              <TableHead>Código</TableHead>
+              <TableHead>Cidade</TableHead>
+              <TableHead>Operadores</TableHead>
+              <TableHead>Fuso</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-[64px] text-right">Ações</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading && Array.from({ length: 4 }).map((_, i) => (
+              <TableRow key={i}><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+            ))}
 
-                {!isLoading && rows.length === 0 && (
-                  <TableRow className="hover:bg-transparent">
-                    <TableCell colSpan={6}>
-                      {hasFilters ? (
-                        <EmptyState icon={<Search className="h-6 w-6" />} title="Nenhum condominio encontrado" description="Ajuste ou limpe os filtros para encontrar a unidade." action={<Button variant="outline" size="sm" onClick={clearFilters}>Limpar filtros</Button>} />
+            {!isLoading && rows.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={7}>
+                  {hasFilters ? (
+                    <EmptyState icon={<Search className="h-6 w-6" />} title="Nenhum condomínio encontrado." description="Ajuste ou limpe os filtros para encontrar a unidade." action={<Button variant="outline" size="sm" onClick={clearFilters}>Limpar filtros</Button>} />
+                  ) : (
+                    <EmptyState icon={<Building2 className="h-6 w-6" />} title="Nenhum condomínio cadastrado ainda." description="Cadastre um condomínio para vincular operadores, turnos e playlists da operação." action={<Button variant="outline" size="sm" onClick={openNew}><Plus className="h-4 w-4" /> Novo condomínio</Button>} />
+                  )}
+                </TableCell>
+              </TableRow>
+            )}
+
+            {!isLoading && rows.map((unit) => (
+              <TableRow key={unit.id} className="cursor-pointer" onClick={() => openEdit(unit)}>
+                <TableCell className="font-medium">{unit.name}</TableCell>
+                <TableCell className="text-muted-foreground">{unit.code}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {unit.city ? <>{unit.city}{unit.state ? `/${unit.state}` : ""}</> : "—"}
+                </TableCell>
+                <TableCell>{unit.operator_count}</TableCell>
+                <TableCell className="text-muted-foreground">{timezoneLabel(unit.timezone)}</TableCell>
+                <TableCell><StatusBadge status={unit.active ? "ativo" : "inativo"} /></TableCell>
+                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Ações do condomínio">
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEdit(unit)}>
+                        <Pencil className="h-4 w-4" /> Editar
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => navigate(`/usuarios?unit=${unit.id}`)}>
+                        <Users className="h-4 w-4" /> Ver operadores
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      {unit.active ? (
+                        <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmToggle(unit)}>
+                          <PowerOff className="h-4 w-4" /> Desativar
+                        </DropdownMenuItem>
                       ) : (
-                        <EmptyState icon={<Building2 className="h-6 w-6" />} title="Voce ainda tem poucos condominios cadastrados." description="Cadastre novas unidades para vincular operadores, playlists e metricas da operacao." action={<Button variant="outline" size="sm" onClick={openNew}><Plus className="h-4 w-4" /> Novo condominio</Button>} />
+                        <DropdownMenuItem onClick={() => setConfirmToggle(unit)}>
+                          <Power className="h-4 w-4" /> Ativar
+                        </DropdownMenuItem>
                       )}
-                    </TableCell>
-                  </TableRow>
-                )}
-
-                {!isLoading && rows.map((unit) => (
-                  <TableRow key={unit.id} className="cursor-pointer" onClick={() => openEdit(unit)}>
-                    <TableCell className="font-medium">{unit.name}</TableCell>
-                    <TableCell className="text-muted-foreground">{unit.code}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {unit.city ? <>{unit.city}{unit.state ? `/${unit.state}` : ""}</> : "-"}
-                    </TableCell>
-                    <TableCell>{unit.operator_count}</TableCell>
-                    <TableCell className="text-muted-foreground">{timezoneLabel(unit.timezone)}</TableCell>
-                    <TableCell><StatusBadge status={unit.active ? "ativo" : "inativo"} /></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </Card>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </DataTable>
+      )}
 
       {!isLoading && !isError && rows.length > 0 && (
-        <p className="mt-3 text-xs text-muted-foreground">Clique em um condominio para editar os dados da unidade.</p>
+        <p className="mt-3 text-xs text-muted-foreground">Clique na linha para editar, ou use o menu de ações para ver operadores e ativar/desativar.</p>
       )}
       {!isError && <PaginationFooter page={page} pageSize={pageSize} total={total} isLoading={isLoading || isFetching} onPageChange={setPage} />}
 
       <CondominioFormDialog open={dialogOpen} onOpenChange={setDialogOpen} unit={editing} />
+
+      <AlertDialog open={Boolean(confirmToggle)} onOpenChange={(o) => !o && setConfirmToggle(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmToggle?.active ? "Desativar condomínio?" : "Ativar condomínio?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmToggle?.active
+                ? `${confirmToggle?.name} deixará de aparecer para vínculos e operações até ser reativado.`
+                : `${confirmToggle?.name} voltará a ficar disponível para vínculos e operações.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={toggleMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={toggleMutation.isPending}
+              className={cn(confirmToggle?.active && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
+              onClick={(e) => {
+                e.preventDefault();
+                if (confirmToggle) toggleMutation.mutate({ unit: confirmToggle, active: !confirmToggle.active });
+              }}
+            >
+              {confirmToggle?.active ? "Desativar" : "Ativar"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

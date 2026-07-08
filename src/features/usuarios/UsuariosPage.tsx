@@ -1,12 +1,24 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
+import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatCard, StatusBadge, EmptyState, PaginationFooter } from "@/components/shared";
+import {
+  StatCard,
+  StatusBadge,
+  EmptyState,
+  ErrorState,
+  RetryButton,
+  SearchInput,
+  FilterBar,
+  DataTable,
+  PaginationFooter,
+} from "@/components/shared";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -16,7 +28,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   TableBody,
   TableCell,
   TableHead,
@@ -29,6 +57,7 @@ import {
   listAdminUsers,
   listUnitOptions,
   countOperatorStats,
+  setOperatorActive,
   operatorRoleLabel,
   adminRoleLabel,
   unitLabel,
@@ -43,8 +72,8 @@ export function UsuariosPage() {
   return (
     <>
       <PageHeader
-        title="Usuarios"
-        description="Operadores que usam o app e pessoas com acesso ao painel."
+        title="Usuários"
+        description="Operadores que usam o app e pessoas com acesso ao painel administrativo."
       />
       <Tabs defaultValue="operadores">
         <TabsList className="mb-4">
@@ -52,7 +81,7 @@ export function UsuariosPage() {
             <Users className="mr-1.5 h-4 w-4" /> Operadores
           </TabsTrigger>
           <TabsTrigger value="acessos">
-            <ShieldCheck className="mr-1.5 h-4 w-4" /> Acessos ao admin
+            <ShieldCheck className="mr-1.5 h-4 w-4" /> Acessos ao painel
           </TabsTrigger>
         </TabsList>
         <TabsContent value="operadores">
@@ -67,21 +96,24 @@ export function UsuariosPage() {
 }
 
 function OperadoresTab() {
+  const qc = useQueryClient();
+  const [searchParams] = useSearchParams();
   const pageSize = 25;
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [unitFilter, setUnitFilter] = useState("all");
+  const [unitFilter, setUnitFilter] = useState(searchParams.get("unit") ?? "all");
   const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
   const [roleFilter, setRoleFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Operator | null>(null);
+  const [confirmToggle, setConfirmToggle] = useState<Operator | null>(null);
   const debouncedSearch = useDebounce(search, 350);
 
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch, unitFilter, activeFilter, roleFilter]);
 
-  const { data, isLoading, isError, error, isFetching } = useQuery({
+  const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ["operators", page, pageSize, debouncedSearch, unitFilter, activeFilter, roleFilter],
     queryFn: () =>
       listOperators({
@@ -105,6 +137,21 @@ function OperadoresTab() {
     staleTime: 60_000,
   });
 
+  const toggleMutation = useMutation({
+    mutationFn: ({ op, active }: { op: Operator; active: boolean }) => setOperatorActive(op, active),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["operators"] });
+      qc.invalidateQueries({ queryKey: ["operator-stats"] });
+      toast.success(vars.active ? "Operador ativado" : "Operador desativado");
+      setConfirmToggle(null);
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível atualizar", {
+        description: err instanceof Error ? err.message : "Erro inesperado",
+      });
+    },
+  });
+
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
   const stats = statsQuery.data ?? { active: 0, inactive: 0, supervisors: 0, noLogin: 0 };
@@ -120,6 +167,10 @@ function OperadoresTab() {
     setEditing(null);
     setDialogOpen(true);
   };
+  const openEdit = (op: Operator) => {
+    setEditing(op);
+    setDialogOpen(true);
+  };
 
   return (
     <>
@@ -130,22 +181,18 @@ function OperadoresTab() {
         <StatCard icon={<KeyRound className="h-5 w-5" />} iconClassName="bg-warning/15 text-warning-foreground" label="Sem login vinculado" value={stats.noLogin} loading={statsQuery.isLoading} />
       </div>
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar por nome ou usuario..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-10 rounded-lg pl-9"
-          />
-        </div>
+      <FilterBar>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Buscar por nome ou usuário..."
+        />
         <Select value={unitFilter} onValueChange={setUnitFilter}>
           <SelectTrigger className="h-10 w-[210px] rounded-lg">
-            <SelectValue placeholder="Condominio" />
+            <SelectValue placeholder="Condomínio" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">Todos os condominios</SelectItem>
+            <SelectItem value="all">Todos os condomínios</SelectItem>
             {(unitOptionsQuery.data ?? []).map((unit) => (
               <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>
             ))}
@@ -172,77 +219,132 @@ function OperadoresTab() {
           </SelectContent>
         </Select>
         {hasFilters && <Button variant="outline" onClick={clearFilters}>Limpar filtros</Button>}
-        <span className="text-sm text-muted-foreground">{rows.length} de {total}</span>
-        <Button className="ml-auto" onClick={openNew}>
-          <Plus className="h-4 w-4" /> Novo operador
-        </Button>
-      </div>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="text-sm text-muted-foreground">{rows.length} de {total}</span>
+          <Button onClick={openNew}>
+            <Plus className="h-4 w-4" /> Novo operador
+          </Button>
+        </div>
+      </FilterBar>
 
-      <Card className="overflow-hidden shadow-sm">
-        {isError ? (
-          <div className="p-6 text-sm text-destructive">Erro ao carregar: {(error as Error)?.message}</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <Table className="min-w-[860px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nome</TableHead>
-                  <TableHead>Usuario</TableHead>
-                  <TableHead>Condominio</TableHead>
-                  <TableHead>Turno</TableHead>
-                  <TableHead>Cargo</TableHead>
-                  <TableHead>Login</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading && Array.from({ length: 4 }).map((_, i) => (
-                  <TableRow key={i}><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
-                ))}
+      {isError ? (
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar os operadores."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={() => refetch()} disabled={isFetching} />}
+          />
+        </Card>
+      ) : (
+        <DataTable minWidth={920}>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nome</TableHead>
+              <TableHead>Usuário</TableHead>
+              <TableHead>Condomínio</TableHead>
+              <TableHead>Turno</TableHead>
+              <TableHead>Cargo</TableHead>
+              <TableHead>Login</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-[64px] text-right">Ações</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading && Array.from({ length: 4 }).map((_, i) => (
+              <TableRow key={i}><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+            ))}
 
-                {!isLoading && rows.length === 0 && (
-                  <TableRow className="hover:bg-transparent">
-                    <TableCell colSpan={7}>
-                      {hasFilters ? (
-                        <EmptyState icon={<Search className="h-6 w-6" />} title="Nenhum operador encontrado" description="Ajuste ou limpe os filtros para ampliar a busca." action={<Button variant="outline" size="sm" onClick={clearFilters}>Limpar filtros</Button>} />
+            {!isLoading && rows.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={8}>
+                  {hasFilters ? (
+                    <EmptyState icon={<Search className="h-6 w-6" />} title="Nenhum operador encontrado." description="Ajuste ou limpe os filtros para ampliar a busca." action={<Button variant="outline" size="sm" onClick={clearFilters}>Limpar filtros</Button>} />
+                  ) : (
+                    <EmptyState icon={<Users className="h-6 w-6" />} title="Nenhum operador cadastrado ainda." description="Cadastre um operador para vincular a condomínios, turnos e playlists." action={<Button variant="outline" size="sm" onClick={openNew}><Plus className="h-4 w-4" /> Novo operador</Button>} />
+                  )}
+                </TableCell>
+              </TableRow>
+            )}
+
+            {!isLoading && rows.map((op) => (
+              <TableRow key={op.id} className="cursor-pointer" onClick={() => openEdit(op)}>
+                <TableCell className="font-medium">{op.display_name}</TableCell>
+                <TableCell className="text-muted-foreground">{op.username ?? "—"}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {op.unit_name ? unitLabel({ name: op.unit_name, city: op.unit_city, state: op.unit_state }) : "—"}
+                </TableCell>
+                <TableCell className="text-muted-foreground whitespace-nowrap">{shiftLabel(op.shift_kind, op.shift_start, op.shift_end)}</TableCell>
+                <TableCell>{operatorRoleLabel(op.role)}</TableCell>
+                <TableCell><StatusBadge status={op.has_login ? "vinculado" : "sem_login"} /></TableCell>
+                <TableCell><StatusBadge status={op.active ? "ativo" : "inativo"} /></TableCell>
+                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Ações do operador">
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEdit(op)}>
+                        <Pencil className="h-4 w-4" /> Editar
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      {op.active ? (
+                        <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmToggle(op)}>
+                          <PowerOff className="h-4 w-4" /> Desativar
+                        </DropdownMenuItem>
                       ) : (
-                        <EmptyState icon={<Users className="h-6 w-6" />} title="Nenhum operador cadastrado ainda." description="Cadastre operadores para vincular a condominios, turnos e playlists." action={<Button variant="outline" size="sm" onClick={openNew}><Plus className="h-4 w-4" /> Novo operador</Button>} />
+                        <DropdownMenuItem onClick={() => setConfirmToggle(op)}>
+                          <Power className="h-4 w-4" /> Ativar
+                        </DropdownMenuItem>
                       )}
-                    </TableCell>
-                  </TableRow>
-                )}
-
-                {!isLoading && rows.map((op) => (
-                  <TableRow key={op.id} className="cursor-pointer" onClick={() => { setEditing(op); setDialogOpen(true); }}>
-                    <TableCell className="font-medium">{op.display_name}</TableCell>
-                    <TableCell className="text-muted-foreground">{op.username ?? "-"}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {op.unit_name ? unitLabel({ name: op.unit_name, city: op.unit_city, state: op.unit_state }) : "-"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground whitespace-nowrap">{shiftLabel(op.shift_kind, op.shift_start, op.shift_end)}</TableCell>
-                    <TableCell>{operatorRoleLabel(op.role)}</TableCell>
-                    <TableCell><StatusBadge status={op.has_login ? "vinculado" : "sem_login"} /></TableCell>
-                    <TableCell><StatusBadge status={op.active ? "ativo" : "inativo"} /></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </Card>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </DataTable>
+      )}
 
       {!isLoading && !isError && rows.length > 0 && (
-        <p className="mt-3 text-xs text-muted-foreground">Clique em um operador para editar cadastro, turno e vinculo.</p>
+        <p className="mt-3 text-xs text-muted-foreground">Clique na linha para editar, ou use o menu de ações para ativar/desativar.</p>
       )}
       {!isError && <PaginationFooter page={page} pageSize={pageSize} total={total} isLoading={isLoading || isFetching} onPageChange={setPage} />}
 
       <OperatorFormDialog open={dialogOpen} onOpenChange={setDialogOpen} operator={editing} />
+
+      <AlertDialog open={Boolean(confirmToggle)} onOpenChange={(o) => !o && setConfirmToggle(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmToggle?.active ? "Desativar operador?" : "Ativar operador?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmToggle?.active
+                ? `${confirmToggle?.display_name} deixará de acessar o app até ser reativado.`
+                : `${confirmToggle?.display_name} voltará a ter acesso ao app.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={toggleMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={toggleMutation.isPending}
+              className={cn(confirmToggle?.active && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
+              onClick={(e) => {
+                e.preventDefault();
+                if (confirmToggle) toggleMutation.mutate({ op: confirmToggle, active: !confirmToggle.active });
+              }}
+            >
+              {confirmToggle?.active ? "Desativar" : "Ativar"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
 
 function AcessosTab() {
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ["admin-users"],
     queryFn: listAdminUsers,
     staleTime: 30_000,
@@ -252,49 +354,51 @@ function AcessosTab() {
 
   return (
     <>
-      <Card className="overflow-hidden shadow-sm">
-        {isError ? (
-          <div className="p-6 text-sm text-destructive">Erro ao carregar: {(error as Error)?.message}</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <Table className="min-w-[720px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nome</TableHead>
-                  <TableHead>Papel</TableHead>
-                  <TableHead>2FA</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading && Array.from({ length: 3 }).map((_, i) => (
-                  <TableRow key={i}><TableCell colSpan={4}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
-                ))}
+      {isError ? (
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar os acessos."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={() => refetch()} disabled={isFetching} />}
+          />
+        </Card>
+      ) : (
+        <DataTable minWidth={720}>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nome</TableHead>
+              <TableHead>Papel</TableHead>
+              <TableHead>2FA</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading && Array.from({ length: 3 }).map((_, i) => (
+              <TableRow key={i}><TableCell colSpan={4}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+            ))}
 
-                {!isLoading && (data ?? []).length === 0 && (
-                  <TableRow className="hover:bg-transparent">
-                    <TableCell colSpan={4}>
-                      <EmptyState icon={<ShieldCheck className="h-6 w-6" />} title="Nenhum acesso ao painel cadastrado." description="Os acessos administrativos aparecerao aqui apos serem criados." />
-                    </TableCell>
-                  </TableRow>
-                )}
+            {!isLoading && (data ?? []).length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={4}>
+                  <EmptyState icon={<ShieldCheck className="h-6 w-6" />} title="Nenhum acesso ao painel cadastrado." description="Os acessos administrativos aparecerão aqui após serem criados." />
+                </TableCell>
+              </TableRow>
+            )}
 
-                {!isLoading && (data ?? []).map((a) => (
-                  <TableRow key={a.id} className="cursor-pointer" onClick={() => { setEditing(a); setDialogOpen(true); }}>
-                    <TableCell className="font-medium">{a.display_name}</TableCell>
-                    <TableCell>{adminRoleLabel(a.role)}</TableCell>
-                    <TableCell className="text-muted-foreground">{a.mfa_required ? "Sim" : "Nao"}</TableCell>
-                    <TableCell><StatusBadge status={a.active ? "ativo" : "inativo"} /></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </Card>
+            {!isLoading && (data ?? []).map((a) => (
+              <TableRow key={a.id} className="cursor-pointer" onClick={() => { setEditing(a); setDialogOpen(true); }}>
+                <TableCell className="font-medium">{a.display_name}</TableCell>
+                <TableCell>{adminRoleLabel(a.role)}</TableCell>
+                <TableCell className="text-muted-foreground">{a.mfa_required ? "Sim" : "Não"}</TableCell>
+                <TableCell><StatusBadge status={a.active ? "ativo" : "inativo"} /></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </DataTable>
+      )}
 
       <p className="mt-3 text-xs text-muted-foreground">
-        Para criar um acesso novo e preciso criar o login primeiro (Supabase Auth). Passo a passo no relatorio do dev.
+        Para criar um novo acesso, é preciso primeiro criar o login no Supabase Auth. O passo a passo está no relatório técnico.
       </p>
 
       <AdminUserEditDialog open={dialogOpen} onOpenChange={setDialogOpen} adminUser={editing} />

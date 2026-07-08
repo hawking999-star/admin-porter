@@ -67,7 +67,7 @@ import {
   type OperatorRequestHistory,
   type Playlist,
 } from "./queries";
-import { PaginationFooter, StatCard } from "@/components/shared";
+import { PaginationFooter, StatCard, ErrorState, RetryButton } from "@/components/shared";
 import { useDebounce } from "@/hooks/useDebounce";
 import {
   OperatorAvatar,
@@ -607,8 +607,12 @@ export function MusicasPage() {
 
       {/* Lista */}
       {isError ? (
-        <Card className="p-6 text-sm text-destructive">
-          Erro ao carregar: {(error as Error)?.message}
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar as solicitações."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={() => refetch()} disabled={isFetching} />}
+          />
         </Card>
       ) : isLoading ? (
         <div className="space-y-3">
@@ -1003,7 +1007,13 @@ function MusicLibrarySection({
       </div>
 
       {error ? (
-        <Card className="p-6 text-sm text-destructive">Erro ao carregar biblioteca: {error.message}</Card>
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar a biblioteca."
+            description={error.message}
+            action={<RetryButton onClick={onRefresh} disabled={refreshing} />}
+          />
+        </Card>
       ) : loading ? (
         <div className="space-y-3">
           {Array.from({ length: 4 }).map((_, i) => (

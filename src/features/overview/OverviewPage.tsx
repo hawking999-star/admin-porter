@@ -366,6 +366,7 @@ export function OverviewPage() {
 
   const isFetching =
     counts.isFetching || states.isFetching || activity.isFetching || daily.isFetching;
+  const isError = counts.isError || states.isError || activity.isError || daily.isError;
 
   const lastUpdated = useMemo(() => {
     const ts = [counts.dataUpdatedAt, states.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt].filter(
@@ -397,6 +398,26 @@ export function OverviewPage() {
           </div>
         }
       />
+
+      {isError && (
+        <div className="mb-6 flex flex-col gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Alguns dados não puderam ser carregados.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Os números abaixo podem estar incompletos. Tente atualizar novamente.
+              </p>
+            </div>
+          </div>
+          <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching} className="shrink-0">
+            <RotateCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
+            Tentar novamente
+          </Button>
+        </div>
+      )}
 
       {/* Cards principais */}
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

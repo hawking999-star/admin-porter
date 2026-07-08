@@ -158,3 +158,19 @@ export async function updateUnit(id: string, input: UnitInput): Promise<void> {
   });
   if (error) throw error;
 }
+
+/**
+ * Ativa/desativa um condomínio reaproveitando o RPC de edição.
+ * Mantém todos os demais campos e apenas troca o `active`.
+ */
+export async function setUnitActive(unit: Unit, active: boolean): Promise<void> {
+  await updateUnit(unit.id, {
+    code: unit.code,
+    name: unit.name,
+    address: unit.address,
+    city: unit.city,
+    state: unit.state,
+    timezone: unit.timezone,
+    active,
+  });
+}

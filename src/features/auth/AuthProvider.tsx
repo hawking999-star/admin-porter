@@ -22,12 +22,6 @@ export type AdminUser = {
   mfa_required: boolean;
 };
 
-type OperatorUser = {
-  id: string;
-  role: string | null;
-  active: boolean;
-};
-
 type AuthState = {
   session: Session | null;
   user: User | null;
@@ -104,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authError, setAuthError] = useState<string | null>(null);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const loadIdRef = useRef(0);
+  const loadedUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -118,12 +113,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const result = await fetchAdminUser(nextSession);
         if (!mounted || loadId !== loadIdRef.current) return;
 
+        loadedUserIdRef.current = nextSession?.user?.id ?? null;
         setSession(nextSession);
         setAdminUser(result.adminUser);
         setPermissionError(result.permissionError);
       } catch (err) {
         if (!mounted || loadId !== loadIdRef.current) return;
 
+        loadedUserIdRef.current = nextSession?.user?.id ?? null;
         setSession(nextSession);
         setAdminUser(null);
         setPermissionError("Você não tem permissão para acessar o PTM ADMIN.");
@@ -143,6 +140,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+      const nextUserId = next?.user?.id ?? null;
+      // Mesmo usuário (token renovado ou volta para a aba): atualiza a sessão
+      // em silêncio, sem voltar para a tela de "Carregando" nem refazer as consultas.
+      if (nextUserId && nextUserId === loadedUserIdRef.current) {
+        setSession(next);
+        return;
+      }
+      // Login novo, logout ou troca de usuário: recarrega de fato.
       setTimeout(() => void loadSession(next), 0);
     });
 

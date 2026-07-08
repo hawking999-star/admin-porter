@@ -49,7 +49,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, StatCard } from "@/components/shared";
+import { EmptyState, StatCard, ErrorState, RetryButton } from "@/components/shared";
 import {
   approveAppRelease,
   blockAppRelease,
@@ -303,8 +303,12 @@ export function AtualizacoesPage() {
       </div>
 
       {isError ? (
-        <Card className="p-6 text-sm text-destructive">
-          Erro ao carregar releases: {(error as Error)?.message}
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar as versões."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={invalidate} disabled={isFetching} />}
+          />
         </Card>
       ) : (
         <Card className="overflow-hidden shadow-sm">

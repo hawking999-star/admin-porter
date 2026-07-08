@@ -287,6 +287,21 @@ export async function updateOperator(id: string, input: OperatorUpdateInput): Pr
   if (error) throw error;
 }
 
+/**
+ * Ativa/desativa um operador reaproveitando o RPC de edição.
+ * Mantém todos os demais campos e apenas troca o `active`.
+ */
+export async function setOperatorActive(op: Operator, active: boolean): Promise<void> {
+  await updateOperator(op.id, {
+    display_name: op.display_name,
+    username: op.username,
+    unit_id: op.unit_id,
+    role: op.role,
+    session_policy: op.session_policy,
+    active,
+  });
+}
+
 /* --------------------------- Acessos (admin_users) ----------------------- */
 
 export type AdminUser = {

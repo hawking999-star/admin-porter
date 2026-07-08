@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatCard, StatusBadge, EmptyState } from "@/components/shared";
+import { StatCard, StatusBadge, EmptyState, ErrorState, RetryButton } from "@/components/shared";
 import {
   Select,
   SelectContent,
@@ -184,8 +184,12 @@ export function LogsPage() {
 
       {/* Tabela */}
       {isError ? (
-        <Card className="p-6 text-sm text-destructive">
-          Erro ao carregar os logs: {(error as Error)?.message}
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar os logs."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={() => qc.invalidateQueries({ queryKey: ["logs"] })} disabled={isFetching} />}
+          />
         </Card>
       ) : (
         <Card className="overflow-hidden shadow-sm">

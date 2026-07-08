@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Search,
   BellDot,
   CheckCircle2,
   AlertTriangle,
@@ -13,10 +12,17 @@ import {
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatCard, EmptyState, PaginationFooter } from "@/components/shared";
+import {
+  StatCard,
+  EmptyState,
+  ErrorState,
+  RetryButton,
+  SearchInput,
+  FilterBar,
+  PaginationFooter,
+} from "@/components/shared";
 import {
   Select,
   SelectContent,
@@ -105,7 +111,7 @@ function FeedbackCard({
 }) {
   const f = feedback;
   return (
-    <Card className={cn("group flex cursor-pointer gap-4 p-5 shadow-sm", "transition-all duration-200 hover:-translate-y-px hover:border-primary/50 hover:shadow-md")}>
+    <Card className={cn("group flex gap-4 p-5 shadow-sm", "transition-all duration-200 hover:border-primary/40 hover:shadow-md")}>
       <FeedbackTypeIcon type={f.type} className="mt-0.5" />
 
       <div className="min-w-0 flex-1 space-y-2.5">
@@ -182,7 +188,7 @@ export function FeedbackPage() {
     setPage(1);
   }, [debouncedSearch, typeFilter, statusFilter]);
 
-  const { data, isLoading, isError, error, isFetching } = useQuery({
+  const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ["feedback", page, pageSize, debouncedSearch, typeFilter, statusFilter],
     queryFn: () =>
       listFeedback({
@@ -209,7 +215,7 @@ export function FeedbackPage() {
     },
     onError: (err: unknown) => {
       const msg = err instanceof Error ? err.message : "Erro ao salvar";
-      toast.error("Nao foi possivel atualizar", { description: msg });
+      toast.error("Não foi possível atualizar", { description: msg });
     },
   });
 
@@ -229,21 +235,17 @@ export function FeedbackPage() {
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={<BellDot className="h-5 w-5" />} label="Pendentes" value={stats.pending} hint="Aguardando leitura" iconClassName="bg-warning/15 text-warning-foreground" loading={statsQuery.isLoading} />
-        <StatCard icon={<CheckCircle2 className="h-5 w-5" />} label="Resolvidos" value={stats.resolved} hint="Ja respondidos" iconClassName="bg-success/30 text-success-foreground" loading={statsQuery.isLoading} />
+        <StatCard icon={<CheckCircle2 className="h-5 w-5" />} label="Resolvidos" value={stats.resolved} hint="Já respondidos" iconClassName="bg-success/30 text-success-foreground" loading={statsQuery.isLoading} />
         <StatCard icon={<AlertTriangle className="h-5 w-5" />} label="Problemas" value={stats.problems} hint="Relatos de erro" iconClassName="bg-destructive/10 text-destructive" loading={statsQuery.isLoading} />
-        <StatCard icon={<CalendarClock className="h-5 w-5" />} label="Recebidos hoje" value={stats.today} hint="Nas ultimas horas" iconClassName="bg-primary/10 text-primary" loading={statsQuery.isLoading} />
+        <StatCard icon={<CalendarClock className="h-5 w-5" />} label="Recebidos hoje" value={stats.today} hint="Nas últimas horas" iconClassName="bg-primary/10 text-primary" loading={statsQuery.isLoading} />
       </div>
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar na mensagem..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-10 rounded-lg pl-9 transition-shadow duration-200 focus-visible:shadow-sm"
-          />
-        </div>
+      <FilterBar resultText={!isError ? `${rows.length} de ${total}` : undefined}>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Buscar na mensagem..."
+        />
 
         <Select value={typeFilter} onValueChange={setTypeFilter}>
           <SelectTrigger className="h-10 w-[170px] rounded-lg">
@@ -269,12 +271,17 @@ export function FeedbackPage() {
           </SelectContent>
         </Select>
 
-        <span className="ml-auto text-sm text-muted-foreground">{rows.length} de {total}</span>
         {hasFilters && <Button variant="outline" onClick={clearFilters}>Limpar filtros</Button>}
-      </div>
+      </FilterBar>
 
       {isError ? (
-        <Card className="p-6 text-sm text-destructive">Erro ao carregar: {(error as Error)?.message}</Card>
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar os feedbacks."
+            description={(error as Error)?.message}
+            action={<RetryButton onClick={() => refetch()} disabled={isFetching} />}
+          />
+        </Card>
       ) : (
         <div className="space-y-3">
           {isLoading && Array.from({ length: 4 }).map((_, i) => <FeedbackCardSkeleton key={i} />)}
@@ -284,7 +291,7 @@ export function FeedbackPage() {
               <EmptyState
                 icon={<Inbox className="h-6 w-6" />}
                 title={hasFilters ? "Nenhum feedback encontrado." : "Nenhum feedback por aqui ainda."}
-                description={hasFilters ? "Ajuste ou limpe os filtros para ampliar a busca." : "Os retornos enviados pelos operadores dentro do app aparecerao nesta lista."}
+                description={hasFilters ? "Ajuste ou limpe os filtros para ampliar a busca." : "Quando operadores enviarem feedbacks pelo app, eles aparecerão nesta lista."}
                 action={hasFilters ? <Button variant="outline" size="sm" onClick={clearFilters}>Limpar filtros</Button> : undefined}
               />
             </Card>
