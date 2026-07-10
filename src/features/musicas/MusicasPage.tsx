@@ -2153,4 +2153,89 @@ function DetailPanel({
             </Button>
           )}
           {canApprove && (
-            <Button className="flex-1" disabl
+            <Button className="flex-1" disabled={busy} onClick={onApprove}>
+              <Check className="h-4 w-4" /> Aprovar
+            </Button>
+          )}
+          {canRetry && (
+            <Button className="flex-1" variant="outline" disabled={busy} onClick={onRetry}>
+              <RefreshCw className="h-4 w-4" /> Tentar importar novamente
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border/60 pb-1 last:border-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function TimelineItem({
+  color,
+  label,
+  date,
+  note,
+  empty,
+}: {
+  color: string;
+  label: string;
+  date: string | null;
+  note?: string | null;
+  empty?: string;
+}) {
+  return (
+    <li className="relative">
+      <span className={cn("absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ring-4 ring-background", color)} />
+      <p className="text-sm font-medium text-foreground">{label}</p>
+      <p className="text-xs text-muted-foreground">{date ? fmtDate(date) : empty ?? "—"}</p>
+      {note && <p className="mt-0.5 text-xs italic text-muted-foreground">“{note}”</p>}
+    </li>
+  );
+}
+
+/* ------------------------------ Skeleton / vazio -------------------------- */
+
+function PlaylistCardSkeleton() {
+  return (
+    <Card className="flex items-center gap-4 p-4 shadow-sm">
+      <Skeleton className="h-11 w-11 rounded-xl" />
+      <div className="flex-1 space-y-2.5">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="h-4 w-72" />
+        <Skeleton className="h-5 w-32 rounded-full" />
+      </div>
+      <Skeleton className="h-8 w-24 rounded-md" />
+    </Card>
+  );
+}
+
+function EmptyState({ onRefresh, refreshing }: { onRefresh: () => void; refreshing: boolean }) {
+  return (
+    <Card className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center">
+      <div className="relative">
+        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+          <ListMusic className="h-9 w-9 text-primary" />
+        </div>
+        <div className="absolute -bottom-1.5 -right-1.5 flex h-8 w-8 items-center justify-center rounded-full bg-background ring-1 ring-border">
+          <Inbox className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </div>
+      <div className="max-w-sm space-y-1">
+        <p className="font-display text-lg font-semibold">Nenhuma playlist aguardando aprovação</p>
+        <p className="text-sm text-muted-foreground">
+          Quando um operador enviar uma playlist pelo app, ela aparecerá aqui.
+        </p>
+      </div>
+      <Button variant="outline" onClick={onRefresh} disabled={refreshing}>
+        <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} /> Atualizar lista
+      </Button>
+    </Card>
+  );
+}

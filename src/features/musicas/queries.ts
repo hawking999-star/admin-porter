@@ -377,4 +377,23 @@ export async function listOperatorMusicLibraryPage(
 }
 
 export async function renameMusicPlaylist(id: string, name: string): Promise<void> {
-  const { error } = await supabase.rpc("admin_rename_music_playlist",
+  const { error } = await supabase.rpc("admin_rename_music_playlist", {
+    p_playlist: id,
+    p_name: name,
+  });
+  if (error) throw error;
+}
+
+export async function removePlaylistTrack(playlistTrackId: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_remove_playlist_track", {
+    p_playlist_track: playlistTrackId,
+  });
+  if (error) throw error;
+}
+
+export async function archiveSecondaryPlaylist(id: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_archive_secondary_playlist", {
+    p_playlist: id,
+  });
+  if (error) throw error;
+}

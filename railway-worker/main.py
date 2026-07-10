@@ -781,4 +781,182 @@ def process_job(job: dict):
                 supabase.table("playlist_tracks").upsert(
                     {
                         "playlist_id": playlist_id,
-            
+                        "track_id": track_id,
+                        "position": position,
+                        "added_by_type": "system",
+                    },
+                    on_conflict="playlist_id,track_id",
+                ).execute()
+
+                completed += 1
+                update_job(job_id, completed=completed)
+                tag = "reuso" if found.data else "novo"
+                log(f"  ok {position}/{total} [{tag}] {entry['title'][:60]}")
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                code, friendly = classify_error(exc)
+                details = error_details(
+                    exc,
+                    playlist_id=playlist_id,
+                    job_id=job_id,
+                    track_id=entry.get("id"),
+                    url=url,
+                )
+                if first_error_code is None:
+                    first_error_code = code
+                    first_error_message = friendly
+                    first_error_details = details
+                skipped.append(
+                    {
+                        "youtube_id": entry.get("id"),
+                        "title": (entry.get("title") or entry.get("id") or "")[:200],
+                        "duration_seconds": duration_seconds,
+                        "code": code,
+                        "reason": friendly,
+                    }
+                )
+                update_job(
+                    job_id,
+                    failed=failed,
+                    error=str(exc),
+                    error_code=code,
+                    error_message=friendly,
+                    error_details=details,
+                    last_error_at=now_iso(),
+                )
+                log(f"  ! erro ao salvar {entry['id']} [{code}]: {exc}")
+
+    # Falha permanente ("indisponível") NÃO é erro de sistema. Se o que dava pra
+    # importar foi importado e só sobraram indisponíveis, o job é SUCESSO com um
+    # relatório — não uma "falha" vermelha no admin.
+    skipped_codes = [s.get("code") for s in skipped]
+    has_real_error = any(c not in PERMANENT_SKIP_CODES for c in skipped_codes)
+    only_unavailable = failed > 0 and not has_real_error
+
+    if failed == 0:
+        final_status = "done"
+    elif completed > 0 and only_unavailable:
+        final_status = "done"      # importou tudo que era possível; resto é indisponível
+    elif completed > 0:
+        final_status = "partial"   # erro real de sistema + algo importado
+    else:
+        final_status = "error"     # nada importado
+
+    final_error_code = None
+    final_error_message = None
+    if failed > 0 and final_status != "done":
+        final_error_code = "PARTIAL_IMPORT_FAILED" if completed > 0 else (first_error_code or "NO_TRACKS_DOWNLOADED")
+        final_error_message = (
+            f"Importação parcial: {completed} músicas importadas e {failed} falharam."
+            if completed > 0
+            else (first_error_message or "Nenhuma música foi baixada da playlist.")
+        )
+    elif final_status == "done" and failed > 0:
+        # Sucesso COM indisponíveis: informativo, não é falha.
+        final_error_code = "IMPORTED_WITH_UNAVAILABLE"
+        final_error_message = f"{completed} músicas importadas; {failed} indisponível(is) (restrição do YouTube)."
+
+    # Guarda o relatório sempre que algo tiver sido pulado, mesmo em sucesso,
+    # para o admin exibir os indisponíveis de forma neutra.
+    report_details = None
+    if failed > 0:
+        report_details = {
+            "summary": {
+                "playlist_id": playlist_id,
+                "job_id": job_id,
+                "source_url": url,
+                "total": total,
+                "completed": completed,
+                "failed": failed,
+                "unavailable_only": only_unavailable,
+            },
+            # Relatório por-música consumido pelo Admin (sem stack sensível).
+            "skipped": skipped,
+            "first_error": first_error_details,
+        }
+
+    update_job(
+        job_id,
+        status=final_status,
+        completed=completed,
+        failed=failed,
+        finished_at=now_iso(),
+        error=None if completed > 0 else "nenhuma faixa baixada",
+        error_code=final_error_code,
+        error_message=final_error_message,
+        error_details=report_details,
+        last_error_at=None if (failed == 0 or final_status == "done") else now_iso(),
+    )
+    log(f"Job {job_id} finalizado: {final_status} ({completed} ok, {reused} reaproveitadas, {failed} falhas)")
+
+
+def fail_job(job: dict, exc: Exception):
+    attempts = job.get("attempts") or 1
+    code, friendly = classify_error(exc)
+    # Volta para a fila se ainda tem tentativas; senao marca erro definitivo.
+    if attempts < MAX_ATTEMPTS:
+        update_job(
+            job["id"],
+            status="queued",
+            error=f"retry: {exc}",
+            error_code=code,
+            error_message=friendly,
+            error_details=error_details(exc, job_id=job.get("id"), playlist_id=job.get("playlist_id")),
+            last_error_at=now_iso(),
+        )
+        log(f"Job {job['id']} falhou (tentativa {attempts}); reenfileirado.")
+    else:
+        update_job(
+            job["id"],
+            status="error",
+            error=str(exc),
+            error_code=code,
+            error_message=friendly,
+            error_details=error_details(exc, job_id=job.get("id"), playlist_id=job.get("playlist_id")),
+            last_error_at=now_iso(),
+            finished_at=now_iso(),
+        )
+        log(f"Job {job['id']} falhou definitivamente: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# Loop principal
+# --------------------------------------------------------------------------- #
+
+def check_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+    except Exception:  # noqa: BLE001
+        log("[FATAL] ffmpeg não encontrado no ambiente.")
+        sys.exit(1)
+
+
+def main():
+    check_ffmpeg()
+    log("Worker iniciado. Aguardando jobs...")
+    log(f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa")
+    while True:
+        try:
+            deletion_job = claim_storage_deletion_job()
+            if deletion_job:
+                try:
+                    process_storage_deletion(deletion_job)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"Falha ao excluir objeto órfão; retry agendado: {exc}")
+                continue
+            job = claim_next_job()
+            if not job:
+                time.sleep(POLL_SECONDS)
+                continue
+            try:
+                process_job(job)
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                fail_job(job, exc)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[loop] erro inesperado: {exc}")
+            time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()
