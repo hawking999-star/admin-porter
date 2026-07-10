@@ -34,7 +34,7 @@ export function AdminUserEditDialog({
   const qc = useQueryClient();
 
   const [displayName, setDisplayName] = useState("");
-  const [role, setRole] = useState("support_readonly");
+  const [role, setRole] = useState("superadmin");
   const [active, setActive] = useState(true);
   const [mfaRequired, setMfaRequired] = useState(false);
 

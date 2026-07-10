@@ -52,20 +52,9 @@ async function fetchAdminUser(session: Session | null): Promise<{
 }> {
   if (!session) return { adminUser: null, permissionError: null };
 
-  const { data: operator, error: operatorError } = await supabase
-    .from("operators")
-    .select("id, role, active")
-    .eq("auth_user_id", session.user.id)
-    .eq("active", true)
-    .maybeSingle();
-
-  if (operatorError || operator) {
-    return {
-      adminUser: null,
-      permissionError: "Entre com uma conta administrativa ativa.",
-    };
-  }
-
+  // O acesso ao admin depende SÓ de estar em "Acessos ao painel" (admin_users)
+  // com um papel ativo. Ser operador do app não bloqueia mais o admin: o mesmo
+  // login pode ter os dois selos (app + painel).
   const { data, error } = await supabase
     .from("admin_users")
     .select("id, auth_user_id, display_name, role, active, mfa_required")

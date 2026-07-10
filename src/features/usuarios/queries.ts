@@ -17,22 +17,29 @@ export const OPERATOR_ROLES = [
   { value: "supervisor", label: "Supervisor" },
 ] as const;
 
+// Papéis selecionáveis no painel: por ora só Super admin (acesso total).
+// Novos acessos nascem como superadmin. Dá para reintroduzir papéis depois.
 export const ADMIN_ROLES = [
   { value: "superadmin", label: "Super admin" },
-  { value: "unit_manager", label: "Gestor de unidade" },
-  { value: "operations_manager", label: "Gestor de operação" },
-  { value: "content_manager", label: "Gestor de conteúdo" },
-  { value: "challenge_manager", label: "Gestor de challenges" },
-  { value: "release_manager", label: "Gestor de versões" },
-  { value: "auditor", label: "Auditor" },
-  { value: "support_readonly", label: "Suporte (só leitura)" },
 ] as const;
+
+// Rótulos completos para EXIBIR papéis antigos que ainda existam no banco.
+const ADMIN_ROLE_LABELS: Record<string, string> = {
+  superadmin: "Super admin",
+  unit_manager: "Gestor de unidade",
+  operations_manager: "Gestor de operação",
+  content_manager: "Gestor de conteúdo",
+  challenge_manager: "Gestor de challenges",
+  release_manager: "Gestor de versões",
+  auditor: "Auditor",
+  support_readonly: "Suporte (só leitura)",
+};
 
 export function operatorRoleLabel(v: string) {
   return OPERATOR_ROLES.find((r) => r.value === v)?.label ?? v;
 }
 export function adminRoleLabel(v: string) {
-  return ADMIN_ROLES.find((r) => r.value === v)?.label ?? v;
+  return ADMIN_ROLE_LABELS[v] ?? v;
 }
 
 /* --------------------------- Opções de unidade --------------------------- */
@@ -349,6 +356,36 @@ export async function updateAdminUser(id: string, input: AdminUserInput): Promis
     p_role: input.role,
     p_active: input.active,
     p_mfa_required: input.mfa_required,
+  });
+  if (error) throw error;
+}
+
+/* ------------------------- Promoção (app <-> painel) --------------------- */
+
+/** Dá acesso ao painel a um operador do app já existente (vira superadmin). */
+export async function grantPanelAccess(operatorId: string, mfaRequired = false): Promise<void> {
+  const { error } = await supabase.rpc("admin_grant_panel_access", {
+    p_operator: operatorId,
+    p_mfa_required: mfaRequired,
+  });
+  if (error) throw error;
+}
+
+export type GrantAppAccessInput = {
+  username: string;
+  unit_id: string;
+  role: string;
+  session_policy: string;
+};
+
+/** Dá acesso ao app a quem só tem acesso ao painel (cria perfil de operador). */
+export async function grantAppAccess(adminUserId: string, input: GrantAppAccessInput): Promise<void> {
+  const { error } = await supabase.rpc("admin_grant_app_access", {
+    p_admin_user: adminUserId,
+    p_username: input.username,
+    p_unit_id: input.unit_id,
+    p_role: input.role,
+    p_session_policy: input.session_policy,
   });
   if (error) throw error;
 }

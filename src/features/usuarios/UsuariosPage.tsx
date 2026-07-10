@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff } from "lucide-react";
+import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff, UserPlus, Smartphone } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -68,6 +68,8 @@ import {
 } from "./queries";
 import { OperatorFormDialog } from "./OperatorFormDialog";
 import { AdminUserEditDialog } from "./AdminUserEditDialog";
+import { GrantPanelAccessDialog } from "./GrantPanelAccessDialog";
+import { GrantAppAccessDialog } from "./GrantAppAccessDialog";
 
 export function UsuariosPage() {
   return (
@@ -366,11 +368,25 @@ function AcessosTab() {
   });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AdminUser | null>(null);
+  const [grantPanelOpen, setGrantPanelOpen] = useState(false);
+  const [grantAppTarget, setGrantAppTarget] = useState<AdminUser | null>(null);
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
 
   return (
     <>
+      <FilterBar>
+        <p className="text-sm text-muted-foreground">
+          Só quem está nesta lista entra no admin.
+        </p>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="text-sm text-muted-foreground">{rows.length} de {total}</span>
+          <Button onClick={() => setGrantPanelOpen(true)}>
+            <UserPlus className="h-4 w-4" /> Dar acesso ao painel
+          </Button>
+        </div>
+      </FilterBar>
+
       {isError ? (
         <Card className="shadow-sm">
           <ErrorState
@@ -387,17 +403,23 @@ function AcessosTab() {
               <TableHead>Papel</TableHead>
               <TableHead>2FA</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead className="w-[64px] text-right">Ações</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading && Array.from({ length: 3 }).map((_, i) => (
-              <TableRow key={i}><TableCell colSpan={4}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+              <TableRow key={i}><TableCell colSpan={5}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
             ))}
 
             {!isLoading && rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={4}>
-                  <EmptyState icon={<ShieldCheck className="h-6 w-6" />} title="Nenhum acesso ao painel cadastrado." description="Os acessos administrativos aparecerão aqui após serem criados." />
+                <TableCell colSpan={5}>
+                  <EmptyState
+                    icon={<ShieldCheck className="h-6 w-6" />}
+                    title="Nenhum acesso ao painel cadastrado."
+                    description="Promova um operador do app para liberar o acesso ao admin."
+                    action={<Button variant="outline" size="sm" onClick={() => setGrantPanelOpen(true)}><UserPlus className="h-4 w-4" /> Dar acesso ao painel</Button>}
+                  />
                 </TableCell>
               </TableRow>
             )}
@@ -408,6 +430,24 @@ function AcessosTab() {
                 <TableCell>{adminRoleLabel(a.role)}</TableCell>
                 <TableCell className="text-muted-foreground">{a.mfa_required ? "Sim" : "Não"}</TableCell>
                 <TableCell><StatusBadge status={a.active ? "ativo" : "inativo"} /></TableCell>
+                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Ações do acesso">
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => { setEditing(a); setDialogOpen(true); }}>
+                        <Pencil className="h-4 w-4" /> Editar
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => setGrantAppTarget(a)}>
+                        <Smartphone className="h-4 w-4" /> Dar acesso ao app
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -429,10 +469,17 @@ function AcessosTab() {
       )}
 
       <p className="mt-3 text-xs text-muted-foreground">
-        Para criar um novo acesso, é preciso primeiro criar o login no Supabase Auth. O passo a passo está no relatório técnico.
+        Para liberar o admin, promova um operador do app em "Dar acesso ao painel" — sem criar login novo.
+        Use o menu de ações para dar acesso ao app a quem só tem o painel.
       </p>
 
       <AdminUserEditDialog open={dialogOpen} onOpenChange={setDialogOpen} adminUser={editing} />
+      <GrantPanelAccessDialog open={grantPanelOpen} onOpenChange={setGrantPanelOpen} />
+      <GrantAppAccessDialog
+        open={Boolean(grantAppTarget)}
+        onOpenChange={(o) => !o && setGrantAppTarget(null)}
+        adminUser={grantAppTarget}
+      />
     </>
   );
 }

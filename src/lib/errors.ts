@@ -22,6 +22,18 @@ const RPC_MESSAGES: Record<string, string> = {
   block_reason_required: "Informe o motivo do bloqueio.",
   invalid_release_status: "A versão já está bloqueada ou substituída.",
   not_release_admin: "Você não tem permissão para gerenciar versões do app.",
+  // promoção de acesso (app <-> painel)
+  operator_has_no_login: "Este operador não tem login vinculado, então não dá para promover ao painel.",
+  operator_not_found: "Operador não encontrado. Atualize a página e tente de novo.",
+  admin_user_not_found: "Acesso não encontrado. Atualize a página e tente de novo.",
+  admin_has_no_login: "Este acesso não tem login vinculado no Supabase Auth.",
+  already_has_app_access: "Esta pessoa já tem acesso ao app.",
+  username_required: "Informe o usuário para o login no app.",
+  username_invalid: "Usuário inválido. Use letras minúsculas, números, ponto, hífen ou underline (3 a 60).",
+  username_taken: "Esse usuário já está em uso. Escolha outro.",
+  operator_role_invalid: "Cargo do operador inválido.",
+  session_policy_invalid: "Política de sessão inválida.",
+  unit_not_found_or_inactive: "Condomínio não encontrado ou inativo.",
   // permissões / genéricos
   forbidden: "Você não tem permissão para executar esta ação.",
   unauthorized: "Sessão expirada. Entre novamente para continuar.",

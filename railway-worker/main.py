@@ -55,6 +55,12 @@ POLL_SECONDS = int(env("POLL_SECONDS", "10"))
 MAX_ATTEMPTS = int(env("MAX_ATTEMPTS", "3"))
 YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
 YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
+# Ordem dos "player clients" do YouTube que o yt-dlp tenta ao baixar. Alguns
+# clients ficam bloqueados de tempos em tempos; tentar vários em cascata aumenta
+# muito a chance de sucesso. Dá para mudar via env sem alterar o código.
+YT_PLAYER_CLIENTS = [
+    c.strip() for c in env("YT_PLAYER_CLIENTS", "tv,ios,android,web").split(",") if c.strip()
+]
 
 
 def ensure_youtube_cookiefile() -> str | None:
@@ -124,14 +130,27 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
             "YOUTUBE_FORMAT_UNAVAILABLE",
             "Falha no YouTube: nenhum formato de áudio disponível para download no ambiente do importador.",
         )
-    if "confirm you're not a bot" in msg or "confirm you’re not a bot" in msg or "sign in to confirm" in msg:
+    if any(p in msg for p in ("not a bot", "sign in to confirm", "confirm you’re", "confirm your age")):
         if not YOUTUBE_COOKIEFILE:
             return (
                 "YOUTUBE_COOKIES_MISSING",
-                "Falha ao importar: YouTube exigiu autenticação e a variável YOUTUBE_COOKIES não está configurada.",
+                "Falha ao importar: o YouTube pediu login (proteção anti-bot). "
+                "Configure a variável YOUTUBE_COOKIES no Railway (cookies de uma conta logada).",
             )
-        return "PLAYLIST_PRIVATE_OR_UNAVAILABLE", "Falha ao importar: playlist privada ou indisponível."
+        return (
+            "YOUTUBE_COOKIES_INVALID",
+            "Falha ao importar: o YouTube recusou os cookies atuais (podem ter expirado). "
+            "Atualize a variável YOUTUBE_COOKIES no Railway.",
+        )
     if "private" in msg or "unavailable" in msg or "not available" in msg or "sign in" in msg:
+        # Sem cookies num IP de datacenter (Railway), o YouTube costuma recusar o
+        # download mesmo de vídeos públicos. Se não houver cookie, aponte a causa provável.
+        if not YOUTUBE_COOKIEFILE:
+            return (
+                "YOUTUBE_COOKIES_MISSING",
+                "Falha ao importar: o YouTube recusou o download (provável bloqueio anti-bot). "
+                "Configure a variável YOUTUBE_COOKIES no Railway para liberar.",
+            )
         return "PLAYLIST_PRIVATE_OR_UNAVAILABLE", "Falha ao importar: playlist privada ou indisponível."
     if "unsupported url" in msg or "invalid url" in msg or "no suitable extractor" in msg:
         return "INVALID_URL", "Link inválido ou plataforma não suportada."
@@ -264,12 +283,17 @@ def list_playlist_entries(url: str) -> list[dict]:
 
 
 def download_one(entry: dict, workdir: str) -> str:
-    """Baixa uma faixa como mp3 (bitrate fixo AUDIO_BITRATE) e devolve o caminho,
-    ou None se falhar / passar do limite de tamanho."""
+    """Baixa uma faixa como mp3 (bitrate fixo AUDIO_BITRATE) e devolve o caminho.
+
+    Tenta cada "player client" do YouTube em cascata (e, se houver cookies, com e
+    sem cookie). O YouTube bloqueia clients de forma intermitente, então insistir
+    em outro client costuma resolver o "playlist privada ou indisponível" quando o
+    vídeo é, na verdade, público."""
     vid = entry["id"]
     kbps = AUDIO_BITRATE
     out_tmpl = os.path.join(workdir, f"{vid}.%(ext)s")
-    def build_opts(use_cookie: bool) -> dict:
+
+    def build_opts(client: str, use_cookie: bool) -> dict:
         opts = {
             "quiet": True,
             "no_warnings": True,
@@ -277,7 +301,7 @@ def download_one(entry: dict, workdir: str) -> str:
             "format": "bestaudio[acodec!=none]/best[acodec!=none]/bestaudio/best",
             "outtmpl": out_tmpl,
             "max_filesize": MAX_FILE_BYTES * 4,  # corta downloads absurdos na fonte
-            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            "extractor_args": {"youtube": {"player_client": [client]}},
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -290,32 +314,46 @@ def download_one(entry: dict, workdir: str) -> str:
             opts["cookiefile"] = YOUTUBE_COOKIEFILE
         return opts
 
-    def run_download(use_cookie: bool):
-        with YoutubeDL(build_opts(use_cookie)) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={vid}"])
+    # Combinações a tentar: cada client, com cookie (se houver) e depois sem.
+    cookie_modes = [True, False] if YOUTUBE_COOKIEFILE else [False]
+    attempts = [(client, cookie) for client in YT_PLAYER_CLIENTS for cookie in cookie_modes]
 
-    try:
+    last_exc: Exception | None = None
+    for client, use_cookie in attempts:
+        # Limpa restos de tentativas anteriores para não confundir a checagem do mp3.
+        for leftover in (f"{vid}.mp3", f"{vid}.webm", f"{vid}.m4a", f"{vid}.part"):
+            p = os.path.join(workdir, leftover)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         try:
-            run_download(use_cookie=True)
+            with YoutubeDL(build_opts(client, use_cookie)) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={vid}"])
+            mp3 = os.path.join(workdir, f"{vid}.mp3")
+            if not os.path.exists(mp3):
+                last_exc = FileNotFoundError(f"yt-dlp não gerou o mp3 para {vid} (client={client})")
+                continue
+            size = os.path.getsize(mp3)
+            if size > MAX_FILE_BYTES:
+                log(f"  ! {vid} passou de {MAX_FILE_MB} MB ({size/1048576:.1f} MB) — descartado")
+                os.remove(mp3)
+                # Limite nosso: trocar de client não muda nada, aborta já.
+                raise ValueError(
+                    f"TRACK_SIZE_LIMIT_EXCEEDED: {size/1048576:.1f} MB (limite {MAX_FILE_MB:.0f} MB)"
+                )
+            return mp3
+        except ValueError:
+            raise  # limites internos (tamanho) — propaga sem tentar outro client
         except Exception as exc:  # noqa: BLE001
-            if YOUTUBE_COOKIEFILE and "requested format is not available" in str(exc).lower():
-                log(f"  ! {vid}: cookie não trouxe formato de áudio; tentando sem cookies")
-                run_download(use_cookie=False)
-            else:
-                raise
-    except Exception as exc:  # noqa: BLE001
-        log(f"  ! falha ao baixar {vid}: {exc}")
-        raise RuntimeError(f"yt-dlp falhou ao baixar {vid}: {exc}") from exc
+            last_exc = exc
+            log(f"  ! {vid} client={client} cookie={use_cookie}: {exc}")
+            continue
 
-    mp3 = os.path.join(workdir, f"{vid}.mp3")
-    if not os.path.exists(mp3):
-        raise FileNotFoundError(f"yt-dlp não gerou o arquivo mp3 para {vid}")
-    size = os.path.getsize(mp3)
-    if size > MAX_FILE_BYTES:
-        log(f"  ! {vid} passou de {MAX_FILE_MB} MB ({size/1048576:.1f} MB) — descartado")
-        os.remove(mp3)
-        raise ValueError(f"TRACK_SIZE_LIMIT_EXCEEDED: {size/1048576:.1f} MB (limite {MAX_FILE_MB:.0f} MB)")
-    return mp3
+    raise RuntimeError(
+        f"yt-dlp falhou ao baixar {vid} em todos os clients ({', '.join(YT_PLAYER_CLIENTS)}): {last_exc}"
+    ) from last_exc
 
 
 def sha256_of(path: str) -> str:
