@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff, UserPlus, Smartphone } from "lucide-react";
@@ -128,6 +128,7 @@ function OperadoresTab() {
         role: roleFilter,
       }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
   const statsQuery = useQuery({
     queryKey: ["operator-stats"],
@@ -365,6 +366,7 @@ function AcessosTab() {
     queryKey: ["admin-users", page, pageSize],
     queryFn: () => listAdminUsers({ page, pageSize }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AdminUser | null>(null);

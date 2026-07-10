@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Puzzle,
@@ -344,6 +344,7 @@ export function ChallengesPage() {
     queryKey: ["challenges", "list", filters],
     queryFn: () => listChallenges(filters),
     staleTime: 15_000,
+    placeholderData: keepPreviousData,
   });
 
   const rows = list.data?.rows ?? [];

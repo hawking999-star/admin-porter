@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Search,
   RotateCw,
@@ -84,6 +84,7 @@ export function LogsPage() {
         dateTo,
       }),
     staleTime: 20_000,
+    placeholderData: keepPreviousData,
   });
 
   const rows = data?.rows ?? [];

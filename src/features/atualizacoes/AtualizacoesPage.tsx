@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -270,13 +270,26 @@ export function AtualizacoesPage() {
   const [noticeSeverity, setNoticeSeverity] = useState<NoticeSeverity | "all">("all");
   const [noticePage, setNoticePage] = useState(1);
   const [noticePageSize, setNoticePageSize] = useState(10);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<AppRelease | null>(null);
+  const [noteDialogRelease, setNoteDialogRelease] = useState<AppRelease | null>(null);
+  const [pendingNoteId, setPendingNoteId] = useState<string | null>(null);
+  const [versionPickerOpen, setVersionPickerOpen] = useState(false);
+  const [noticeDialog, setNoticeDialog] = useState<AppNotice | null | "new">(null);
+  const [confirm, setConfirm] = useState<null | {
+    release: AppRelease;
+    action: "approve" | "release" | "block" | "rollback";
+  }>(null);
+  const [blockReason, setBlockReason] = useState("");
   const debouncedSearch = useDebounce(search, 350);
   const debouncedNoticeSearch = useDebounce(noticeSearch, 350);
+  const noticeDialogOpen = Boolean(noticeDialog);
 
   const { data, isLoading, isError, error, isFetching } = useQuery({
     queryKey: ["app-releases", page, pageSize, debouncedSearch, status],
     queryFn: () => listAppReleases({ page, pageSize, search: debouncedSearch, status }),
     staleTime: 20_000,
+    placeholderData: keepPreviousData,
   });
   const statsQuery = useQuery({
     queryKey: ["app-release-stats"],
@@ -307,6 +320,7 @@ export function AtualizacoesPage() {
     queryKey: ["release-options"],
     queryFn: listReleaseOptions,
     staleTime: 30_000,
+    enabled: versionPickerOpen,
   });
   const noticesQuery = useQuery({
     queryKey: ["app-notices", noticePage, noticePageSize, debouncedNoticeSearch, noticeStatus, noticeSeverity],
@@ -318,29 +332,21 @@ export function AtualizacoesPage() {
       severity: noticeSeverity,
     }),
     staleTime: 20_000,
+    placeholderData: keepPreviousData,
+    enabled: tab === "avisos",
   });
   const noticeUnitsQuery = useQuery({
     queryKey: ["notice-units"],
     queryFn: listNoticeUnits,
     staleTime: 60_000,
+    enabled: noticeDialogOpen,
   });
   const noticeOperatorsQuery = useQuery({
     queryKey: ["notice-operators"],
     queryFn: listNoticeOperators,
     staleTime: 60_000,
+    enabled: noticeDialogOpen,
   });
-
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<AppRelease | null>(null);
-  const [noteDialogRelease, setNoteDialogRelease] = useState<AppRelease | null>(null);
-  const [pendingNoteId, setPendingNoteId] = useState<string | null>(null);
-  const [versionPickerOpen, setVersionPickerOpen] = useState(false);
-  const [noticeDialog, setNoticeDialog] = useState<AppNotice | null | "new">(null);
-  const [confirm, setConfirm] = useState<null | {
-    release: AppRelease;
-    action: "approve" | "release" | "block" | "rollback";
-  }>(null);
-  const [blockReason, setBlockReason] = useState("");
 
   // Abre o editor de nota a partir da aba Notas / seletor de versão: carrega a
   // release completa por id e só então abre o diálogo (que exige a release).

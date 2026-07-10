@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Area,
   AreaChart,
@@ -265,6 +265,7 @@ export function AnalyticsPage() {
         rankingPageSize: RANKING_PAGE_SIZE,
       }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 
   const data = query.data;

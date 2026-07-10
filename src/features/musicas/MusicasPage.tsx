@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Search,
@@ -326,8 +326,9 @@ export function MusicasPage() {
         type: typeFilter,
         platform: platformFilter,
         date: dateFilter as "all" | "today" | "7d" | "30d",
-      }),
+    }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
     enabled: activeArea === "requests",
     refetchInterval: (query) => {
       const rows = query.state.data?.rows;
@@ -352,8 +353,9 @@ export function MusicasPage() {
         page: libraryPage,
         pageSize: libraryPageSize,
         search: debouncedLibrarySearch,
-      }),
+    }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
     enabled: activeArea === "library",
     refetchInterval: (query) => {
       const rows = query.state.data?.rows;
@@ -489,6 +491,14 @@ export function MusicasPage() {
 
   const operators = libraryQuery.data?.rows ?? [];
   const operatorsTotal = libraryQuery.data?.total ?? 0;
+  const activeRefreshing = activeArea === "requests" ? isFetching : libraryQuery.isFetching;
+  const refreshActiveArea = () => {
+    if (activeArea === "requests") {
+      void refetch();
+      return;
+    }
+    void libraryQuery.refetch();
+  };
 
   const detail = useMemo(
     () => playlists.find((p) => p.id === detailId) ?? null,
@@ -534,13 +544,10 @@ export function MusicasPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              refetch();
-              libraryQuery.refetch();
-            }}
-            disabled={isFetching || libraryQuery.isFetching}
+            onClick={refreshActiveArea}
+            disabled={activeRefreshing}
           >
-            <RefreshCw className={cn("h-4 w-4", (isFetching || libraryQuery.isFetching) && "animate-spin")} />
+            <RefreshCw className={cn("h-4 w-4", activeRefreshing && "animate-spin")} />
             Atualizar
           </Button>
         }

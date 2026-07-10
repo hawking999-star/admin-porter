@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   BellDot,
@@ -199,6 +199,7 @@ export function FeedbackPage() {
         status: statusFilter,
       }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
   const statsQuery = useQuery({
     queryKey: ["feedback-stats"],

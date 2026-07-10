@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Search, Building, Building2, Users, Power, PowerOff, MoreHorizontal, Pencil } from "lucide-react";
@@ -75,6 +75,7 @@ export function CondominiosPage() {
     queryKey: ["units", page, pageSize, debouncedSearch, activeFilter],
     queryFn: () => listUnits({ page, pageSize, search: debouncedSearch, active: activeFilter }),
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
   const statsQuery = useQuery({
     queryKey: ["unit-stats"],
