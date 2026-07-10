@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Puzzle,
-  Plus,
+  Upload,
+  Download,
   Clock,
   ShieldBan,
   Building2,
@@ -14,12 +15,23 @@ import {
   CheckCircle2,
   PencilRuler,
   Layers,
+  FileSpreadsheet,
+  FileUp,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   StatCard,
   StatusBadge,
@@ -38,9 +50,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useDebounce } from "@/hooks/useDebounce";
+import { listUnitOptions, unitLabel } from "@/features/usuarios/queries";
 import {
   countChallengeStats,
   listChallenges,
+  challengeCsvTemplate,
   challengeKindLabel,
   challengeStatusBadge,
   CHALLENGE_STATUSES,
@@ -81,6 +95,151 @@ function fmtSeconds(s: number | null) {
   const sec = s % 60;
   return sec ? `${m}min ${sec}s` : `${m}min`;
 }
+
+function downloadCsvTemplate() {
+  const blob = new Blob([challengeCsvTemplate()], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "modelo-desafio-multipla-escolha.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* --------------------------- Diálogo de upload ---------------------------- */
+
+type UnitOption = { id: string; name: string; city: string | null; state: string | null; code: string | null };
+
+function UploadChallengeDialog({
+  open,
+  onOpenChange,
+  units,
+  unitsLoading,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  units: UnitOption[];
+  unitsLoading: boolean;
+}) {
+  const [unitId, setUnitId] = useState<string>("");
+  const [file, setFile] = useState<File | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function pickFile(f: File | null) {
+    if (!f) return setFile(null);
+    const ok = /\.(csv|pdf)$/i.test(f.name) || f.type === "text/csv" || f.type === "application/pdf";
+    if (!ok) {
+      toast.error("Formato não suportado. Envie um arquivo CSV ou PDF.");
+      return;
+    }
+    setFile(f);
+  }
+
+  function submit() {
+    if (!unitId) return toast.error("Escolha o condomínio do desafio.");
+    if (!file) return toast.error("Selecione um arquivo CSV ou PDF.");
+    // Processamento ainda não implementado — só validação visual por enquanto.
+    toast.info("Arquivo recebido. O processamento do envio entra no ar em breve.");
+    onOpenChange(false);
+    setFile(null);
+    setUnitId("");
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Enviar desafio</DialogTitle>
+          <DialogDescription>
+            Os desafios são por condomínio. Envie uma planilha (CSV) ou um PDF de múltipla escolha para o
+            condomínio escolhido. Por enquanto aceitamos apenas o tipo <strong>múltipla escolha</strong>.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* Condomínio de destino */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground">Condomínio</label>
+            <Select value={unitId} onValueChange={setUnitId}>
+              <SelectTrigger className="h-10 w-full rounded-lg">
+                <SelectValue placeholder={unitsLoading ? "Carregando condomínios…" : "Selecione o condomínio"} />
+              </SelectTrigger>
+              <SelectContent>
+                {units.map((u) => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {unitLabel(u)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Exemplo CSV */}
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <FileSpreadsheet className="h-5 w-5 shrink-0 text-primary" />
+              <div className="min-w-0 text-xs">
+                <p className="font-semibold text-foreground">Não sabe o formato?</p>
+                <p className="text-muted-foreground">Baixe a planilha de exemplo e preencha nela.</p>
+              </div>
+            </div>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={downloadCsvTemplate}>
+              <Download className="h-4 w-4" /> Exemplo CSV
+            </Button>
+          </div>
+
+          {/* Área de upload */}
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".csv,text/csv,application/vnd.ms-excel,.pdf,application/pdf"
+            className="hidden"
+            onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+          />
+          {file ? (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
+              <span className="inline-flex min-w-0 items-center gap-2">
+                <FileUp className="h-4 w-4 shrink-0 text-primary" />
+                <span className="truncate font-medium">{file.name}</span>
+              </span>
+              <button
+                type="button"
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+                onClick={() => setFile(null)}
+                aria-label="Remover arquivo"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              className="flex w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-background px-4 py-6 text-center text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:bg-accent/30"
+            >
+              <Upload className="h-6 w-6 text-muted-foreground" />
+              <span className="font-medium text-foreground">Clique para escolher o arquivo</span>
+              <span className="text-xs">Aceita CSV ou PDF</span>
+            </button>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={submit}>
+            <Upload className="h-4 w-4" /> Enviar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------ Card / lista ------------------------------ */
 
 function ChallengeCard({ challenge }: { challenge: Challenge }) {
   const c = challenge;
@@ -152,8 +311,16 @@ export function ChallengesPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [kindFilter, setKindFilter] = useState<string>("all");
+  const [unitFilter, setUnitFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const debouncedSearch = useDebounce(search, 300);
+
+  const units = useQuery({
+    queryKey: ["challenges", "units"],
+    queryFn: listUnitOptions,
+    staleTime: 60_000,
+  });
 
   const stats = useQuery({
     queryKey: ["challenges", "stats"],
@@ -162,8 +329,15 @@ export function ChallengesPage() {
   });
 
   const filters = useMemo(
-    () => ({ page, pageSize: PAGE_SIZE, search: debouncedSearch, status: statusFilter, kind: kindFilter }),
-    [page, debouncedSearch, statusFilter, kindFilter],
+    () => ({
+      page,
+      pageSize: PAGE_SIZE,
+      search: debouncedSearch,
+      status: statusFilter,
+      kind: kindFilter,
+      unit: unitFilter,
+    }),
+    [page, debouncedSearch, statusFilter, kindFilter, unitFilter],
   );
 
   const list = useQuery({
@@ -174,6 +348,7 @@ export function ChallengesPage() {
 
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
+  const hasFilter = statusFilter !== "all" || kindFilter !== "all" || unitFilter !== "all" || Boolean(debouncedSearch);
 
   function resetToFirstPage<T>(setter: (v: T) => void) {
     return (v: T) => {
@@ -187,10 +362,10 @@ export function ChallengesPage() {
       <PageHeader
         eyebrow="Engajamento"
         title="Desafios"
-        description="Desafios e regras que aparecem para os operadores durante o turno. Visualização inicial — a criação e edição chegam em breve."
+        description="Desafios por condomínio que aparecem para os operadores durante o turno. Visualização inicial — o processamento dos envios chega em breve."
         action={
-          <Button onClick={() => toast.info("Criação de desafios chega em breve.")}>
-            <Plus className="h-4 w-4" /> Novo desafio
+          <Button onClick={() => setUploadOpen(true)}>
+            <Upload className="h-4 w-4" /> Enviar desafio
           </Button>
         }
       />
@@ -233,6 +408,20 @@ export function ChallengesPage() {
 
       <FilterBar resultText={list.isLoading ? "Carregando…" : `${total} desafio(s)`}>
         <SearchInput value={search} onChange={resetToFirstPage(setSearch)} placeholder="Buscar por título ou enunciado…" />
+        <Select value={unitFilter} onValueChange={resetToFirstPage(setUnitFilter)}>
+          <SelectTrigger className="h-10 w-[190px] rounded-lg">
+            <SelectValue placeholder="Condomínio" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todos os condomínios</SelectItem>
+            <SelectItem value="global">Globais (sem condomínio)</SelectItem>
+            {(units.data ?? []).map((u) => (
+              <SelectItem key={u.id} value={u.id}>
+                {unitLabel(u)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={statusFilter} onValueChange={resetToFirstPage(setStatusFilter)}>
           <SelectTrigger className="h-10 w-[150px] rounded-lg">
             <SelectValue placeholder="Status" />
@@ -279,15 +468,18 @@ export function ChallengesPage() {
         <Card className="shadow-sm">
           <EmptyState
             icon={<Puzzle className="h-6 w-6" />}
-            title={
-              statusFilter !== "all" || kindFilter !== "all" || debouncedSearch
-                ? "Nenhum desafio para esse filtro."
-                : "Ainda não há desafios cadastrados."
-            }
+            title={hasFilter ? "Nenhum desafio para esse filtro." : "Ainda não há desafios cadastrados."}
             description={
-              statusFilter !== "all" || kindFilter !== "all" || debouncedSearch
+              hasFilter
                 ? "Ajuste os filtros para ver outros desafios."
-                : "Esta área já está ligada ao banco. Quando os desafios forem criados, eles aparecem aqui automaticamente."
+                : "Esta área já está ligada ao banco. Envie um desafio por condomínio para começar."
+            }
+            action={
+              hasFilter ? undefined : (
+                <Button variant="outline" onClick={() => setUploadOpen(true)}>
+                  <Upload className="h-4 w-4" /> Enviar desafio
+                </Button>
+              )
             }
           />
         </Card>
@@ -308,6 +500,13 @@ export function ChallengesPage() {
           onPageChange={setPage}
         />
       )}
+
+      <UploadChallengeDialog
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        units={units.data ?? []}
+        unitsLoading={units.isLoading}
+      />
     </div>
   );
 }

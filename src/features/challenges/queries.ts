@@ -74,7 +74,25 @@ export type ChallengeFilters = PageParams & {
   search?: string;
   status?: "all" | string;
   kind?: "all" | string;
+  unit?: "all" | "global" | string;
 };
+
+/**
+ * Modelo de planilha (CSV) para envio de desafios de MÚLTIPLA ESCOLHA.
+ * `correta` = letra da alternativa correta (A, B, C ou D).
+ * `duracao_segundos` padrão 60; `bloqueio_segundos` é opcional.
+ * O prefixo BOM (U+FEFF) garante acentos corretos ao abrir no Excel.
+ */
+export function challengeCsvTemplate(): string {
+  const header =
+    "titulo,enunciado,alternativa_a,alternativa_b,alternativa_c,alternativa_d,correta,duracao_segundos,bloqueio_segundos";
+  const rows = [
+    '"Coleta seletiva","Em que dia passa a coleta de recicláveis no condomínio?","Segunda","Quarta","Sexta","Domingo","B","60","120"',
+    '"Portaria","Qual o ramal da portaria?","2010","2020","2030","2040","A","45",""',
+    '"Regras da piscina","Até que horário a piscina fica aberta em dias úteis?","20h","21h","22h","23h","C","60","180"',
+  ];
+  return String.fromCharCode(0xfeff) + [header, ...rows].join("\r\n") + "\r\n";
+}
 
 export type ChallengeStats = {
   total: number;
@@ -102,6 +120,8 @@ export async function listChallenges(filters: ChallengeFilters): Promise<Paginat
 
   if (filters.status && filters.status !== "all") query = query.eq("status", filters.status);
   if (filters.kind && filters.kind !== "all") query = query.eq("kind", filters.kind);
+  if (filters.unit === "global") query = query.is("unit_id", null);
+  else if (filters.unit && filters.unit !== "all") query = query.eq("unit_id", filters.unit);
   if (term) {
     const clean = term.replace(/[%,()]/g, "");
     if (clean) query = query.or(`title.ilike.%${clean}%,prompt.ilike.%${clean}%`);
