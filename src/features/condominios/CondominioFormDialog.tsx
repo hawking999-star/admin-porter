@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -23,6 +23,27 @@ import {
 import { createUnit, updateUnit, type Unit, type UnitInput } from "./queries";
 
 const DEFAULT_TZ = "America/Sao_Paulo";
+
+const BRAZILIAN_STATES = [
+  { uf: "AC", name: "Acre" }, { uf: "AL", name: "Alagoas" }, { uf: "AP", name: "Amapá" },
+  { uf: "AM", name: "Amazonas" }, { uf: "BA", name: "Bahia" }, { uf: "CE", name: "Ceará" },
+  { uf: "DF", name: "Distrito Federal" }, { uf: "ES", name: "Espírito Santo" }, { uf: "GO", name: "Goiás" },
+  { uf: "MA", name: "Maranhão" }, { uf: "MT", name: "Mato Grosso" }, { uf: "MS", name: "Mato Grosso do Sul" },
+  { uf: "MG", name: "Minas Gerais" }, { uf: "PA", name: "Pará" }, { uf: "PB", name: "Paraíba" },
+  { uf: "PR", name: "Paraná" }, { uf: "PE", name: "Pernambuco" }, { uf: "PI", name: "Piauí" },
+  { uf: "RJ", name: "Rio de Janeiro" }, { uf: "RN", name: "Rio Grande do Norte" }, { uf: "RS", name: "Rio Grande do Sul" },
+  { uf: "RO", name: "Rondônia" }, { uf: "RR", name: "Roraima" }, { uf: "SC", name: "Santa Catarina" },
+  { uf: "SP", name: "São Paulo" }, { uf: "SE", name: "Sergipe" }, { uf: "TO", name: "Tocantins" },
+] as const;
+
+type IbgeCity = { nome: string };
+
+async function listCitiesByState(state: string): Promise<string[]> {
+  const response = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${state}/municipios`);
+  if (!response.ok) throw new Error("Não foi possível carregar as cidades deste estado.");
+  const cities = (await response.json()) as IbgeCity[];
+  return cities.map((city) => city.nome).sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
 
 // O Brasil não usa mais horário de verão, então na prática só existem 4 horários.
 // Um representante para cada, com os estados que caem em cada um.
@@ -78,6 +99,15 @@ export function CondominioFormDialog({
   const [state, setState] = useState("");
   const [timezone, setTimezone] = useState(DEFAULT_TZ);
   const [active, setActive] = useState(true);
+  const citiesQuery = useQuery({
+    queryKey: ["ibge-cities", state],
+    queryFn: () => listCitiesByState(state),
+    enabled: open && Boolean(state),
+    staleTime: Infinity,
+    gcTime: 1000 * 60 * 60 * 24,
+  });
+  const cities = citiesQuery.data ?? [];
+  const cityOptions = city && !cities.includes(city) ? [city, ...cities] : cities;
 
   useEffect(() => {
     if (open) {
@@ -122,6 +152,11 @@ export function CondominioFormDialog({
       timezone: timezone.trim() || DEFAULT_TZ,
       active,
     });
+  };
+
+  const onStateChange = (nextState: string) => {
+    setState(nextState);
+    setCity("");
   };
 
   return (
@@ -171,22 +206,38 @@ export function CondominioFormDialog({
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-2">
                 <Label htmlFor="city">Cidade</Label>
-                <Input
-                  id="city"
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  placeholder="Ex.: São Paulo"
-                />
+                <Select value={city} onValueChange={setCity} disabled={!state || citiesQuery.isLoading || citiesQuery.isError}>
+                  <SelectTrigger id="city">
+                    <SelectValue
+                      placeholder={!state ? "Selecione a UF primeiro" : citiesQuery.isLoading ? "Carregando cidades..." : "Selecione a cidade"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {cityOptions.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {citiesQuery.isError && (
+                  <p className="text-xs text-destructive">Não foi possível carregar as cidades. Tente selecionar a UF novamente.</p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="state">UF</Label>
-                <Input
-                  id="state"
-                  value={state}
-                  onChange={(e) => setState(e.target.value)}
-                  placeholder="SP"
-                  maxLength={2}
-                />
+                <Select value={state} onValueChange={onStateChange}>
+                  <SelectTrigger id="state">
+                    <SelectValue placeholder="UF" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BRAZILIAN_STATES.map((option) => (
+                      <SelectItem key={option.uf} value={option.uf}>
+                        {option.uf} — {option.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <div className="space-y-2">
