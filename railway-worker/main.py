@@ -100,6 +100,23 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
 
     if context == "env":
         return "WORKER_ENV_MISSING", "Falha no importador: variável de ambiente obrigatória ausente."
+
+    # Sentinelas internas do importador: comparar no texto ORIGINAL (case-sensitive).
+    # Ficam no topo para não serem "engolidas" pelas regras genéricas abaixo.
+    if "TRACK_DURATION_LIMIT_EXCEEDED" in raw:
+        return (
+            "TRACK_DURATION_LIMIT_EXCEEDED",
+            f"Faixa ignorada: duração acima do limite de {MAX_TRACK_DURATION_SECONDS} segundos "
+            f"({MAX_TRACK_DURATION_SECONDS // 60} min).",
+        )
+    if "TRACK_SIZE_LIMIT_EXCEEDED" in raw:
+        return (
+            "TRACK_SIZE_LIMIT_EXCEEDED",
+            f"Faixa ignorada: arquivo de áudio acima do limite de {MAX_FILE_MB:.0f} MB.",
+        )
+    if "TRACK_DURATION_UNKNOWN" in raw:
+        return "TRACK_DURATION_UNKNOWN", "Faixa ignorada: não foi possível confirmar a duração da faixa."
+
     if "timed out" in msg or "timeout" in msg:
         return "IMPORT_TIMEOUT", "Falha no importador: tempo limite excedido."
     if "requested format is not available" in msg or "no video formats found" in msg:
@@ -129,10 +146,6 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return "YOUTUBE_ERROR", "Falha no YouTube ao ler ou baixar a playlist."
     if "supabase" in msg or "postgrest" in msg or "duplicate key" in msg:
         return "SUPABASE_ERROR", "Falha no Supabase ao gravar a importação."
-    if "TRACK_DURATION_LIMIT_EXCEEDED" in msg:
-        return "TRACK_DURATION_LIMIT_EXCEEDED", "Faixa ignorada: duração máxima de 960 segundos excedida."
-    if "TRACK_DURATION_UNKNOWN" in msg:
-        return "TRACK_DURATION_UNKNOWN", "Faixa ignorada: não foi possível confirmar a duração."
     return "IMPORTER_ERROR", raw or "Falha ao importar playlist."
 
 
@@ -301,7 +314,7 @@ def download_one(entry: dict, workdir: str) -> str:
     if size > MAX_FILE_BYTES:
         log(f"  ! {vid} passou de {MAX_FILE_MB} MB ({size/1048576:.1f} MB) — descartado")
         os.remove(mp3)
-        raise ValueError(f"arquivo acima do limite de {MAX_FILE_MB} MB")
+        raise ValueError(f"TRACK_SIZE_LIMIT_EXCEEDED: {size/1048576:.1f} MB (limite {MAX_FILE_MB:.0f} MB)")
     return mp3
 
 
@@ -384,6 +397,7 @@ def process_job(job: dict):
     first_error_code = None
     first_error_message = None
     first_error_details = None
+    skipped: list[dict] = []  # relatório por-música: o que NÃO entrou e por quê
 
     reused = 0
     with tempfile.TemporaryDirectory() as workdir:
@@ -483,6 +497,15 @@ def process_job(job: dict):
                     first_error_code = code
                     first_error_message = friendly
                     first_error_details = details
+                skipped.append(
+                    {
+                        "youtube_id": entry.get("id"),
+                        "title": (entry.get("title") or entry.get("id") or "")[:200],
+                        "duration_seconds": duration_seconds,
+                        "code": code,
+                        "reason": friendly,
+                    }
+                )
                 update_job(
                     job_id,
                     failed=failed,
@@ -523,6 +546,8 @@ def process_job(job: dict):
                 "completed": completed,
                 "failed": failed,
             },
+            # Relatório por-música consumido pelo Admin (sem stack sensível).
+            "skipped": skipped,
             "first_error": first_error_details,
         },
         last_error_at=None if failed == 0 else now_iso(),

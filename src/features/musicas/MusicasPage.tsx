@@ -28,6 +28,7 @@ import {
   Archive,
   ListOrdered,
   History,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -182,6 +183,63 @@ function technicalErrorText(p: Playlist): string | null {
     details ? `Detalhes: ${JSON.stringify(details)}` : null,
   ].filter(Boolean);
   return parts.length ? parts.join("\n") : null;
+}
+
+type SkippedTrack = {
+  title?: string;
+  reason?: string;
+  code?: string;
+  youtube_id?: string;
+  duration_seconds?: number | null;
+};
+
+function importReport(p: Playlist): {
+  summary?: { total?: number; completed?: number; failed?: number };
+  skipped: SkippedTrack[];
+} {
+  const d = (p.error_details || p.download?.error_details) as
+    | { summary?: { total?: number; completed?: number; failed?: number }; skipped?: SkippedTrack[] }
+    | null
+    | undefined;
+  const skipped = Array.isArray(d?.skipped) ? (d!.skipped as SkippedTrack[]) : [];
+  return { summary: d?.summary, skipped };
+}
+
+function fmtDur(s?: number | null): string | null {
+  if (s == null || Number.isNaN(s)) return null;
+  const m = Math.floor(s / 60);
+  const sec = Math.round(s % 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/** Relatório por-música: mostra o que NÃO entrou na playlist e o motivo certo. */
+function ImportReport({ playlist }: { playlist: Playlist }) {
+  const { summary, skipped } = importReport(playlist);
+  if (!skipped.length) return null;
+  return (
+    <div className="mt-2 rounded-md border border-destructive/20 bg-destructive/5 p-2.5 text-xs">
+      <p className="mb-1.5 font-semibold text-destructive">
+        Relatório de importação
+        {summary
+          ? ` — ${summary.completed ?? 0} de ${summary.total ?? "?"} importadas, ${skipped.length} não importada(s)`
+          : ` — ${skipped.length} música(s) não importada(s)`}
+      </p>
+      <ul className="space-y-1">
+        {skipped.map((t, i) => (
+          <li key={t.youtube_id ?? i} className="flex items-start gap-1.5">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
+            <span className="min-w-0">
+              <span className="font-medium text-foreground">{t.title || t.youtube_id || "faixa"}</span>
+              {fmtDur(t.duration_seconds) && (
+                <span className="text-muted-foreground"> · {fmtDur(t.duration_seconds)}</span>
+              )}
+              <span className="text-destructive"> — {t.reason || t.code || "motivo não informado"}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 const NOTES_KEY = "ptm:playlist-notes";
@@ -623,20 +681,14 @@ export function MusicasPage() {
       ) : filtered.length === 0 ? (
         <EmptyState onRefresh={() => refetch()} refreshing={isFetching} />
       ) : (
-        <div className="space-y-3">
-          {filtered.map(({ p, platform }) => (
-            <PlaylistCard
-              key={p.id}
-              p={p}
-              platform={platform}
-              busy={mutation.isPending || retryMutation.isPending}
-              onOpen={() => openDetail(p)}
-              onApprove={() => askApprove(p.id)}
-              onReject={() => askReject(p.id)}
-              onRetry={() => retryMutation.mutate({ id: p.id })}
-            />
-          ))}
-        </div>
+        <PlaylistList
+          items={filtered}
+          busy={mutation.isPending || retryMutation.isPending}
+          onOpen={openDetail}
+          onApprove={askApprove}
+          onReject={askReject}
+          onRetry={(id) => retryMutation.mutate({ id })}
+        />
       )}
 
       {!isError && (
@@ -1442,6 +1494,120 @@ function PlaylistLibraryDetail({
   );
 }
 
+/* --------------------------- Lista agrupada ------------------------------- */
+
+type PlaylistListItem = { p: Playlist; platform: Platform };
+
+/**
+ * Lista otimizada para não "lotar": agrupa por condomínio e recolhe num único
+ * bloco as playlists que ainda aguardam o operador enviar o link (sem link),
+ * que antes ocupavam um card inteiro cada.
+ */
+function PlaylistList({
+  items,
+  busy,
+  onOpen,
+  onApprove,
+  onReject,
+  onRetry,
+}: {
+  items: PlaylistListItem[];
+  busy: boolean;
+  onOpen: (p: Playlist) => void;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  onRetry: (id: string) => void;
+}) {
+  const [showAwaiting, setShowAwaiting] = useState(false);
+  const awaiting = useMemo(() => items.filter((x) => !x.p.source_url), [items]);
+  const groups = useMemo(() => {
+    const map = new Map<string, PlaylistListItem[]>();
+    for (const it of items) {
+      if (!it.p.source_url) continue;
+      const key = unitText(it.p) || "Sem condomínio";
+      const arr = map.get(key);
+      if (arr) arr.push(it);
+      else map.set(key, [it]);
+    }
+    return Array.from(map.entries());
+  }, [items]);
+
+  return (
+    <div className="space-y-6">
+      {groups.map(([unit, list]) => (
+        <section key={unit} className="space-y-3">
+          <div className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <Building2 className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{unit}</span>
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-normal normal-case">
+              {list.length}
+            </span>
+          </div>
+          <div className="space-y-3">
+            {list.map(({ p, platform }) => (
+              <PlaylistCard
+                key={p.id}
+                p={p}
+                platform={platform}
+                busy={busy}
+                onOpen={() => onOpen(p)}
+                onApprove={() => onApprove(p.id)}
+                onReject={() => onReject(p.id)}
+                onRetry={() => onRetry(p.id)}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+
+      {awaiting.length > 0 && (
+        <section className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setShowAwaiting((v) => !v)}
+            className="flex w-full items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/40"
+          >
+            <Music className="h-3.5 w-3.5 shrink-0" />
+            {awaiting.length} playlist(s) aguardando o operador enviar o link
+            <ChevronDown className={cn("ml-auto h-4 w-4 transition-transform", showAwaiting && "rotate-180")} />
+          </button>
+          {showAwaiting && (
+            <div className="space-y-2">
+              {awaiting.map(({ p }) => (
+                <CompactAwaitingRow key={p.id} p={p} onOpen={() => onOpen(p)} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function CompactAwaitingRow({ p, onOpen }: { p: Playlist; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full items-center gap-3 rounded-lg border border-border bg-background px-3 py-2 text-left text-sm transition-colors hover:border-primary/50"
+    >
+      <Music className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate">
+        <span className="font-medium">{p.operator_name ?? "—"}</span>
+        <span className="text-muted-foreground">
+          {" · "}
+          {playlistTypeLabel(p.type)}
+          {" · "}
+          {unitText(p)}
+        </span>
+      </span>
+      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+        Aguardando envio
+      </span>
+    </button>
+  );
+}
+
 /* ------------------------------ Card horizontal --------------------------- */
 
 function PlaylistCard({
@@ -1532,6 +1698,8 @@ function PlaylistCard({
             </span>
           </div>
         )}
+
+        {p.import_status === "failed" && <ImportReport playlist={p} />}
 
         {/* Motivo da rejeição — bem visível */}
         {p.approval_status === "rejected" && (
@@ -1768,6 +1936,7 @@ function DetailPanel({
               <p className="text-sm text-destructive">
                 Falha ao importar: {importError || "motivo técnico não informado pelo backend"}
               </p>
+              <ImportReport playlist={p} />
               {technicalError && (
                 <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 text-xs text-muted-foreground">
                   {technicalError}
