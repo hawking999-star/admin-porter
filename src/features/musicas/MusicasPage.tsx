@@ -31,6 +31,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,6 +56,7 @@ import {
 import {
   archiveSecondaryPlaylist,
   countPlaylistStats,
+  enqueueTrackReplacement,
   listOperatorMusicLibraryPage,
   listPlaylists,
   removePlaylistTrack,
@@ -223,9 +225,84 @@ const PERMANENT_SKIP_CODES = new Set([
 ]);
 const isUnavailableCode = (code?: string) => !!code && PERMANENT_SKIP_CODES.has(code);
 
+/** Diálogo p/ trocar UMA faixa indisponível colando outra URL do YouTube. */
+function ReplaceTrackDialog({
+  playlistId,
+  target,
+  onClose,
+}: {
+  playlistId: string;
+  target: SkippedTrack | null;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (target) setUrl("");
+  }, [target]);
+
+  const mutation = useMutation({
+    mutationFn: () => enqueueTrackReplacement(playlistId, url.trim(), target?.youtube_id ?? null),
+    onSuccess: () => {
+      toast.success("Troca enfileirada", {
+        description: "O worker vai baixar a nova versão em instantes.",
+      });
+      qc.invalidateQueries();
+      onClose();
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível enfileirar", { description: errorMessage(err) });
+    },
+  });
+
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (url.trim()) mutation.mutate();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Trocar faixa</DialogTitle>
+            <DialogDescription>
+              {target?.title ? `Substituir "${target.title}". ` : ""}
+              Cole a URL do YouTube da versão que deve entrar no lugar. Ela é baixada e ligada à
+              playlist, sem mexer nas outras faixas.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-4">
+            <label htmlFor="replace_url" className="text-xs font-medium text-muted-foreground">
+              URL do YouTube
+            </label>
+            <Input
+              id="replace_url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://www.youtube.com/watch?v=..."
+              autoComplete="off"
+              required
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button type="submit" disabled={mutation.isPending || !url.trim()}>
+              {mutation.isPending ? "Enfileirando..." : "Trocar faixa"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** Relatório por-música: separa "indisponível" (neutro) de "falha" real (vermelho). */
 function ImportReport({ playlist }: { playlist: Playlist }) {
   const { summary, skipped } = importReport(playlist);
+  const [replaceTarget, setReplaceTarget] = useState<SkippedTrack | null>(null);
   if (!skipped.length) return null;
   const unavailable = skipped.filter((t) => isUnavailableCode(t.code));
   const errors = skipped.filter((t) => !isUnavailableCode(t.code));
@@ -250,7 +327,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
               <AlertTriangle
                 className={`mt-0.5 h-3 w-3 shrink-0 ${permanent ? "text-warning-foreground" : "text-destructive"}`}
               />
-              <span className="min-w-0">
+              <span className="min-w-0 flex-1">
                 <span className="font-medium text-foreground">{t.title || t.youtube_id || "faixa"}</span>
                 {fmtDur(t.duration_seconds) && (
                   <span className="text-muted-foreground"> · {fmtDur(t.duration_seconds)}</span>
@@ -260,10 +337,24 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                   — {t.reason || t.code || "motivo não informado"}
                 </span>
               </span>
+              {permanent && (
+                <button
+                  type="button"
+                  onClick={() => setReplaceTarget(t)}
+                  className="ml-1 shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-muted"
+                >
+                  Trocar
+                </button>
+              )}
             </li>
           );
         })}
       </ul>
+      <ReplaceTrackDialog
+        playlistId={playlist.id}
+        target={replaceTarget}
+        onClose={() => setReplaceTarget(null)}
+      />
     </div>
   );
 }
@@ -2062,89 +2153,4 @@ function DetailPanel({
             </Button>
           )}
           {canApprove && (
-            <Button className="flex-1" disabled={busy} onClick={onApprove}>
-              <Check className="h-4 w-4" /> Aprovar
-            </Button>
-          )}
-          {canRetry && (
-            <Button className="flex-1" variant="outline" disabled={busy} onClick={onRetry}>
-              <RefreshCw className="h-4 w-4" /> Tentar importar novamente
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-b border-border/60 pb-1 last:border-0">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right font-medium text-foreground">{value}</span>
-    </div>
-  );
-}
-
-function TimelineItem({
-  color,
-  label,
-  date,
-  note,
-  empty,
-}: {
-  color: string;
-  label: string;
-  date: string | null;
-  note?: string | null;
-  empty?: string;
-}) {
-  return (
-    <li className="relative">
-      <span className={cn("absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ring-4 ring-background", color)} />
-      <p className="text-sm font-medium text-foreground">{label}</p>
-      <p className="text-xs text-muted-foreground">{date ? fmtDate(date) : empty ?? "—"}</p>
-      {note && <p className="mt-0.5 text-xs italic text-muted-foreground">“{note}”</p>}
-    </li>
-  );
-}
-
-/* ------------------------------ Skeleton / vazio -------------------------- */
-
-function PlaylistCardSkeleton() {
-  return (
-    <Card className="flex items-center gap-4 p-4 shadow-sm">
-      <Skeleton className="h-11 w-11 rounded-xl" />
-      <div className="flex-1 space-y-2.5">
-        <Skeleton className="h-4 w-48" />
-        <Skeleton className="h-4 w-72" />
-        <Skeleton className="h-5 w-32 rounded-full" />
-      </div>
-      <Skeleton className="h-8 w-24 rounded-md" />
-    </Card>
-  );
-}
-
-function EmptyState({ onRefresh, refreshing }: { onRefresh: () => void; refreshing: boolean }) {
-  return (
-    <Card className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center">
-      <div className="relative">
-        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
-          <ListMusic className="h-9 w-9 text-primary" />
-        </div>
-        <div className="absolute -bottom-1.5 -right-1.5 flex h-8 w-8 items-center justify-center rounded-full bg-background ring-1 ring-border">
-          <Inbox className="h-4 w-4 text-muted-foreground" />
-        </div>
-      </div>
-      <div className="max-w-sm space-y-1">
-        <p className="font-display text-lg font-semibold">Nenhuma playlist aguardando aprovação</p>
-        <p className="text-sm text-muted-foreground">
-          Quando um operador enviar uma playlist pelo app, ela aparecerá aqui.
-        </p>
-      </div>
-      <Button variant="outline" onClick={onRefresh} disabled={refreshing}>
-        <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} /> Atualizar lista
-      </Button>
-    </Card>
-  );
-}
+            <Button className="flex-1" disabl

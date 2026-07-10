@@ -261,6 +261,21 @@ export async function retryPlaylistImport(id: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Enfileira a reimportação de UMA faixa (troca manual por outra URL do YouTube). */
+export async function enqueueTrackReplacement(
+  playlistId: string,
+  sourceUrl: string,
+  replaceYoutubeId?: string | null,
+): Promise<string | null> {
+  const { data, error } = await supabase.rpc("admin_enqueue_track_replacement", {
+    p_playlist_id: playlistId,
+    p_source_url: sourceUrl,
+    p_replace_youtube_id: replaceYoutubeId ?? null,
+  });
+  if (error) throw error;
+  return (data as string | null) ?? null;
+}
+
 export type MusicTrack = {
   playlist_track_id: string;
   track_id: string;
@@ -362,23 +377,4 @@ export async function listOperatorMusicLibraryPage(
 }
 
 export async function renameMusicPlaylist(id: string, name: string): Promise<void> {
-  const { error } = await supabase.rpc("admin_rename_music_playlist", {
-    p_playlist: id,
-    p_name: name,
-  });
-  if (error) throw error;
-}
-
-export async function removePlaylistTrack(playlistTrackId: string): Promise<void> {
-  const { error } = await supabase.rpc("admin_remove_playlist_track", {
-    p_playlist_track: playlistTrackId,
-  });
-  if (error) throw error;
-}
-
-export async function archiveSecondaryPlaylist(id: string): Promise<void> {
-  const { error } = await supabase.rpc("admin_archive_secondary_playlist", {
-    p_playlist: id,
-  });
-  if (error) throw error;
-}
+  const { error } = await supabase.rpc("admin_rename_music_playlist",
