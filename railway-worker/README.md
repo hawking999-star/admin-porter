@@ -8,6 +8,8 @@ coloca um pedido na fila (`download_jobs`) e este worker faz o resto sozinho:
 2. Baixa cada música em mp3, garantindo **no máximo 15 MB** por faixa.
 3. Sobe cada arquivo pro **Cloudflare R2**.
 4. Grava tudo nas tabelas `tracks` e `playlist_tracks` do Supabase.
+5. Processa a fila backend de exclusões R2; só remove o registro global depois
+   de o banco confirmar que a faixa continua sem referências.
 
 Você acompanha o progresso na própria tela **Músicas** (selo "Baixando 12/170",
 "170 baixadas", etc.).
@@ -99,6 +101,7 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 | Variável | Padrão | O que faz |
 |---|---|---|
 | `MAX_TRACKS` | 170 | Máx. de faixas por playlist |
+| `MAX_TRACK_DURATION_SECONDS` | 960 | Duração máxima de cada faixa, em segundos |
 | `MAX_FILE_MB` | 15 | Tamanho máximo de cada mp3 |
 | `AUDIO_BITRATE` | 128 | Qualidade do mp3, em kbps |
 | `POLL_SECONDS` | 10 | De quanto em quanto tempo checa a fila |
@@ -107,6 +110,7 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 ## Como ele respeita os limites
 
 - **170 faixas:** só lê as primeiras 170 da playlist (`playlistend`).
+- **960 segundos/faixa:** descarta faixas sem duração confirmada ou acima desse teto.
 - **Qualidade 128 kbps:** todo mp3 sai em 128 kbps (mude em `AUDIO_BITRATE` se quiser).
 - **15 MB/faixa:** por segurança, descarta qualquer arquivo que ainda passe de 15 MB
   (a 128 kbps isso só aconteceria em faixas com mais de ~15 min).

@@ -47,6 +47,7 @@ R2_BUCKET = env("R2_BUCKET", required=True)
 R2_PUBLIC_BASE_URL = env("R2_PUBLIC_BASE_URL", "").rstrip("/")
 
 MAX_TRACKS = int(env("MAX_TRACKS", "170"))
+MAX_TRACK_DURATION_SECONDS = int(env("MAX_TRACK_DURATION_SECONDS", "960"))
 MAX_FILE_MB = float(env("MAX_FILE_MB", "15"))
 MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
 AUDIO_BITRATE = int(env("AUDIO_BITRATE", "128"))  # kbps do mp3
@@ -128,6 +129,10 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return "YOUTUBE_ERROR", "Falha no YouTube ao ler ou baixar a playlist."
     if "supabase" in msg or "postgrest" in msg or "duplicate key" in msg:
         return "SUPABASE_ERROR", "Falha no Supabase ao gravar a importação."
+    if "TRACK_DURATION_LIMIT_EXCEEDED" in msg:
+        return "TRACK_DURATION_LIMIT_EXCEEDED", "Faixa ignorada: duração máxima de 960 segundos excedida."
+    if "TRACK_DURATION_UNKNOWN" in msg:
+        return "TRACK_DURATION_UNKNOWN", "Faixa ignorada: não foi possível confirmar a duração."
     return "IMPORTER_ERROR", raw or "Falha ao importar playlist."
 
 
@@ -190,6 +195,19 @@ def claim_next_job() -> dict | None:
 def update_job(job_id: str, **fields):
     fields["updated_at"] = now_iso()
     supabase.table("download_jobs").update(fields).eq("id", job_id).execute()
+
+
+def claim_storage_deletion_job() -> dict | None:
+    """Obtém uma exclusão R2 já autorizada e serializada pelo banco."""
+    res = supabase.rpc("claim_storage_deletion_job").execute()
+    return res.data[0] if res.data else None
+
+
+def complete_storage_deletion_job(job_id: str, success: bool, error: str | None = None):
+    return supabase.rpc(
+        "complete_storage_deletion_job",
+        {"p_job_id": job_id, "p_success": success, "p_error": error},
+    ).execute()
 
 
 # --------------------------------------------------------------------------- #
@@ -299,6 +317,21 @@ def upload_to_r2(path: str, key: str):
     s3.upload_file(path, R2_BUCKET, key, ExtraArgs={"ContentType": "audio/mpeg"})
 
 
+def process_storage_deletion(job: dict):
+    """Apaga o objeto; a RPC só remove o registro global após nova checagem."""
+    try:
+        s3.delete_object(Bucket=R2_BUCKET, Key=job["storage_object_key"])
+        complete_storage_deletion_job(job["job_id"], True)
+        log(f"Objeto órfão removido com segurança (job {job['job_id']}).")
+    except Exception as exc:  # noqa: BLE001
+        try:
+            complete_storage_deletion_job(job["job_id"], False, str(exc))
+        except Exception:  # noqa: BLE001
+            # Se a confirmação falhar, o lock expira e o delete idempotente é repetido.
+            pass
+        raise
+
+
 # --------------------------------------------------------------------------- #
 # Processamento de um job
 # --------------------------------------------------------------------------- #
@@ -356,11 +389,19 @@ def process_job(job: dict):
     with tempfile.TemporaryDirectory() as workdir:
         for entry in entries:
             vid = entry["id"]
+            duration_seconds = entry.get("duration")
+            # Não aceite duração desconhecida: o limite precisa ser verificável
+            # antes de baixar/reutilizar uma faixa. O banco repete a proteção
+            # para qualquer escritor concorrente.
             # Chave GLOBAL por musica (nao por playlist): a mesma musica vira
             # 1 unico arquivo no R2 e 1 unica linha em `tracks`, compartilhada
             # por todas as playlists que a usam. Isso deduplica repetidas.
             key = f"tracks/{vid}.mp3"
             try:
+                if duration_seconds is None:
+                    raise ValueError("TRACK_DURATION_UNKNOWN")
+                if float(duration_seconds) > MAX_TRACK_DURATION_SECONDS:
+                    raise ValueError("TRACK_DURATION_LIMIT_EXCEEDED")
                 # 1) Ja existe essa musica (em qualquer playlist)? Reutiliza - nao rebaixa.
                 found = (
                     supabase.table("tracks")
@@ -386,7 +427,7 @@ def process_job(job: dict):
                         if R2_PUBLIC_BASE_URL:
                             meta["public_url"] = f"{R2_PUBLIC_BASE_URL}/{key}"
 
-                        dur_ms = int(entry["duration"] * 1000) if entry.get("duration") else None
+                        dur_ms = int(float(duration_seconds) * 1000)
                         # upsert por storage_object_key: se dois jobs correrem juntos,
                         # nao cria duplicado (o segundo reaproveita a mesma linha).
                         track = (
@@ -536,6 +577,13 @@ def main():
     log(f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa")
     while True:
         try:
+            deletion_job = claim_storage_deletion_job()
+            if deletion_job:
+                try:
+                    process_storage_deletion(deletion_job)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"Falha ao excluir objeto órfão; retry agendado: {exc}")
+                continue
             job = claim_next_job()
             if not job:
                 time.sleep(POLL_SECONDS)
