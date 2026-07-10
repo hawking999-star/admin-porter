@@ -61,6 +61,27 @@ YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
 YT_PLAYER_CLIENTS = [
     c.strip() for c in env("YT_PLAYER_CLIENTS", "tv,ios,android,web").split(",") if c.strip()
 ]
+# Substituição automática: quando uma faixa é INDISPONÍVEL de forma permanente
+# (geo-bloqueio, sem formato, removida), procurar outra versão da mesma música.
+ENABLE_AUTO_SUBSTITUTE = env("ENABLE_AUTO_SUBSTITUTE", "true").lower() in ("1", "true", "yes", "on")
+SUBSTITUTE_SEARCH_LIMIT = int(env("SUBSTITUTE_SEARCH_LIMIT", "4"))
+
+# Motivos PERMANENTES (não é erro de sistema; é o vídeo/faixa que não dá).
+# Se só houver desses e algo tiver sido importado, o job é SUCESSO com relatório.
+PERMANENT_SKIP_CODES = {
+    "YOUTUBE_GEO_BLOCKED",
+    "YOUTUBE_FORMAT_UNAVAILABLE",
+    "PLAYLIST_PRIVATE_OR_UNAVAILABLE",
+    "TRACK_SIZE_LIMIT_EXCEEDED",
+    "TRACK_DURATION_LIMIT_EXCEEDED",
+    "TRACK_DURATION_UNKNOWN",
+}
+# Dos permanentes, quais vale tentar substituir por outra versão (mesma música).
+SUBSTITUTABLE_CODES = {
+    "YOUTUBE_GEO_BLOCKED",
+    "YOUTUBE_FORMAT_UNAVAILABLE",
+    "PLAYLIST_PRIVATE_OR_UNAVAILABLE",
+}
 
 
 def ensure_youtube_cookiefile() -> str | None:
@@ -129,6 +150,12 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return (
             "YOUTUBE_FORMAT_UNAVAILABLE",
             "Falha no YouTube: nenhum formato de áudio disponível para download no ambiente do importador.",
+        )
+    if "your country" in msg or "not available in your country" in msg or "geo" in msg and "block" in msg:
+        return (
+            "YOUTUBE_GEO_BLOCKED",
+            "Faixa indisponível: o vídeo tem restrição de país e não é permitido no servidor de download. "
+            "Troque por outra versão da música.",
         )
     if any(p in msg for p in ("not a bot", "sign in to confirm", "confirm you’re", "confirm your age")):
         if not YOUTUBE_COOKIEFILE:
@@ -356,6 +383,66 @@ def download_one(entry: dict, workdir: str) -> str:
     ) from last_exc
 
 
+def find_alternatives(entry: dict, limit: int = SUBSTITUTE_SEARCH_LIMIT) -> list[dict]:
+    """Busca outras versões da mesma música no YouTube (por título), casando a
+    duração (±20s) para evitar pegar cover/ao vivo/errada."""
+    title = (entry.get("title") or "").strip()
+    if not title:
+        return []
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True}
+    if YOUTUBE_COOKIEFILE:
+        opts["cookiefile"] = YOUTUBE_COOKIEFILE
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{limit}:{title}", download=False)
+    except Exception as exc:  # noqa: BLE001
+        log(f"    busca de alternativa falhou: {exc}")
+        return []
+    orig = entry.get("duration")
+    out: list[dict] = []
+    for e in (info.get("entries") or []):
+        if not e:
+            continue
+        vid = e.get("id")
+        if not vid or vid == entry.get("id"):
+            continue
+        dur = e.get("duration")
+        if orig and dur and abs(float(dur) - float(orig)) > 20:
+            continue
+        out.append({"id": vid, "title": e.get("title") or vid, "duration": dur})
+    return out
+
+
+def download_with_fallback(entry: dict, workdir: str) -> tuple[str, str, bool]:
+    """Baixa a faixa; se falhar por motivo PERMANENTE (geo/formato/removida),
+    tenta versões alternativas da MESMA música. Retorna (mp3, video_id_usado,
+    substituida)."""
+    try:
+        return download_one(entry, workdir), entry["id"], False
+    except ValueError:
+        raise  # limite de tamanho nosso — não substitui
+    except Exception as exc:  # noqa: BLE001
+        code, _ = classify_error(exc)
+        if not ENABLE_AUTO_SUBSTITUTE or code not in SUBSTITUTABLE_CODES:
+            raise
+        log(f"  ~ {entry.get('id')} indisponível ({code}); procurando outra versão...")
+        for alt in find_alternatives(entry):
+            alt_entry = {
+                "id": alt["id"],
+                "title": entry.get("title"),
+                "artist": entry.get("artist"),
+                "duration": alt.get("duration") or entry.get("duration"),
+            }
+            try:
+                mp3 = download_one(alt_entry, workdir)
+                log(f"    ✓ substituída por {alt['id']} ({(alt.get('title') or '')[:50]})")
+                return mp3, alt["id"], True
+            except Exception as exc2:  # noqa: BLE001
+                log(f"    alt {alt['id']} falhou: {exc2}")
+                continue
+        raise exc  # nenhuma alternativa serviu — propaga o erro original (indisponível)
+
+
 def sha256_of(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -466,40 +553,56 @@ def process_job(job: dict):
                     track_id = found.data[0]["id"]
                     reused += 1
                 else:
-                    mp3 = download_one(entry, workdir)
+                    # Baixa a faixa; se estiver indisponível de forma permanente,
+                    # tenta outra versão da mesma música (used_vid pode mudar).
+                    mp3, used_vid, substituted = download_with_fallback(entry, workdir)
+                    dl_key = f"tracks/{used_vid}.mp3"
                     try:
-                        digest = sha256_of(mp3)
-                        upload_to_r2(mp3, key)
-
-                        meta = {
-                            "youtube_id": vid,
-                            "source": "youtube",
-                            "source_url": f"https://www.youtube.com/watch?v={vid}",
-                        }
-                        if R2_PUBLIC_BASE_URL:
-                            meta["public_url"] = f"{R2_PUBLIC_BASE_URL}/{key}"
-
-                        dur_ms = int(float(duration_seconds) * 1000)
-                        # upsert por storage_object_key: se dois jobs correrem juntos,
-                        # nao cria duplicado (o segundo reaproveita a mesma linha).
-                        track = (
-                            supabase.table("tracks")
-                            .upsert(
-                                {
-                                    "title": entry["title"][:300],
-                                    "artist": (entry.get("artist") or None),
-                                    "duration_ms": dur_ms,
-                                    "storage_object_key": key,
-                                    "content_hash": digest,
-                                    "mime_type": "audio/mpeg",
-                                    "status": "available",
-                                    "metadata": meta,
-                                },
-                                on_conflict="storage_object_key",
-                            )
-                            .execute()
+                        # Se a versão alternativa já existe no acervo, reutiliza.
+                        alt_found = (
+                            supabase.table("tracks").select("id").eq("storage_object_key", dl_key).limit(1).execute()
+                            if used_vid != vid
+                            else None
                         )
-                        track_id = track.data[0]["id"]
+                        if alt_found and alt_found.data:
+                            track_id = alt_found.data[0]["id"]
+                            if os.path.exists(mp3):
+                                os.remove(mp3)
+                        else:
+                            digest = sha256_of(mp3)
+                            upload_to_r2(mp3, dl_key)
+
+                            meta = {
+                                "youtube_id": used_vid,
+                                "source": "youtube",
+                                "source_url": f"https://www.youtube.com/watch?v={used_vid}",
+                            }
+                            if substituted:
+                                meta["substituted_from"] = vid
+                            if R2_PUBLIC_BASE_URL:
+                                meta["public_url"] = f"{R2_PUBLIC_BASE_URL}/{dl_key}"
+
+                            dur_ms = int(float(duration_seconds) * 1000)
+                            # upsert por storage_object_key: se dois jobs correrem juntos,
+                            # nao cria duplicado (o segundo reaproveita a mesma linha).
+                            track = (
+                                supabase.table("tracks")
+                                .upsert(
+                                    {
+                                        "title": entry["title"][:300],
+                                        "artist": (entry.get("artist") or None),
+                                        "duration_ms": dur_ms,
+                                        "storage_object_key": dl_key,
+                                        "content_hash": digest,
+                                        "mime_type": "audio/mpeg",
+                                        "status": "available",
+                                        "metadata": meta,
+                                    },
+                                    on_conflict="storage_object_key",
+                                )
+                                .execute()
+                            )
+                            track_id = track.data[0]["id"]
                     finally:
                         if os.path.exists(mp3):
                             os.remove(mp3)
@@ -555,17 +658,55 @@ def process_job(job: dict):
                 )
                 log(f"  ! erro ao salvar {entry['id']} [{code}]: {exc}")
 
-    final_status = "done" if failed == 0 else ("partial" if completed > 0 else "error")
+    # Falha permanente ("indisponível") NÃO é erro de sistema. Se o que dava pra
+    # importar foi importado e só sobraram indisponíveis, o job é SUCESSO com um
+    # relatório — não uma "falha" vermelha no admin.
+    skipped_codes = [s.get("code") for s in skipped]
+    has_real_error = any(c not in PERMANENT_SKIP_CODES for c in skipped_codes)
+    only_unavailable = failed > 0 and not has_real_error
+
+    if failed == 0:
+        final_status = "done"
+    elif completed > 0 and only_unavailable:
+        final_status = "done"      # importou tudo que era possível; resto é indisponível
+    elif completed > 0:
+        final_status = "partial"   # erro real de sistema + algo importado
+    else:
+        final_status = "error"     # nada importado
+
     final_error_code = None
-    if failed > 0:
-        final_error_code = "PARTIAL_IMPORT_FAILED" if completed > 0 else (first_error_code or "NO_TRACKS_DOWNLOADED")
     final_error_message = None
-    if failed > 0:
+    if failed > 0 and final_status != "done":
+        final_error_code = "PARTIAL_IMPORT_FAILED" if completed > 0 else (first_error_code or "NO_TRACKS_DOWNLOADED")
         final_error_message = (
             f"Importação parcial: {completed} músicas importadas e {failed} falharam."
             if completed > 0
             else (first_error_message or "Nenhuma música foi baixada da playlist.")
         )
+    elif final_status == "done" and failed > 0:
+        # Sucesso COM indisponíveis: informativo, não é falha.
+        final_error_code = "IMPORTED_WITH_UNAVAILABLE"
+        final_error_message = f"{completed} músicas importadas; {failed} indisponível(is) (restrição do YouTube)."
+
+    # Guarda o relatório sempre que algo tiver sido pulado, mesmo em sucesso,
+    # para o admin exibir os indisponíveis de forma neutra.
+    report_details = None
+    if failed > 0:
+        report_details = {
+            "summary": {
+                "playlist_id": playlist_id,
+                "job_id": job_id,
+                "source_url": url,
+                "total": total,
+                "completed": completed,
+                "failed": failed,
+                "unavailable_only": only_unavailable,
+            },
+            # Relatório por-música consumido pelo Admin (sem stack sensível).
+            "skipped": skipped,
+            "first_error": first_error_details,
+        }
+
     update_job(
         job_id,
         status=final_status,
@@ -575,20 +716,8 @@ def process_job(job: dict):
         error=None if completed > 0 else "nenhuma faixa baixada",
         error_code=final_error_code,
         error_message=final_error_message,
-        error_details=None if failed == 0 else {
-            "summary": {
-                "playlist_id": playlist_id,
-                "job_id": job_id,
-                "source_url": url,
-                "total": total,
-                "completed": completed,
-                "failed": failed,
-            },
-            # Relatório por-música consumido pelo Admin (sem stack sensível).
-            "skipped": skipped,
-            "first_error": first_error_details,
-        },
-        last_error_at=None if failed == 0 else now_iso(),
+        error_details=report_details,
+        last_error_at=None if (failed == 0 or final_status == "done") else now_iso(),
     )
     log(f"Job {job_id} finalizado: {final_status} ({completed} ok, {reused} reaproveitadas, {failed} falhas)")
 

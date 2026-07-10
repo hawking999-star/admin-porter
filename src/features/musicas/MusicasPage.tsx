@@ -212,31 +212,57 @@ function fmtDur(s?: number | null): string | null {
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-/** Relatório por-música: mostra o que NÃO entrou na playlist e o motivo certo. */
+// Motivos permanentes = "indisponível" (não é erro de sistema): mostra neutro.
+const PERMANENT_SKIP_CODES = new Set([
+  "YOUTUBE_GEO_BLOCKED",
+  "YOUTUBE_FORMAT_UNAVAILABLE",
+  "PLAYLIST_PRIVATE_OR_UNAVAILABLE",
+  "TRACK_SIZE_LIMIT_EXCEEDED",
+  "TRACK_DURATION_LIMIT_EXCEEDED",
+  "TRACK_DURATION_UNKNOWN",
+]);
+const isUnavailableCode = (code?: string) => !!code && PERMANENT_SKIP_CODES.has(code);
+
+/** Relatório por-música: separa "indisponível" (neutro) de "falha" real (vermelho). */
 function ImportReport({ playlist }: { playlist: Playlist }) {
   const { summary, skipped } = importReport(playlist);
   if (!skipped.length) return null;
+  const unavailable = skipped.filter((t) => isUnavailableCode(t.code));
+  const errors = skipped.filter((t) => !isUnavailableCode(t.code));
+  const hasErrors = errors.length > 0;
   return (
-    <div className="mt-2 rounded-md border border-destructive/20 bg-destructive/5 p-2.5 text-xs">
-      <p className="mb-1.5 font-semibold text-destructive">
+    <div
+      className={`mt-2 rounded-md border p-2.5 text-xs ${
+        hasErrors ? "border-destructive/20 bg-destructive/5" : "border-warning/25 bg-warning/10"
+      }`}
+    >
+      <p className={`mb-1.5 font-semibold ${hasErrors ? "text-destructive" : "text-warning-foreground"}`}>
         Relatório de importação
-        {summary
-          ? ` — ${summary.completed ?? 0} de ${summary.total ?? "?"} importadas, ${skipped.length} não importada(s)`
-          : ` — ${skipped.length} música(s) não importada(s)`}
+        {summary ? ` — ${summary.completed ?? 0} de ${summary.total ?? "?"} importadas` : ""}
+        {unavailable.length ? ` · ${unavailable.length} indisponível(is)` : ""}
+        {errors.length ? ` · ${errors.length} com falha` : ""}
       </p>
       <ul className="space-y-1">
-        {skipped.map((t, i) => (
-          <li key={t.youtube_id ?? i} className="flex items-start gap-1.5">
-            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
-            <span className="min-w-0">
-              <span className="font-medium text-foreground">{t.title || t.youtube_id || "faixa"}</span>
-              {fmtDur(t.duration_seconds) && (
-                <span className="text-muted-foreground"> · {fmtDur(t.duration_seconds)}</span>
-              )}
-              <span className="text-destructive"> — {t.reason || t.code || "motivo não informado"}</span>
-            </span>
-          </li>
-        ))}
+        {skipped.map((t, i) => {
+          const permanent = isUnavailableCode(t.code);
+          return (
+            <li key={t.youtube_id ?? i} className="flex items-start gap-1.5">
+              <AlertTriangle
+                className={`mt-0.5 h-3 w-3 shrink-0 ${permanent ? "text-warning-foreground" : "text-destructive"}`}
+              />
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">{t.title || t.youtube_id || "faixa"}</span>
+                {fmtDur(t.duration_seconds) && (
+                  <span className="text-muted-foreground"> · {fmtDur(t.duration_seconds)}</span>
+                )}
+                <span className={permanent ? "text-muted-foreground" : "text-destructive"}>
+                  {" "}
+                  — {t.reason || t.code || "motivo não informado"}
+                </span>
+              </span>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -1706,7 +1732,8 @@ function PlaylistCard({
           </div>
         )}
 
-        {p.import_status === "failed" && <ImportReport playlist={p} />}
+        {/* Relatório: null quando não há faixas puladas; neutro p/ indisponíveis */}
+        <ImportReport playlist={p} />
 
         {/* Motivo da rejeição — bem visível */}
         {p.approval_status === "rejected" && (
@@ -1951,6 +1978,12 @@ function DetailPanel({
               )}
             </>
           )}
+        </div>
+      )}
+
+      {p.import_status === "success" && (
+        <div className="mt-5">
+          <ImportReport playlist={p} />
         </div>
       )}
 
