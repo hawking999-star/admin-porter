@@ -276,6 +276,15 @@ export async function enqueueTrackReplacement(
   return (data as string | null) ?? null;
 }
 
+/** Dispensa uma faixa indisponível: tira ela do relatório de importação. */
+export async function dismissSkippedTrack(playlistId: string, youtubeId: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_dismiss_skipped_track", {
+    p_playlist_id: playlistId,
+    p_youtube_id: youtubeId,
+  });
+  if (error) throw error;
+}
+
 export type MusicTrack = {
   playlist_track_id: string;
   track_id: string;

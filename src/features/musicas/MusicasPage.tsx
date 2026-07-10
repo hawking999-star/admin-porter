@@ -56,6 +56,7 @@ import {
 import {
   archiveSecondaryPlaylist,
   countPlaylistStats,
+  dismissSkippedTrack,
   enqueueTrackReplacement,
   listOperatorMusicLibraryPage,
   listPlaylists,
@@ -80,7 +81,6 @@ import {
   detectPlatform,
   platformMeta,
   buildEmbed,
-  SpotifyIcon,
   type Platform,
 } from "./components";
 
@@ -301,8 +301,18 @@ function ReplaceTrackDialog({
 
 /** Relatório por-música: separa "indisponível" (neutro) de "falha" real (vermelho). */
 function ImportReport({ playlist }: { playlist: Playlist }) {
+  const qc = useQueryClient();
   const { summary, skipped } = importReport(playlist);
   const [replaceTarget, setReplaceTarget] = useState<SkippedTrack | null>(null);
+  const dismiss = useMutation({
+    mutationFn: (youtubeId: string) => dismissSkippedTrack(playlist.id, youtubeId),
+    onSuccess: () => {
+      qc.invalidateQueries();
+      toast.success("Faixa dispensada");
+    },
+    onError: (err: unknown) =>
+      toast.error("Não foi possível dispensar", { description: errorMessage(err) }),
+  });
   if (!skipped.length) return null;
   const unavailable = skipped.filter((t) => isUnavailableCode(t.code));
   const errors = skipped.filter((t) => !isUnavailableCode(t.code));
@@ -338,13 +348,24 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                 </span>
               </span>
               {permanent && (
-                <button
-                  type="button"
-                  onClick={() => setReplaceTarget(t)}
-                  className="ml-1 shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-muted"
-                >
-                  Trocar
-                </button>
+                <span className="ml-1 flex shrink-0 items-start gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setReplaceTarget(t)}
+                    className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-muted"
+                  >
+                    Trocar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={dismiss.isPending || !t.youtube_id}
+                    onClick={() => t.youtube_id && dismiss.mutate(t.youtube_id)}
+                    className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
+                    title="Dispensar: tira a faixa do relatório"
+                  >
+                    OK
+                  </button>
+                </span>
               )}
             </li>
           );
@@ -766,9 +787,6 @@ export function MusicasPage() {
 
           <span className="mx-1.5 h-5 w-px bg-border" />
 
-          <FilterChip active={platformFilter === "spotify"} onClick={() => toggle(platformFilter, "spotify", setPlatformFilter)} icon={<SpotifyIcon />}>
-            Spotify
-          </FilterChip>
           <FilterChip active={platformFilter === "youtube"} onClick={() => toggle(platformFilter, "youtube", setPlatformFilter)} icon={<Music />}>
             YouTube
           </FilterChip>
@@ -1643,7 +1661,12 @@ function PlaylistList({
   onRetry: (id: string) => void;
 }) {
   const [showAwaiting, setShowAwaiting] = useState(false);
-  const awaiting = useMemo(() => items.filter((x) => !x.p.source_url), [items]);
+  // Secundárias não recebem link (o operador monta com músicas da principal),
+  // então não entram na fila de "aguardando o operador enviar o link".
+  const awaiting = useMemo(
+    () => items.filter((x) => !x.p.source_url && x.p.type !== "secondary"),
+    [items],
+  );
   const groups = useMemo(() => {
     const map = new Map<string, PlaylistListItem[]>();
     for (const it of items) {
