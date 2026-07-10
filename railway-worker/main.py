@@ -65,6 +65,8 @@ YT_PLAYER_CLIENTS = [
 ]
 # Substituição automática: quando uma faixa é INDISPONÍVEL de forma permanente
 # (geo-bloqueio, sem formato, removida), procurar outra versão da mesma música.
+# URL do provedor de PO token (bgutil). Vazio = desligado (comportamento atual).
+POT_PROVIDER_BASE_URL = env("POT_PROVIDER_BASE_URL", "").rstrip("/")
 ENABLE_AUTO_SUBSTITUTE = env("ENABLE_AUTO_SUBSTITUTE", "true").lower() in ("1", "true", "yes", "on")
 SUBSTITUTE_SEARCH_LIMIT = int(env("SUBSTITUTE_SEARCH_LIMIT", "4"))
 
@@ -344,6 +346,10 @@ def download_one(entry: dict, workdir: str) -> str:
         # quando pedido explicitamente.
         if client and client.lower() != "default":
             opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+        # PO token (bgutil): só entra se o provedor estiver configurado.
+        if POT_PROVIDER_BASE_URL:
+            ea = opts.setdefault("extractor_args", {})
+            ea["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_BASE_URL]}
         if use_cookie and YOUTUBE_COOKIEFILE:
             opts["cookiefile"] = YOUTUBE_COOKIEFILE
         return opts
