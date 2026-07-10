@@ -59,7 +59,9 @@ YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
 # clients ficam bloqueados de tempos em tempos; tentar vários em cascata aumenta
 # muito a chance de sucesso. Dá para mudar via env sem alterar o código.
 YT_PLAYER_CLIENTS = [
-    c.strip() for c in env("YT_PLAYER_CLIENTS", "tv,ios,android,web").split(",") if c.strip()
+    c.strip()
+    for c in env("YT_PLAYER_CLIENTS", "default,web_safari,tv,ios,mweb,android,web").split(",")
+    if c.strip()
 ]
 # Substituição automática: quando uma faixa é INDISPONÍVEL de forma permanente
 # (geo-bloqueio, sem formato, removida), procurar outra versão da mesma música.
@@ -325,10 +327,9 @@ def download_one(entry: dict, workdir: str) -> str:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "format": "bestaudio[acodec!=none]/best[acodec!=none]/bestaudio/best",
+            "format": "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
             "outtmpl": out_tmpl,
             "max_filesize": MAX_FILE_BYTES * 4,  # corta downloads absurdos na fonte
-            "extractor_args": {"youtube": {"player_client": [client]}},
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -337,6 +338,12 @@ def download_one(entry: dict, workdir: str) -> str:
                 }
             ],
         }
+        # "default" = NÃO força player_client: deixa o yt-dlp fazer a extração nativa
+        # (escolhe os clients certos sozinho, com fallback e PO token). É o que mais
+        # resolve o "Requested format is not available". Só força um client específico
+        # quando pedido explicitamente.
+        if client and client.lower() != "default":
+            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
         if use_cookie and YOUTUBE_COOKIEFILE:
             opts["cookiefile"] = YOUTUBE_COOKIEFILE
         return opts
