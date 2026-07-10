@@ -1,150 +1,204 @@
-import { NavLink, Outlet } from "react-router-dom";
-import { navGroups } from "@/lib/navigation";
+import { useMemo, useState } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Menu, LogOut, PanelLeftClose, PanelLeftOpen, ShieldCheck } from "lucide-react";
+import { navGroups, allNavItems } from "@/lib/navigation";
 import { APP_ENVIRONMENT, APP_VERSION } from "@/lib/appInfo";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { LogOut } from "lucide-react";
 
-export function AppShell() {
-  const { session, signOut } = useAuth();
-
+function Brand({ compact = false }: { compact?: boolean }) {
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col overflow-x-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
-        <div className="flex items-center gap-2 px-5 py-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground">
-            PTM
-          </div>
-          <div className="leading-tight">
-            <div className="font-display text-sm font-semibold">PTM</div>
-            <div className="text-[10px] font-medium tracking-widest text-sidebar-accent-foreground">ADMIN</div>
+    <div className={cn("flex min-w-0 items-center", compact ? "justify-center" : "gap-3")}>
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary font-display text-xs font-bold tracking-tight text-primary-foreground shadow-[0_0_0_1px_rgba(255,255,255,.12)]">
+        PTM
+      </div>
+      {!compact && (
+        <div className="min-w-0 leading-tight">
+          <div className="truncate font-display text-sm font-semibold text-white">PTM ADMIN</div>
+          <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-sidebar-foreground/45">
+            Central operacional
           </div>
         </div>
+      )}
+    </div>
+  );
+}
 
-        <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-2">
-          {navGroups.map((group) => (
-            <div key={group.label}>
-              <div className="px-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
+function SidebarNav({ compact = false, onNavigate }: { compact?: boolean; onNavigate?: () => void }) {
+  return (
+    <nav className={cn("flex-1 overflow-y-auto py-3", compact ? "px-2" : "px-3")} aria-label="Navegação principal">
+      <div className="space-y-5">
+        {navGroups.map((group) => (
+          <div key={group.label}>
+            {!compact && (
+              <div className="px-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-sidebar-foreground/35">
                 {group.label}
               </div>
-              <div className="space-y-0.5">
-                {group.items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.to === "/"}
-                    className={({ isActive }) =>
-                      cn(
-                        "relative flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors",
-                        isActive
-                          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
-                      )
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        {isActive && (
-                          <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r-full bg-success" />
-                        )}
-                        <item.icon className="h-4 w-4 shrink-0" />
-                        <span className="truncate">{item.label}</span>
-                        {!item.ready && (
-                          <span className="ml-auto shrink-0 text-[9px] font-medium uppercase tracking-widest text-sidebar-foreground/35">
-                            Em breve
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </NavLink>
-                ))}
-              </div>
-            </div>
-          ))}
-        </nav>
-
-        <div className="shrink-0 border-t border-sidebar-border px-4 pb-4 pt-3">
-          <dl className="space-y-2 text-[11px]">
-            <div className="flex items-center justify-between gap-2">
-              <dt className="text-sidebar-foreground/50">Ambiente</dt>
-              <dd className="flex items-center gap-1.5 font-medium text-sidebar-foreground/90">
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
-                {APP_ENVIRONMENT}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <dt className="text-sidebar-foreground/50">Versão</dt>
-              <dd className="font-medium tabular-nums text-sidebar-foreground/90">v{APP_VERSION}</dd>
-            </div>
-          </dl>
-          <div className="mt-3 flex items-center gap-1.5 rounded-md border border-sidebar-border bg-sidebar-accent/40 py-1.5 pl-2.5 pr-1.5">
-            <span
-              className="min-w-0 flex-1 truncate text-xs text-sidebar-foreground/80"
-              title={session?.user.email ?? undefined}
-            >
-              {session?.user.email}
-            </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={signOut}
-              title="Sair"
-              aria-label="Sair"
-              className="h-7 w-7 shrink-0 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      </aside>
-
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="border-b border-border bg-background px-4 py-3 md:hidden">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground">
-                PTM
-              </div>
-              <div className="leading-tight">
-                <div className="font-display text-sm font-semibold">PTM Admin</div>
-                <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                  {APP_ENVIRONMENT} · v{APP_VERSION}
-                </div>
-              </div>
-            </div>
-            <Button variant="ghost" size="icon" onClick={signOut} title="Sair">
-              <LogOut className="h-4 w-4" />
-            </Button>
-          </div>
-          <nav className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1">
-            {navGroups.flatMap((group) =>
-              group.items.map((item) => (
+            )}
+            <div className="space-y-1">
+              {group.items.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
                   end={item.to === "/"}
+                  onClick={onNavigate}
+                  title={compact ? item.label : undefined}
                   className={({ isActive }) =>
                     cn(
-                      "flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-2 text-xs transition-colors",
+                      "group relative flex h-10 items-center rounded-lg text-sm transition-colors",
+                      compact ? "justify-center px-2" : "gap-3 px-3",
                       isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:text-foreground",
+                        ? "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
+                        : "text-sidebar-foreground/68 hover:bg-white/[0.06] hover:text-white",
                     )
                   }
                 >
-                  <item.icon className="h-3.5 w-3.5" />
-                  <span>{item.label}</span>
+                  {({ isActive }) => (
+                    <>
+                      {isActive && <span className="absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-success" />}
+                      <item.icon className="h-[17px] w-[17px] shrink-0" />
+                      {!compact && (
+                        <>
+                          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                          {!item.ready && (
+                            <span className="shrink-0 rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-sidebar-foreground/35">
+                              Breve
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
                 </NavLink>
-              )),
-            )}
-          </nav>
-        </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </nav>
+  );
+}
 
-        <div className="mx-auto max-w-[1240px] px-4 py-6 sm:px-6 md:py-8 lg:px-8">
-          <Outlet />
+function SidebarFooter({ compact = false }: { compact?: boolean }) {
+  const { session, signOut } = useAuth();
+
+  return (
+    <div className={cn("shrink-0 border-t border-sidebar-border", compact ? "p-2" : "p-3")}>
+      {!compact && (
+        <div className="mb-2 flex items-center justify-between rounded-lg border border-white/[0.07] bg-white/[0.035] px-3 py-2 text-[11px]">
+          <span className="flex items-center gap-2 text-sidebar-foreground/55">
+            <span className="h-1.5 w-1.5 rounded-full bg-success shadow-[0_0_8px_rgba(199,243,75,.55)]" />
+            {APP_ENVIRONMENT}
+          </span>
+          <span className="font-medium tabular-nums text-sidebar-foreground/75">v{APP_VERSION}</span>
         </div>
-      </main>
+      )}
+      <div className={cn("flex items-center rounded-lg", compact ? "justify-center" : "gap-2 px-2 py-1")}>
+        {!compact && (
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium text-sidebar-foreground/85">Administrador</p>
+            <p className="truncate text-[10px] text-sidebar-foreground/40" title={session?.user.email ?? undefined}>
+              {session?.user.email}
+            </p>
+          </div>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => void signOut()}
+          title="Sair"
+          aria-label="Sair"
+          className="h-8 w-8 shrink-0 text-sidebar-foreground/55 hover:bg-white/10 hover:text-white"
+        >
+          <LogOut className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function AppShell() {
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const location = useLocation();
+  const currentItem = useMemo(
+    () => allNavItems.find((item) => item.to === location.pathname) ?? allNavItems[0],
+    [location.pathname],
+  );
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+      <aside
+        className={cn(
+          "hidden h-screen shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 md:flex",
+          collapsed ? "w-[76px]" : "w-[248px]",
+        )}
+      >
+        <div className={cn("flex h-16 shrink-0 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "px-4")}>
+          <Brand compact={collapsed} />
+        </div>
+        <SidebarNav compact={collapsed} />
+        <SidebarFooter compact={collapsed} />
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="z-30 flex h-16 shrink-0 items-center justify-between border-b border-border/80 bg-card/95 px-4 backdrop-blur-sm sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="icon" className="md:hidden" aria-label="Abrir menu">
+                  <Menu className="h-4 w-4" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="flex w-[286px] flex-col border-sidebar-border bg-sidebar p-0 text-sidebar-foreground">
+                <SheetTitle className="sr-only">Menu principal</SheetTitle>
+                <div className="flex h-16 shrink-0 items-center border-b border-sidebar-border px-4">
+                  <Brand />
+                </div>
+                <SidebarNav onNavigate={() => setMobileOpen(false)} />
+                <SidebarFooter />
+              </SheetContent>
+            </Sheet>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="hidden text-muted-foreground md:inline-flex"
+              onClick={() => setCollapsed((value) => !value)}
+              aria-label={collapsed ? "Expandir menu" : "Recolher menu"}
+              title={collapsed ? "Expandir menu" : "Recolher menu"}
+            >
+              {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </Button>
+
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                <span>PTM Admin</span>
+                <span className="text-border">/</span>
+                <span className="truncate">{currentItem.label}</span>
+              </div>
+              <p className="truncate text-sm font-semibold text-foreground">{currentItem.description}</p>
+            </div>
+          </div>
+
+          <div className="hidden items-center gap-2 sm:flex">
+            <div className="flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground">
+              <ShieldCheck className="h-3.5 w-3.5 text-success-foreground" />
+              <span>{APP_ENVIRONMENT}</span>
+              <span className="text-border">•</span>
+              <span className="tabular-nums">v{APP_VERSION}</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-7">
+            <Outlet />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

@@ -153,21 +153,21 @@ function MetricCard({
   unavailable?: boolean;
 }) {
   return (
-    <Card className="min-h-[132px] p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
+    <Card className="flex min-h-[94px] items-center gap-3.5 border-border/80 p-3.5 shadow-sm">
+      <div className="flex shrink-0 items-center justify-between gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
           {icon}
         </div>
         {unavailable && <HelpCircle className="h-4 w-4 text-warning" />}
       </div>
-      <div className="mt-4 space-y-1">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <div className="min-w-0 space-y-0.5">
+        <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
         {loading ? (
           <Skeleton className="h-8 w-24" />
         ) : (
-          <p className="font-display text-2xl font-semibold text-foreground">{value}</p>
+          <p className="truncate font-display text-[21px] font-semibold text-foreground">{value}</p>
         )}
-        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+        {hint && <p className="truncate text-xs text-muted-foreground">{hint}</p>}
       </div>
     </Card>
   );
@@ -296,7 +296,7 @@ export function AnalyticsPage() {
         description="Painel operacional com métricas reais de sessões, presença, desafios e status dos Operadores."
       />
 
-      <Card className="mb-5 p-4 shadow-sm">
+      <Card className="sticky top-3 z-20 mb-5 border-border/80 bg-card/95 p-3.5 shadow-sm backdrop-blur-sm">
         <div className="grid gap-3 lg:grid-cols-[160px_minmax(0,1fr)]">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Filtros globais</p>
@@ -399,7 +399,7 @@ export function AnalyticsPage() {
             </div>
           )}
 
-          <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {query.isLoading || !data ? (
               <CardsSkeleton />
             ) : (
@@ -463,10 +463,10 @@ export function AnalyticsPage() {
                       <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
                       <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
                       <Tooltip />
-                      <Area yAxisId="left" type="monotone" dataKey="online" name="Horas online" stroke="#0D5BFF" fill="#0D5BFF" fillOpacity={0.16} />
-                      <Area yAxisId="left" type="monotone" dataKey="idle" name="Horas ocioso" stroke="#F59E0B" fill="#F59E0B" fillOpacity={0.14} />
-                      <Area yAxisId="left" type="monotone" dataKey="call" name="Horas atendimento" stroke="#041A73" fill="#041A73" fillOpacity={0.12} />
-                      <Area yAxisId="right" type="step" dataKey="sessions" name="Sessões" stroke="#C7F34B" fill="#C7F34B" fillOpacity={0.22} />
+                      <Area yAxisId="left" type="monotone" dataKey="online" name="Horas online" stroke="var(--chart-challenges)" fill="var(--chart-challenges)" fillOpacity={0.16} />
+                      <Area yAxisId="left" type="monotone" dataKey="idle" name="Horas ocioso" stroke="var(--chart-warning)" fill="var(--chart-warning)" fillOpacity={0.14} />
+                      <Area yAxisId="left" type="monotone" dataKey="call" name="Horas atendimento" stroke="var(--chart-active)" fill="var(--chart-active)" fillOpacity={0.12} />
+                      <Area yAxisId="right" type="step" dataKey="sessions" name="Sessões" stroke="var(--chart-success)" fill="var(--chart-success)" fillOpacity={0.22} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -488,7 +488,7 @@ export function AnalyticsPage() {
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} />
                       <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
                       <Tooltip />
-                      <Bar dataKey="count" name="Operadores" fill="#0D5BFF" radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="count" name="Operadores" fill="var(--chart-challenges)" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

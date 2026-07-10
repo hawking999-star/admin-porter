@@ -1,19 +1,21 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/features/auth/AuthProvider";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { AppShell } from "@/components/layout/AppShell";
-import { CondominiosPage } from "@/features/condominios/CondominiosPage";
-import { UsuariosPage } from "@/features/usuarios/UsuariosPage";
-import { FeedbackPage } from "@/features/feedback/FeedbackPage";
-import { MusicasPage } from "@/features/musicas/MusicasPage";
-import { OverviewPage } from "@/features/overview/OverviewPage";
-import { LogsPage } from "@/features/logs/LogsPage";
-import { AtualizacoesPage } from "@/features/atualizacoes/AtualizacoesPage";
-import { AnalyticsPage } from "@/features/analytics/AnalyticsPage";
 import { ComingSoonPage } from "@/components/shared";
 import { Puzzle, ClipboardList, Code2 } from "lucide-react";
+
+const OverviewPage = lazy(() => import("@/features/overview/OverviewPage").then((module) => ({ default: module.OverviewPage })));
+const CondominiosPage = lazy(() => import("@/features/condominios/CondominiosPage").then((module) => ({ default: module.CondominiosPage })));
+const UsuariosPage = lazy(() => import("@/features/usuarios/UsuariosPage").then((module) => ({ default: module.UsuariosPage })));
+const FeedbackPage = lazy(() => import("@/features/feedback/FeedbackPage").then((module) => ({ default: module.FeedbackPage })));
+const MusicasPage = lazy(() => import("@/features/musicas/MusicasPage").then((module) => ({ default: module.MusicasPage })));
+const LogsPage = lazy(() => import("@/features/logs/LogsPage").then((module) => ({ default: module.LogsPage })));
+const AtualizacoesPage = lazy(() => import("@/features/atualizacoes/AtualizacoesPage").then((module) => ({ default: module.AtualizacoesPage })));
+const AnalyticsPage = lazy(() => import("@/features/analytics/AnalyticsPage").then((module) => ({ default: module.AnalyticsPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -59,11 +61,30 @@ function Protected({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function PageLoading() {
+  return (
+    <div className="space-y-5" aria-label="Carregando página" aria-busy="true">
+      <div className="space-y-2 border-b border-border pb-5">
+        <div className="h-3 w-28 animate-pulse rounded bg-muted" />
+        <div className="h-8 w-56 animate-pulse rounded-md bg-muted" />
+        <div className="h-4 w-full max-w-xl animate-pulse rounded bg-muted" />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="h-[88px] animate-pulse rounded-xl border border-border bg-card" />
+        ))}
+      </div>
+      <div className="h-72 animate-pulse rounded-xl border border-border bg-card" />
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <BrowserRouter>
+          <Suspense fallback={<PageLoading />}>
           <Routes>
             <Route
               element={
@@ -79,7 +100,7 @@ export default function App() {
                 path="/challenges"
                 element={
                   <ComingSoonPage
-                    title="Challenges"
+                    title="Desafios"
                     description="Desafios e regras de engajamento para os Operadores."
                     icon={Puzzle}
                     planned={[
@@ -132,6 +153,7 @@ export default function App() {
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
+          </Suspense>
         </BrowserRouter>
         <Toaster richColors position="top-right" />
       </AuthProvider>

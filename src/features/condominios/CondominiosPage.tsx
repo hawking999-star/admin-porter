@@ -124,7 +124,7 @@ export function CondominiosPage() {
         action={<Button onClick={openNew}><Plus className="h-4 w-4" /> Novo condomínio</Button>}
       />
 
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={<Building2 className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Condomínios ativos" value={stats.active} loading={statsQuery.isLoading} />
         <StatCard icon={<Users className="h-5 w-5" />} iconClassName="bg-secondary/10 text-secondary" label="Operadores vinculados" value={stats.operators} loading={statsQuery.isLoading} />
         <StatCard icon={<Building className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Total de condomínios" value={totalUnits} loading={statsQuery.isLoading} />

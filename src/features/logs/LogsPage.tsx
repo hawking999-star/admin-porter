@@ -161,7 +161,7 @@ export function LogsPage() {
         />
       </div>
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
+      <div className="sticky top-3 z-20 mb-4 flex flex-wrap items-center gap-2.5 rounded-xl border border-border/80 bg-card/95 p-3 shadow-sm backdrop-blur-sm">
         <div className="relative w-full max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input

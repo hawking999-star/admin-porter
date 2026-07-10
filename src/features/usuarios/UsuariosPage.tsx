@@ -73,7 +73,7 @@ export function UsuariosPage() {
   return (
     <>
       <PageHeader
-        title="Usuários"
+        title="Operadores e acessos"
         description="Operadores que usam o app e pessoas com acesso ao painel administrativo."
       />
       <Tabs defaultValue="operadores">
@@ -175,7 +175,7 @@ function OperadoresTab() {
 
   return (
     <>
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={<UserCheck className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Operadores ativos" value={stats.active} loading={statsQuery.isLoading} />
         <StatCard icon={<UserX className="h-5 w-5" />} iconClassName="bg-muted text-muted-foreground" label="Operadores inativos" value={stats.inactive} loading={statsQuery.isLoading} />
         <StatCard icon={<ShieldCheck className="h-5 w-5" />} iconClassName="bg-secondary/10 text-secondary" label="Supervisores" value={stats.supervisors} loading={statsQuery.isLoading} />

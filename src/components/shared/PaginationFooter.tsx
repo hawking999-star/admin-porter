@@ -31,8 +31,8 @@ export function PaginationFooter({
   const to = Math.min(page * pageSize, total);
 
   return (
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
-      <span>
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-card px-3 py-2.5 text-sm text-muted-foreground">
+      <span className="text-xs tabular-nums">
         {total === 0 ? "Nenhum registro" : `Mostrando ${from}-${to} de ${total} registros`}
       </span>
       <div className="flex items-center gap-2">
@@ -48,7 +48,7 @@ export function PaginationFooter({
             <SelectContent>
               {PAGE_SIZE_OPTIONS.map((option) => (
                 <SelectItem key={option} value={String(option)}>
-                  {option} por pagina
+                  {option} por página
                 </SelectItem>
               ))}
             </SelectContent>
@@ -64,7 +64,7 @@ export function PaginationFooter({
           Anterior
         </Button>
         <span className="min-w-20 text-center text-xs">
-          Pagina {page} de {totalPages}
+          Página {page} de {totalPages}
         </span>
         <Button
           type="button"
@@ -73,7 +73,7 @@ export function PaginationFooter({
           disabled={isLoading || page >= totalPages}
           onClick={() => onPageChange(Math.min(totalPages, page + 1))}
         >
-          Proxima
+          Próxima
         </Button>
       </div>
     </div>

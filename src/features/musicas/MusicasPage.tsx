@@ -488,7 +488,7 @@ export function MusicasPage() {
         }
       />
 
-      <div className="mb-6 inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-muted/50 p-1">
+      <div className="mb-5 inline-flex flex-wrap items-center gap-1 rounded-xl border border-border bg-card p-1 shadow-sm">
         <AreaButton
           active={activeArea === "requests"}
           icon={<Inbox className="h-4 w-4" />}
@@ -507,7 +507,7 @@ export function MusicasPage() {
 
       {/* Cards de resumo — 4 principais (clique filtra a lista) */}
       {activeArea === "requests" && (
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             icon={<Clock className="h-5 w-5" />}
             iconClassName="bg-warning/20 text-warning-foreground"
@@ -552,7 +552,7 @@ export function MusicasPage() {
       {/* Busca + filtros rápidos */}
       {activeArea === "requests" ? (
         <>
-      <div className="mb-5 space-y-3">
+      <div className="sticky top-3 z-20 mb-4 space-y-3 rounded-xl border border-border/80 bg-card/95 p-3 shadow-sm backdrop-blur-sm">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative w-full max-w-md">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -656,7 +656,7 @@ export function MusicasPage() {
         </>
       ) : (
         <>
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             icon={<Users className="h-5 w-5" />}
             iconClassName="bg-primary/10 text-primary"

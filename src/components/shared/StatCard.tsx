@@ -34,15 +34,15 @@ export function StatCard({
     <Card
       onClick={onClick}
       className={cn(
-        "flex min-h-[92px] items-center gap-3.5 p-4 shadow-sm transition-all duration-200",
-        clickable && "cursor-pointer hover:-translate-y-px hover:shadow-md",
+        "group flex min-h-[88px] items-center gap-3.5 overflow-hidden border-border/80 p-3.5 shadow-sm transition-colors",
+        clickable && "cursor-pointer hover:bg-accent/35",
         active ? "border-primary ring-1 ring-primary/30" : clickable && "hover:border-primary/40",
       )}
     >
       {icon && (
         <div
           className={cn(
-            "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
+            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
             iconClassName ?? "bg-primary/10 text-primary",
           )}
         >
@@ -53,11 +53,11 @@ export function StatCard({
         {loading ? (
           <Skeleton className="h-8 w-14" />
         ) : (
-          <p className="font-display text-2xl font-bold leading-tight tracking-tight tabular-nums">
+          <p className="font-display text-[22px] font-bold leading-tight tracking-tight tabular-nums">
             {value}
           </p>
         )}
-        <p className="truncate text-[13px] font-medium text-muted-foreground">{label}</p>
+        <p className="truncate text-xs font-medium text-muted-foreground">{label}</p>
         {hint && !loading && (
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{hint}</p>
         )}

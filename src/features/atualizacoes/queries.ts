@@ -1,6 +1,10 @@
 import { supabase } from "@/lib/supabase";
 
 export type ReleaseStatus = "draft" | "testing" | "approved" | "released" | "blocked" | "superseded";
+export type ReleaseNoteStatus = "draft" | "published";
+export type NoticeSeverity = "info" | "warning" | "critical" | "success";
+export type NoticeStatus = "draft" | "active" | "expired" | "disabled";
+export type NoticeAudienceType = "all" | "condominium" | "shift" | "user";
 
 export type PaginatedResult<T> = {
   rows: T[];
@@ -37,6 +41,86 @@ export type AppRelease = {
   approved_by_name: string | null;
   released_by_name: string | null;
   blocked_by_name: string | null;
+  release_note: AppReleaseNote | null;
+};
+
+export type AppReleaseNote = {
+  id: string;
+  app_release_id: string;
+  version_number: string;
+  title: string;
+  summary: string;
+  content: string;
+  status: ReleaseNoteStatus;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by_name: string | null;
+  updated_by_name: string | null;
+  read_count: number;
+  ack_count: number;
+  release_status?: ReleaseStatus | null;
+  release_is_current?: boolean | null;
+  release_released_at?: string | null;
+  release_title?: string | null;
+};
+
+export type AppReleaseNoteInput = {
+  app_release_id: string;
+  title: string;
+  summary: string;
+  content: string;
+  status: ReleaseNoteStatus;
+};
+
+export type AppNotice = {
+  id: string;
+  title: string;
+  message: string;
+  severity: NoticeSeverity;
+  status: NoticeStatus;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_active: boolean;
+  audience_type: NoticeAudienceType;
+  condominium_id: string | null;
+  condominium_name: string | null;
+  operator_id: string | null;
+  operator_name: string | null;
+  shift: string | null;
+  requires_ack: boolean;
+  read_count: number;
+  ack_count: number;
+  created_at: string;
+  updated_at: string;
+  created_by_name: string | null;
+  updated_by_name: string | null;
+};
+
+export type AppNoticeInput = {
+  id?: string | null;
+  title: string;
+  message: string;
+  severity: NoticeSeverity;
+  status: NoticeStatus;
+  starts_at: string;
+  ends_at: string;
+  audience_type: NoticeAudienceType;
+  condominium_id: string;
+  operator_id: string;
+  shift: string;
+  requires_ack: boolean;
+};
+
+export type AppNoticeFilters = PageParams & {
+  search?: string;
+  status?: NoticeStatus | "all";
+  severity?: NoticeSeverity | "all";
+};
+
+export type NoticeAudienceOption = {
+  id: string;
+  label: string;
 };
 
 export type AppReleaseInput = {
@@ -239,7 +323,31 @@ function pageRange(page: number, pageSize: number) {
   return { from, to: from + pageSize - 1 };
 }
 
+function mapReleaseNote(row: any): AppReleaseNote {
+  return {
+    id: row.id,
+    app_release_id: row.app_release_id,
+    version_number: row.version_number,
+    title: row.title,
+    summary: row.summary,
+    content: row.content,
+    status: row.status,
+    published_at: row.published_at ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    created_by_name: row.created_by_admin?.display_name ?? null,
+    updated_by_name: row.updated_by_admin?.display_name ?? null,
+    read_count: (row.app_release_note_acknowledgements ?? []).length,
+    ack_count: (row.app_release_note_acknowledgements ?? []).filter((ack: any) => Boolean(ack.acknowledged_at)).length,
+    release_status: row.app_releases?.status ?? null,
+    release_is_current: row.app_releases?.is_current ?? null,
+    release_released_at: row.app_releases?.released_at ?? null,
+    release_title: row.app_releases?.title ?? null,
+  };
+}
+
 function mapRelease(row: any): AppRelease {
+  const noteRow = Array.isArray(row.app_release_notes) ? row.app_release_notes[0] : row.app_release_notes;
   return {
     id: row.id,
     version: row.version,
@@ -265,6 +373,7 @@ function mapRelease(row: any): AppRelease {
     approved_by_name: row.approved_by_admin?.display_name ?? null,
     released_by_name: row.released_by_admin?.display_name ?? null,
     blocked_by_name: row.blocked_by_admin?.display_name ?? null,
+    release_note: noteRow ? mapReleaseNote(noteRow) : null,
   };
 }
 
@@ -275,7 +384,12 @@ const RELEASE_SELECT = `
   created_by_admin:admin_users!app_releases_created_by_fkey(display_name),
   approved_by_admin:admin_users!app_releases_approved_by_fkey(display_name),
   released_by_admin:admin_users!app_releases_released_by_fkey(display_name),
-  blocked_by_admin:admin_users!app_releases_blocked_by_fkey(display_name)
+  blocked_by_admin:admin_users!app_releases_blocked_by_fkey(display_name),
+  app_release_notes(
+    id, app_release_id, version_number, title, summary, content, status, published_at, created_at, updated_at,
+    created_by_admin:admin_users!app_release_notes_created_by_fkey(display_name),
+    updated_by_admin:admin_users!app_release_notes_updated_by_fkey(display_name)
+  )
 `;
 
 export async function listAppReleases(filters: AppReleaseFilters): Promise<PaginatedResult<AppRelease>> {
@@ -316,15 +430,78 @@ export async function getCurrentAppRelease(): Promise<AppRelease | null> {
 
 export async function listReleasedNotes(): Promise<AppRelease[]> {
   const { data, error } = await supabase
-    .from("app_releases")
-    .select(RELEASE_SELECT)
-    .eq("status", "released")
-    .not("release_notes", "is", null)
-    .order("released_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
+    .from("app_release_notes")
+    .select(`
+      id, app_release_id, version_number, title, summary, content, status, published_at, created_at, updated_at,
+      created_by_admin:admin_users!app_release_notes_created_by_fkey(display_name),
+      updated_by_admin:admin_users!app_release_notes_updated_by_fkey(display_name),
+      app_releases!inner(
+        id, version, channel, status, is_current, mandatory, minimum_version, title, release_notes,
+        manifest_key, installer_key, blockmap_key, sha512, size_bytes,
+        created_at, updated_at, approved_at, released_at, blocked_at, block_reason,
+        created_by_admin:admin_users!app_releases_created_by_fkey(display_name),
+        approved_by_admin:admin_users!app_releases_approved_by_fkey(display_name),
+        released_by_admin:admin_users!app_releases_released_by_fkey(display_name),
+        blocked_by_admin:admin_users!app_releases_blocked_by_fkey(display_name)
+      )
+    `)
+    .eq("status", "published")
+    .eq("app_releases.status", "released")
+    .order("published_at", { ascending: false, nullsFirst: false })
     .limit(5);
   if (error) throw error;
-  return (data ?? []).filter((row: any) => row.release_notes?.trim()).map(mapRelease);
+  return (data ?? []).map((row: any) => mapRelease({ ...row.app_releases, app_release_notes: [row] }));
+}
+
+/** Conta avisos ativos (para o card de resumo). Somente leitura. */
+export async function countActiveNotices(): Promise<number> {
+  const { count, error } = await supabase
+    .from("app_notices")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "active");
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Opções de versão para vincular uma nota (aba Notas). Somente leitura. */
+export async function listReleaseOptions(): Promise<
+  { id: string; version: string; status: ReleaseStatus; has_note: boolean }[]
+> {
+  const { data, error } = await supabase
+    .from("app_releases")
+    .select("id, version, status, app_release_notes(id)")
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    version: row.version,
+    status: row.status,
+    has_note: Array.isArray(row.app_release_notes) && row.app_release_notes.length > 0,
+  }));
+}
+
+/** Carrega uma release completa por id (para abrir o editor de nota). Somente leitura. */
+export async function getAppReleaseById(id: string): Promise<AppRelease | null> {
+  const { data, error } = await supabase
+    .from("app_releases")
+    .select(RELEASE_SELECT)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapRelease(data) : null;
+}
+
+/** Histórico de versões liberadas/bloqueadas/substituídas. Somente leitura. */
+export async function listReleaseHistory(): Promise<AppRelease[]> {
+  const { data, error } = await supabase
+    .from("app_releases")
+    .select(RELEASE_SELECT)
+    .in("status", ["released", "blocked", "superseded"])
+    .order("updated_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return (data ?? []).map(mapRelease);
 }
 
 export async function countAppReleaseStats(): Promise<AppReleaseStats> {
@@ -401,3 +578,197 @@ export async function rollbackAppRelease(id: string): Promise<void> {
   const { error } = await supabase.rpc("rollback_app_release", { p_target_release_id: id });
   if (error) throw error;
 }
+
+export function releaseNoteFormErrors(input: AppReleaseNoteInput): string[] {
+  const errors: string[] = [];
+  if (!input.app_release_id) errors.push("Selecione uma versão para vincular a nota.");
+  if (!input.title.trim()) errors.push("Título da nota é obrigatório.");
+  if (!input.summary.trim()) errors.push("Resumo curto é obrigatório.");
+  if (!input.content.trim()) errors.push("Novidades, correções e observações são obrigatórias.");
+  if (input.status !== "draft" && input.status !== "published") errors.push("Status da nota inválido.");
+  return errors;
+}
+
+export async function upsertAppReleaseNote(input: AppReleaseNoteInput): Promise<string> {
+  const { data, error } = await supabase.rpc("upsert_app_release_note", {
+    p_app_release_id: input.app_release_id,
+    p_title: input.title.trim(),
+    p_summary: input.summary.trim(),
+    p_content: input.content.trim(),
+    p_status: input.status,
+  });
+  if (error) throw error;
+  return data as string;
+}
+
+export async function listReleaseNotes(): Promise<AppReleaseNote[]> {
+  const { data, error } = await supabase
+    .from("app_release_notes")
+    .select(`
+      id, app_release_id, version_number, title, summary, content, status, published_at, created_at, updated_at,
+      created_by_admin:admin_users!app_release_notes_created_by_fkey(display_name),
+      updated_by_admin:admin_users!app_release_notes_updated_by_fkey(display_name),
+      app_release_note_acknowledgements(read_at, acknowledged_at),
+      app_releases(status, is_current, released_at, title)
+    `)
+    .order("updated_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return (data ?? []).map(mapReleaseNote);
+}
+
+export const NOTICE_STATUSES: { value: NoticeStatus | "all"; label: string }[] = [
+  { value: "all", label: "Todos" },
+  { value: "draft", label: "Rascunho" },
+  { value: "active", label: "Ativo" },
+  { value: "expired", label: "Expirado" },
+  { value: "disabled", label: "Desativado" },
+];
+
+export const NOTICE_SEVERITIES: { value: NoticeSeverity | "all"; label: string }[] = [
+  { value: "all", label: "Todas" },
+  { value: "info", label: "Informativo" },
+  { value: "warning", label: "Atenção" },
+  { value: "critical", label: "Crítico" },
+  { value: "success", label: "Sucesso" },
+];
+
+export function noticeStatusLabel(notice: Pick<AppNotice, "status" | "starts_at" | "ends_at">): string {
+  const now = Date.now();
+  const starts = notice.starts_at ? new Date(notice.starts_at).getTime() : null;
+  const ends = notice.ends_at ? new Date(notice.ends_at).getTime() : null;
+  if (notice.status === "active" && starts && starts > now) return "Agendado";
+  if (notice.status === "active" && ends && ends <= now) return "Expirado";
+  return NOTICE_STATUSES.find((s) => s.value === notice.status)?.label ?? notice.status;
+}
+
+export function noticeFormErrors(input: AppNoticeInput): string[] {
+  const errors: string[] = [];
+  if (!input.title.trim()) errors.push("Título do aviso é obrigatório.");
+  if (!input.message.trim()) errors.push("Mensagem do aviso é obrigatória.");
+  if (!["info", "warning", "critical", "success"].includes(input.severity)) errors.push("Severidade inválida.");
+  if (!["draft", "active", "expired", "disabled"].includes(input.status)) errors.push("Status inválido.");
+  if (input.starts_at && input.ends_at && new Date(input.ends_at) <= new Date(input.starts_at)) {
+    errors.push("Fim do aviso precisa ser depois do início.");
+  }
+  if (input.status === "active" && input.ends_at && new Date(input.ends_at) <= new Date()) {
+    errors.push("Aviso ativo não pode terminar no passado.");
+  }
+  if (input.audience_type === "condominium" && !input.condominium_id) errors.push("Selecione o condomínio do aviso.");
+  if (input.audience_type === "user" && !input.operator_id) errors.push("Selecione o operador do aviso.");
+  if (input.audience_type === "shift" && !input.shift) errors.push("Selecione o turno do aviso.");
+  return errors;
+}
+
+const NOTICE_SELECT = `
+  id, title, message, severity, status, starts_at, ends_at, is_active,
+  audience_type, condominium_id, operator_id, shift, requires_ack,
+  created_at, updated_at,
+  units(name),
+  operators(display_name),
+  created_by_admin:admin_users!app_notices_created_by_fkey(display_name),
+  updated_by_admin:admin_users!app_notices_updated_by_fkey(display_name),
+  app_notice_acknowledgements(read_at, acknowledged_at)
+`;
+
+function mapNotice(row: any): AppNotice {
+  const acknowledgements = row.app_notice_acknowledgements ?? [];
+  return {
+    id: row.id,
+    title: row.title,
+    message: row.message,
+    severity: row.severity,
+    status: row.status,
+    starts_at: row.starts_at ?? null,
+    ends_at: row.ends_at ?? null,
+    is_active: row.is_active,
+    audience_type: row.audience_type,
+    condominium_id: row.condominium_id ?? null,
+    condominium_name: row.units?.name ?? null,
+    operator_id: row.operator_id ?? null,
+    operator_name: row.operators?.display_name ?? null,
+    shift: row.shift ?? null,
+    requires_ack: row.requires_ack,
+    read_count: acknowledgements.length,
+    ack_count: acknowledgements.filter((ack: any) => Boolean(ack.acknowledged_at)).length,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    created_by_name: row.created_by_admin?.display_name ?? null,
+    updated_by_name: row.updated_by_admin?.display_name ?? null,
+  };
+}
+
+export async function listAppNotices(filters: AppNoticeFilters): Promise<PaginatedResult<AppNotice>> {
+  const { from, to } = pageRange(filters.page, filters.pageSize);
+  const term = filters.search?.trim().replace(/[%,()]/g, "");
+
+  let query = supabase
+    .from("app_notices")
+    .select(NOTICE_SELECT, { count: "exact" })
+    .order("updated_at", { ascending: false });
+
+  if (filters.status && filters.status !== "all") query = query.eq("status", filters.status);
+  if (filters.severity && filters.severity !== "all") query = query.eq("severity", filters.severity);
+  if (term) query = query.or(`title.ilike.%${term}%,message.ilike.%${term}%`);
+
+  const { data, error, count } = await query.range(from, to);
+  if (error) throw error;
+  return { rows: (data ?? []).map(mapNotice), total: count ?? 0 };
+}
+
+/** Cria ou atualiza um aviso (RPC upsert_app_notice). */
+export async function upsertAppNotice(input: AppNoticeInput): Promise<string> {
+  const { data, error } = await supabase.rpc("upsert_app_notice", {
+    p_notice_id: input.id ?? null,
+    p_title: input.title.trim(),
+    p_message: input.message.trim(),
+    p_severity: input.severity,
+    p_status: input.status,
+    p_starts_at: input.starts_at ? new Date(input.starts_at).toISOString() : null,
+    p_ends_at: input.ends_at ? new Date(input.ends_at).toISOString() : null,
+    p_audience_type: input.audience_type,
+    p_condominium_id: input.audience_type === "condominium" ? input.condominium_id || null : null,
+    p_operator_id: input.audience_type === "user" ? input.operator_id || null : null,
+    p_shift: input.audience_type === "shift" ? input.shift || null : null,
+    p_requires_ack: input.requires_ack,
+  });
+  if (error) throw error;
+  return data as string;
+}
+
+export async function updateAppNoticeStatus(id: string, status: NoticeStatus): Promise<void> {
+  const { error } = await supabase.rpc("update_app_notice_status", {
+    p_notice_id: id,
+    p_status: status,
+  });
+  if (error) throw error;
+}
+
+export async function listNoticeUnits(): Promise<NoticeAudienceOption[]> {
+  const { data, error } = await supabase
+    .from("units")
+    .select("id, name, city, state")
+    .eq("active", true)
+    .order("name", { ascending: true })
+    .limit(500);
+  if (error) throw error;
+  return (data ?? []).map((unit: any) => ({
+    id: unit.id,
+    label: [unit.name, unit.city, unit.state].filter(Boolean).join(" - "),
+  }));
+}
+
+export async function listNoticeOperators(): Promise<NoticeAudienceOption[]> {
+  const { data, error } = await supabase
+    .from("operators")
+    .select("id, display_name, units(name)")
+    .eq("active", true)
+    .order("display_name", { ascending: true })
+    .limit(500);
+  if (error) throw error;
+  return (data ?? []).map((operator: any) => ({
+    id: operator.id,
+    label: [operator.display_name, operator.units?.name].filter(Boolean).join(" - "),
+  }));
+}
+// fim das queries de atualizações

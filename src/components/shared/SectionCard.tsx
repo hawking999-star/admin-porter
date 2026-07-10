@@ -24,8 +24,8 @@ export function SectionCard({
   className?: string;
 }) {
   return (
-    <Card className={cn("shadow-sm", className)}>
-      <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+    <Card className={cn("border-border/80 shadow-sm", className)}>
+      <div className="flex items-start justify-between gap-3 border-b border-border/70 px-4 py-3.5 sm:px-5">
         <div className="flex min-w-0 items-center gap-2">
           {icon && <span className="shrink-0 text-muted-foreground">{icon}</span>}
           <div className="min-w-0">
@@ -37,7 +37,7 @@ export function SectionCard({
         </div>
         {action}
       </div>
-      <div className={cn("p-5", bodyClassName)}>{children}</div>
+      <div className={cn("p-4 sm:p-5", bodyClassName)}>{children}</div>
     </Card>
   );
 }

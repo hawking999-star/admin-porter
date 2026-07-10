@@ -29,13 +29,13 @@ export const navGroups: NavGroup[] = [
     items: [
       { to: "/", label: "Visão Geral", description: "Resumo da operação", icon: LayoutDashboard, ready: true },
       { to: "/condominios", label: "Condomínios", description: "Unidades e equipes", icon: Building2, ready: true },
-      { to: "/usuarios", label: "Usuários", description: "Operadores e acessos", icon: Users, ready: true },
+      { to: "/usuarios", label: "Operadores", description: "Operadores e acessos", icon: Users, ready: true },
     ],
   },
   {
     label: "Engajamento",
     items: [
-      { to: "/challenges", label: "Challenges", description: "Desafios e regras", icon: Puzzle },
+      { to: "/challenges", label: "Desafios", description: "Desafios e regras", icon: Puzzle },
       { to: "/musicas", label: "Músicas", description: "Playlists dos Operadores", icon: Music, ready: true },
       { to: "/feedback", label: "Feedback", description: "Retornos dos Operadores", icon: MessageSquare, ready: true },
     ],

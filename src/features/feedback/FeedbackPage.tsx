@@ -233,7 +233,7 @@ export function FeedbackPage() {
     <>
       <PageHeader title="Feedback" description="Retornos enviados pelos operadores dentro do app." />
 
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={<BellDot className="h-5 w-5" />} label="Pendentes" value={stats.pending} hint="Aguardando leitura" iconClassName="bg-warning/15 text-warning-foreground" loading={statsQuery.isLoading} />
         <StatCard icon={<CheckCircle2 className="h-5 w-5" />} label="Resolvidos" value={stats.resolved} hint="Já respondidos" iconClassName="bg-success/30 text-success-foreground" loading={statsQuery.isLoading} />
         <StatCard icon={<AlertTriangle className="h-5 w-5" />} label="Problemas" value={stats.problems} hint="Relatos de erro" iconClassName="bg-destructive/10 text-destructive" loading={statsQuery.isLoading} />

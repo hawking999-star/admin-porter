@@ -1,12 +1,19 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
+  Ban,
   Check,
+  CheckCircle2,
+  Clock,
+  Eye,
   FileText,
   History,
   Loader2,
+  Megaphone,
+  Pencil,
   Plus,
   Rocket,
   RotateCcw,
@@ -51,28 +58,50 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, StatCard, ErrorState, RetryButton, PaginationFooter } from "@/components/shared";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EmptyState, StatCard, ErrorState, RetryButton, PaginationFooter, StatusBadge } from "@/components/shared";
 import { useDebounce } from "@/hooks/useDebounce";
 import {
   approveAppRelease,
   blockAppRelease,
+  countActiveNotices,
   countAppReleaseStats,
   createAppRelease,
+  getAppReleaseById,
   getCurrentAppRelease,
   listAppReleases,
-  listReleasedNotes,
+  listAppNotices,
+  listNoticeOperators,
+  listNoticeUnits,
+  listReleaseHistory,
+  listReleaseNotes,
+  listReleaseOptions,
+  noticeFormErrors,
+  noticeStatusLabel,
   parseLatestYml,
   releaseAppRelease,
   releaseContractErrors,
   releaseFormErrors,
+  releaseNoteFormErrors,
   releaseRequiredFieldsReady,
   rollbackAppRelease,
   sendAppReleaseToTesting,
   statusLabel,
   updateAppRelease,
+  updateAppNoticeStatus,
+  upsertAppNotice,
+  upsertAppReleaseNote,
+  NOTICE_SEVERITIES,
+  NOTICE_STATUSES,
   RELEASE_STATUSES,
+  type AppNotice,
+  type AppNoticeInput,
   type AppRelease,
   type AppReleaseInput,
+  type AppReleaseNote,
+  type AppReleaseNoteInput,
+  type NoticeSeverity,
+  type NoticeStatus,
   type ReleaseStatus,
 } from "./queries";
 
@@ -91,14 +120,53 @@ const EMPTY_INPUT: AppReleaseInput = {
   size_bytes: "",
 };
 
-const STATUS_CLASS: Record<ReleaseStatus, string> = {
-  draft: "bg-muted text-muted-foreground",
-  testing: "bg-primary/10 text-primary",
-  approved: "bg-success/25 text-success-foreground",
-  released: "bg-success/30 text-success-foreground",
-  blocked: "bg-destructive/10 text-destructive",
-  superseded: "bg-muted text-muted-foreground",
+const EMPTY_NOTICE_INPUT: AppNoticeInput = {
+  title: "",
+  message: "",
+  severity: "info",
+  status: "draft",
+  starts_at: "",
+  ends_at: "",
+  audience_type: "all",
+  condominium_id: "",
+  operator_id: "",
+  shift: "",
+  requires_ack: false,
 };
+
+type Tone = "success" | "warning" | "danger" | "info" | "neutral";
+
+const RELEASE_STATUS_META: Record<ReleaseStatus, { label: string; tone: Tone }> = {
+  draft: { label: "Rascunho", tone: "neutral" },
+  testing: { label: "Teste", tone: "info" },
+  approved: { label: "Aprovada", tone: "info" },
+  released: { label: "Liberada", tone: "success" },
+  blocked: { label: "Bloqueada", tone: "danger" },
+  superseded: { label: "Substituída", tone: "neutral" },
+};
+
+const NOTICE_SEVERITY_META: Record<NoticeSeverity, { label: string; tone: Tone }> = {
+  info: { label: "Informativo", tone: "info" },
+  warning: { label: "Atenção", tone: "warning" },
+  critical: { label: "Crítico", tone: "danger" },
+  success: { label: "Sucesso", tone: "success" },
+};
+
+function noticeStatusTone(label: string): Tone {
+  if (label === "Ativo") return "success";
+  if (label === "Agendado") return "info";
+  if (label === "Desativado") return "danger";
+  return "neutral";
+}
+
+/** Badge de status de release — mostra "Produção" quando é a versão atual liberada. */
+function ReleaseStatusBadge({ release }: { release: AppRelease }) {
+  if (release.is_current && release.status === "released") {
+    return <StatusBadge tone="success" label="Produção" />;
+  }
+  const meta = RELEASE_STATUS_META[release.status];
+  return <StatusBadge tone={meta.tone} label={meta.label} />;
+}
 
 function fmtDate(iso: string | null) {
   if (!iso) return "-";
@@ -115,6 +183,62 @@ function fmtBytes(value: number | null) {
   if (!value) return "-";
   const mb = value / 1024 / 1024;
   return `${mb.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} MB`;
+}
+
+function toDateTimeInput(iso: string | null) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function splitNoteContent(content: string | null | undefined) {
+  const text = content ?? "";
+  const pick = (label: string, next?: string) => {
+    const end = next ? `\\n\\s*${next}\\s*\\n` : "$";
+    const match = text.match(new RegExp(`${label}\\s*\\n([\\s\\S]*?)(?:${end})`, "i"));
+    return match?.[1]?.trim() ?? "";
+  };
+  const novidades = pick("Novidades", "Correções|Correcoes");
+  const correcoes = pick("Correções|Correcoes", "Observações|Observacoes");
+  const observacoes = pick("Observações|Observacoes");
+  if (!novidades && !correcoes && !observacoes) return { novidades: text.trim(), correcoes: "", observacoes: "" };
+  return { novidades, correcoes, observacoes };
+}
+
+function buildNoteContent(novidades: string, correcoes: string, observacoes: string) {
+  return [
+    ["Novidades", novidades.trim()],
+    ["Correções", correcoes.trim()],
+    ["Observações", observacoes.trim()],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label}\n${value}`)
+    .join("\n\n");
+}
+
+function shiftLabel(value: string | null) {
+  if (value === "day") return "Diurno";
+  if (value === "night") return "Noturno";
+  if (value === "other") return "Outro";
+  return "-";
+}
+
+function audienceLabel(notice: AppNotice) {
+  if (notice.audience_type === "all") return "Todos";
+  if (notice.audience_type === "condominium") return notice.condominium_name ?? "Condomínio";
+  if (notice.audience_type === "user") return notice.operator_name ?? "Operador";
+  return `Turno ${shiftLabel(notice.shift)}`;
+}
+
+/** Último evento do ciclo de vida da release, para a coluna "Última ação". */
+function lastAction(r: AppRelease): { label: string; at: string | null; by: string | null } {
+  if (r.status === "blocked" && r.blocked_at) return { label: "Bloqueada", at: r.blocked_at, by: r.blocked_by_name };
+  if (r.released_at) return { label: "Liberada", at: r.released_at, by: r.released_by_name };
+  if (r.approved_at) return { label: "Aprovada", at: r.approved_at, by: r.approved_by_name };
+  return { label: "Criada", at: r.created_at, by: r.created_by_name };
 }
 
 function toInput(release: AppRelease): AppReleaseInput {
@@ -136,11 +260,19 @@ function toInput(release: AppRelease): AppReleaseInput {
 
 export function AtualizacoesPage() {
   const qc = useQueryClient();
+  const [tab, setTab] = useState("versoes");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<ReleaseStatus | "all">("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [noticeSearch, setNoticeSearch] = useState("");
+  const [noticeStatus, setNoticeStatus] = useState<NoticeStatus | "all">("all");
+  const [noticeSeverity, setNoticeSeverity] = useState<NoticeSeverity | "all">("all");
+  const [noticePage, setNoticePage] = useState(1);
+  const [noticePageSize, setNoticePageSize] = useState(10);
   const debouncedSearch = useDebounce(search, 350);
+  const debouncedNoticeSearch = useDebounce(noticeSearch, 350);
+
   const { data, isLoading, isError, error, isFetching } = useQuery({
     queryKey: ["app-releases", page, pageSize, debouncedSearch, status],
     queryFn: () => listAppReleases({ page, pageSize, search: debouncedSearch, status }),
@@ -151,41 +283,120 @@ export function AtualizacoesPage() {
     queryFn: countAppReleaseStats,
     staleTime: 30_000,
   });
+  const activeNoticesQuery = useQuery({
+    queryKey: ["app-notices-active-count"],
+    queryFn: countActiveNotices,
+    staleTime: 30_000,
+  });
   const currentQuery = useQuery({
     queryKey: ["app-release-current"],
     queryFn: getCurrentAppRelease,
     staleTime: 30_000,
   });
-  const releasedNotesQuery = useQuery({
-    queryKey: ["app-release-notes"],
-    queryFn: listReleasedNotes,
+  const releaseNotesQuery = useQuery({
+    queryKey: ["release-notes-list"],
+    queryFn: listReleaseNotes,
     staleTime: 30_000,
+  });
+  const historyQuery = useQuery({
+    queryKey: ["app-release-history"],
+    queryFn: listReleaseHistory,
+    staleTime: 30_000,
+  });
+  const releaseOptionsQuery = useQuery({
+    queryKey: ["release-options"],
+    queryFn: listReleaseOptions,
+    staleTime: 30_000,
+  });
+  const noticesQuery = useQuery({
+    queryKey: ["app-notices", noticePage, noticePageSize, debouncedNoticeSearch, noticeStatus, noticeSeverity],
+    queryFn: () => listAppNotices({
+      page: noticePage,
+      pageSize: noticePageSize,
+      search: debouncedNoticeSearch,
+      status: noticeStatus,
+      severity: noticeSeverity,
+    }),
+    staleTime: 20_000,
+  });
+  const noticeUnitsQuery = useQuery({
+    queryKey: ["notice-units"],
+    queryFn: listNoticeUnits,
+    staleTime: 60_000,
+  });
+  const noticeOperatorsQuery = useQuery({
+    queryKey: ["notice-operators"],
+    queryFn: listNoticeOperators,
+    staleTime: 60_000,
   });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AppRelease | null>(null);
+  const [noteDialogRelease, setNoteDialogRelease] = useState<AppRelease | null>(null);
+  const [pendingNoteId, setPendingNoteId] = useState<string | null>(null);
+  const [versionPickerOpen, setVersionPickerOpen] = useState(false);
+  const [noticeDialog, setNoticeDialog] = useState<AppNotice | null | "new">(null);
   const [confirm, setConfirm] = useState<null | {
     release: AppRelease;
     action: "approve" | "release" | "block" | "rollback";
   }>(null);
   const [blockReason, setBlockReason] = useState("");
 
+  // Abre o editor de nota a partir da aba Notas / seletor de versão: carrega a
+  // release completa por id e só então abre o diálogo (que exige a release).
+  const pendingNoteQuery = useQuery({
+    queryKey: ["release-by-id", pendingNoteId],
+    queryFn: () => getAppReleaseById(pendingNoteId as string),
+    enabled: Boolean(pendingNoteId),
+  });
+
+  useEffect(() => {
+    if (!pendingNoteId) return;
+    if (pendingNoteQuery.data) {
+      setNoteDialogRelease(pendingNoteQuery.data);
+      setPendingNoteId(null);
+    } else if (pendingNoteQuery.isError) {
+      toast.error("Não foi possível abrir a nota desta versão.");
+      setPendingNoteId(null);
+    }
+  }, [pendingNoteId, pendingNoteQuery.data, pendingNoteQuery.isError]);
+
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch, status]);
+
+  useEffect(() => {
+    setNoticePage(1);
+  }, [debouncedNoticeSearch, noticeStatus, noticeSeverity]);
 
   const releases = data?.rows ?? [];
   const total = data?.total ?? 0;
   const current = currentQuery.data ?? null;
   const stats = statsQuery.data ?? { drafts: 0, approved: 0, released: 0 };
-  const releasedNotes = releasedNotesQuery.data ?? [];
+  const activeNotices = activeNoticesQuery.data ?? 0;
+  const releaseNotes = releaseNotesQuery.data ?? [];
+  const history = historyQuery.data ?? [];
+  const releaseOptions = releaseOptionsQuery.data ?? [];
+  const notices = noticesQuery.data?.rows ?? [];
+  const noticesTotal = noticesQuery.data?.total ?? 0;
   const hasFilters = Boolean(debouncedSearch.trim()) || status !== "all";
+  const hasNoticeFilters = Boolean(debouncedNoticeSearch.trim()) || noticeStatus !== "all" || noticeSeverity !== "all";
+
+  // Avisos ativos sempre no topo da lista da página atual.
+  const sortedNotices = useMemo(
+    () => [...notices].sort((a, b) => Number(b.status === "active") - Number(a.status === "active")),
+    [notices],
+  );
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["app-releases"] });
     qc.invalidateQueries({ queryKey: ["app-release-stats"] });
+    qc.invalidateQueries({ queryKey: ["app-notices-active-count"] });
     qc.invalidateQueries({ queryKey: ["app-release-current"] });
-    qc.invalidateQueries({ queryKey: ["app-release-notes"] });
+    qc.invalidateQueries({ queryKey: ["release-notes-list"] });
+    qc.invalidateQueries({ queryKey: ["app-release-history"] });
+    qc.invalidateQueries({ queryKey: ["release-options"] });
+    qc.invalidateQueries({ queryKey: ["app-notices"] });
   };
 
   const actionMutation = useMutation({
@@ -224,195 +435,465 @@ export function AtualizacoesPage() {
     },
   });
 
+  const noticeStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: NoticeStatus }) => updateAppNoticeStatus(id, status),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Status do aviso atualizado");
+    },
+    onError: (err: unknown) => {
+      invalidate();
+      toast.error("Não foi possível atualizar o aviso", {
+        description: errorMessage(err),
+      });
+    },
+  });
+
   return (
     <>
       <PageHeader
         title="Atualizações"
-        description="Aprovação e liberação das versões do app dos operadores."
+        description="Gerencie versões do app, notas de atualização e avisos enviados aos operadores."
         action={
-          <Button
-            size="sm"
-            onClick={() => {
-              setEditing(null);
-              setDialogOpen(true);
-            }}
-          >
-            <Plus className="h-4 w-4" /> Nova versão
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setNoticeDialog("new")}>
+              <Megaphone className="h-4 w-4" /> Novo aviso
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setEditing(null);
+                setDialogOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" /> Nova versão
+            </Button>
+          </div>
         }
       />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           icon={<Rocket className="h-5 w-5" />}
-          label="Atual em produção"
-          value={current?.version ?? "-"}
-          hint={current ? `Liberada em ${fmtDate(current.released_at)}` : "Nenhuma release ativa"}
-          loading={isLoading}
+          iconClassName="bg-success/25 text-success-foreground"
+          label="Versão em produção"
+          value={current?.version ?? "—"}
+          hint={current ? `Liberada em ${fmtDate(current.released_at)}` : "Nenhuma versão ativa"}
+          loading={isLoading || currentQuery.isLoading}
         />
-        <StatCard icon={<FileText className="h-5 w-5" />} label="Rascunho/teste" value={stats.drafts} loading={isLoading} />
-        <StatCard icon={<Check className="h-5 w-5" />} label="Aprovadas" value={stats.approved} loading={isLoading} />
-        <StatCard icon={<History className="h-5 w-5" />} label="Histórico liberado" value={stats.released} loading={isLoading} />
+        <StatCard
+          icon={<FileText className="h-5 w-5" />}
+          label="Versões em rascunho"
+          value={stats.drafts}
+          hint="Rascunho ou em teste"
+          loading={statsQuery.isLoading}
+        />
+        <StatCard
+          icon={<Check className="h-5 w-5" />}
+          label="Versões aprovadas"
+          value={stats.approved}
+          hint="Prontas para liberar"
+          loading={statsQuery.isLoading}
+        />
+        <StatCard
+          icon={<Megaphone className="h-5 w-5" />}
+          iconClassName="bg-warning/20 text-warning-foreground"
+          label="Avisos ativos"
+          value={activeNotices}
+          hint={`${stats.released} versões no histórico`}
+          loading={activeNoticesQuery.isLoading}
+        />
       </div>
 
       {current && (
-        <Card className="mb-6 p-4 shadow-sm">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <Badge className="bg-success/30 text-success-foreground">Produção</Badge>
-                <span className="font-display text-xl font-semibold">{current.version}</span>
-                <span className="text-sm text-muted-foreground">{current.channel}</span>
-              </div>
-              <p className="font-medium">{current.title ?? "Sem título"}</p>
-              {current.release_notes && (
-                <p className="mt-1 max-w-3xl whitespace-pre-wrap text-sm text-muted-foreground">
-                  {current.release_notes}
-                </p>
-              )}
-            </div>
-            <div className="grid gap-1 text-sm text-muted-foreground">
-              <span>Obrigatória: {current.mandatory ? "sim" : "não"}</span>
-              <span>Versão mínima: {current.minimum_version ?? "-"}</span>
-              <span>Liberada por: {current.released_by_name ?? "-"}</span>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar versão, título, canal, arquivo..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-10 rounded-lg pl-9"
-          />
-        </div>
-        <Select value={status} onValueChange={(value) => setStatus(value as ReleaseStatus | "all")}>
-          <SelectTrigger className="h-10 w-[180px] rounded-lg">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {RELEASE_STATUSES.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button variant="outline" size="sm" onClick={invalidate} disabled={isFetching}>
-          {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
-          Atualizar
-        </Button>
-        {hasFilters && (
-          <Button variant="outline" size="sm" onClick={() => { setSearch(""); setStatus("all"); }}>
-            Limpar filtros
-          </Button>
-        )}
-        {data && <span className="ml-auto text-sm text-muted-foreground">{releases.length} de {total}</span>}
-      </div>
-
-      {isError ? (
-        <Card className="shadow-sm">
-          <ErrorState
-            title="Não foi possível carregar as versões."
-            description={(error as Error)?.message}
-            action={<RetryButton onClick={invalidate} disabled={isFetching} />}
-          />
-        </Card>
-      ) : (
-        <Card className="overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <Table className="min-w-[1040px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Versão</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Arquivos</TableHead>
-                  <TableHead>Notas</TableHead>
-                  <TableHead>Responsáveis</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading &&
-                  Array.from({ length: 5 }).map((_, i) => (
-                    <TableRow key={i}>
-                      <TableCell colSpan={6}>
-                        <Skeleton className="h-8 w-full" />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-
-                {!isLoading && releases.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6}>
-                      <EmptyState
-                        icon={<Rocket className="h-6 w-6" />}
-                        title="Nenhuma versão encontrada."
-                        description="Registre uma versão em rascunho para iniciar o fluxo de aprovação."
-                      />
-                    </TableCell>
-                  </TableRow>
-                )}
-
-                {!isLoading &&
-                  releases.map((release) => (
-                    <ReleaseRow
-                      key={release.id}
-                      release={release}
-                      onEdit={() => {
-                        setEditing(release);
-                        setDialogOpen(true);
-                      }}
-                      onConfirm={(action) => {
-                        setBlockReason("");
-                        setConfirm({ release, action });
-                      }}
-                      onSendToTesting={() => testingMutation.mutate(release)}
-                      busyTesting={testingMutation.isPending}
-                    />
-                  ))}
-              </TableBody>
-            </Table>
-          </div>
-        </Card>
-      )}
-
-      {!isError && (
-        <PaginationFooter
-          page={page}
-          pageSize={pageSize}
-          total={total}
-          isLoading={isLoading || isFetching}
-          onPageChange={setPage}
-          onPageSizeChange={(value) => {
-            setPageSize(value);
-            setPage(1);
+        <CurrentReleaseCard
+          current={current}
+          onEditNote={() => setNoteDialogRelease(current)}
+          onBlock={() => {
+            setBlockReason("");
+            setConfirm({ release: current, action: "block" });
           }}
         />
       )}
 
-      {releasedNotes.length > 0 && (
-        <section className="mt-8">
-          <h2 className="mb-3 font-display text-lg font-semibold">Notas de atualização liberadas</h2>
-          <div className="grid gap-3">
-            {releasedNotes.map((release) => (
-              <Card key={release.id} className="p-4 shadow-sm">
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">Atualização do aplicativo</Badge>
-                  <span className="font-semibold">{release.version}</span>
-                  <span className="text-sm text-muted-foreground">{release.title ?? "Sem título"}</span>
-                  <span className="ml-auto text-xs text-muted-foreground">{fmtDate(release.released_at)}</span>
-                </div>
-                <p className="whitespace-pre-wrap text-sm text-muted-foreground">{release.release_notes}</p>
-              </Card>
-            ))}
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
+        <div className="mb-5 overflow-x-auto pb-1">
+          <TabsList className="h-auto flex-wrap">
+            <TabsTrigger value="versoes">
+              Versões <TabCount value={total} />
+            </TabsTrigger>
+            <TabsTrigger value="notas">
+              Notas de atualização <TabCount value={releaseNotes.length} />
+            </TabsTrigger>
+            <TabsTrigger value="avisos">
+              Avisos <TabCount value={activeNotices} tone="warning" />
+            </TabsTrigger>
+            <TabsTrigger value="historico">
+              Histórico <TabCount value={history.length} />
+            </TabsTrigger>
+          </TabsList>
+        </div>
+
+        {/* ---------------------------- ABA VERSÕES ---------------------------- */}
+        <TabsContent value="versoes" className="mt-0 space-y-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative w-full max-w-md flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar versão, título, canal, arquivo..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-10 rounded-lg pl-9"
+              />
+            </div>
+            <Select value={status} onValueChange={(value) => setStatus(value as ReleaseStatus | "all")}>
+              <SelectTrigger className="h-10 w-[180px] rounded-lg">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RELEASE_STATUSES.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm" onClick={invalidate} disabled={isFetching}>
+              {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+              Atualizar
+            </Button>
+            {hasFilters && (
+              <Button variant="outline" size="sm" onClick={() => { setSearch(""); setStatus("all"); }}>
+                Limpar filtros
+              </Button>
+            )}
+            {data && (
+              <span className="ml-auto text-sm text-muted-foreground">
+                {releases.length} de {total} versões
+              </span>
+            )}
           </div>
-        </section>
-      )}
+
+          {isError ? (
+            <Card className="shadow-sm">
+              <ErrorState
+                title="Não foi possível carregar as versões."
+                description={(error as Error)?.message}
+                action={<RetryButton onClick={invalidate} disabled={isFetching} />}
+              />
+            </Card>
+          ) : (
+            <Card className="overflow-hidden shadow-sm">
+              <div className="overflow-x-auto">
+                <Table className="min-w-[1080px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Versão</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Arquivos</TableHead>
+                      <TableHead>Nota</TableHead>
+                      <TableHead>Responsáveis</TableHead>
+                      <TableHead>Última ação</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {isLoading &&
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <TableRow key={i}>
+                          <TableCell colSpan={7}>
+                            <Skeleton className="h-8 w-full" />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+
+                    {!isLoading && releases.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={7}>
+                          <EmptyState
+                            icon={<Rocket className="h-6 w-6" />}
+                            title={hasFilters ? "Nenhuma versão para este filtro." : "Nenhuma versão cadastrada."}
+                            description={
+                              hasFilters
+                                ? "Ajuste a busca ou o filtro de status para ver outras versões."
+                                : "Registre uma versão em rascunho para iniciar o fluxo de aprovação e liberação."
+                            }
+                            action={
+                              hasFilters ? (
+                                <Button variant="outline" size="sm" onClick={() => { setSearch(""); setStatus("all"); }}>
+                                  Limpar filtros
+                                </Button>
+                              ) : (
+                                <Button size="sm" onClick={() => { setEditing(null); setDialogOpen(true); }}>
+                                  <Plus className="h-4 w-4" /> Nova versão
+                                </Button>
+                              )
+                            }
+                          />
+                        </TableCell>
+                      </TableRow>
+                    )}
+
+                    {!isLoading &&
+                      releases.map((release) => (
+                        <ReleaseRow
+                          key={release.id}
+                          release={release}
+                          onEdit={() => {
+                            setEditing(release);
+                            setDialogOpen(true);
+                          }}
+                          onConfirm={(action) => {
+                            setBlockReason("");
+                            setConfirm({ release, action });
+                          }}
+                          onNote={() => setNoteDialogRelease(release)}
+                          onSendToTesting={() => testingMutation.mutate(release)}
+                          busyTesting={testingMutation.isPending}
+                        />
+                      ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </Card>
+          )}
+
+          {!isError && (
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              isLoading={isLoading || isFetching}
+              onPageChange={setPage}
+              onPageSizeChange={(value) => {
+                setPageSize(value);
+                setPage(1);
+              }}
+            />
+          )}
+        </TabsContent>
+
+        {/* ------------------------- ABA NOTAS DE ATUALIZAÇÃO ------------------------- */}
+        <TabsContent value="notas" className="mt-0 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="font-display text-lg font-semibold">Notas de atualização</h2>
+              <p className="text-sm text-muted-foreground">
+                Cada nota pertence sempre a uma versão real do app e só aparece para o operador quando publicada.
+              </p>
+            </div>
+            <Button size="sm" onClick={() => setVersionPickerOpen(true)}>
+              <Plus className="h-4 w-4" /> Nova nota
+            </Button>
+          </div>
+
+          {releaseNotesQuery.isError ? (
+            <Card className="shadow-sm">
+              <ErrorState
+                title="Não foi possível carregar as notas."
+                description={(releaseNotesQuery.error as Error)?.message}
+                action={<RetryButton onClick={invalidate} disabled={releaseNotesQuery.isFetching} />}
+              />
+            </Card>
+          ) : (
+            <div className="grid gap-3">
+              {releaseNotesQuery.isLoading &&
+                Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-28 w-full" />)}
+
+              {!releaseNotesQuery.isLoading && releaseNotes.length === 0 && (
+                <Card className="shadow-sm">
+                  <EmptyState
+                    icon={<FileText className="h-6 w-6" />}
+                    title="Nenhuma nota de atualização cadastrada."
+                    description="Ao liberar uma versão, você pode criar uma nota para comunicar as novidades aos operadores."
+                    action={
+                      <Button size="sm" onClick={() => setVersionPickerOpen(true)}>
+                        <Plus className="h-4 w-4" /> Nova nota
+                      </Button>
+                    }
+                  />
+                </Card>
+              )}
+
+              {releaseNotes.map((note) => (
+                <ReleaseNoteRow key={note.id} note={note} onOpen={() => setPendingNoteId(note.app_release_id)} />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* ------------------------------- ABA AVISOS ------------------------------- */}
+        <TabsContent value="avisos" className="mt-0 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="font-display text-lg font-semibold">Avisos</h2>
+              <p className="text-sm text-muted-foreground">
+                Comunicados independentes de versão para o app dos operadores. Avisos ativos aparecem primeiro.
+              </p>
+            </div>
+            <Button size="sm" onClick={() => setNoticeDialog("new")}>
+              <Plus className="h-4 w-4" /> Novo aviso
+            </Button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative w-full max-w-md flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar título ou mensagem..."
+                value={noticeSearch}
+                onChange={(e) => setNoticeSearch(e.target.value)}
+                className="h-10 rounded-lg pl-9"
+              />
+            </div>
+            <Select value={noticeStatus} onValueChange={(value) => setNoticeStatus(value as NoticeStatus | "all")}>
+              <SelectTrigger className="h-10 w-[160px] rounded-lg">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {NOTICE_STATUSES.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={noticeSeverity} onValueChange={(value) => setNoticeSeverity(value as NoticeSeverity | "all")}>
+              <SelectTrigger className="h-10 w-[160px] rounded-lg">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {NOTICE_SEVERITIES.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {hasNoticeFilters && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setNoticeSearch(""); setNoticeStatus("all"); setNoticeSeverity("all"); }}
+              >
+                Limpar filtros
+              </Button>
+            )}
+            {noticesQuery.data && (
+              <span className="ml-auto text-sm text-muted-foreground">
+                {notices.length} de {noticesTotal} avisos
+              </span>
+            )}
+          </div>
+
+          {noticesQuery.isError ? (
+            <Card className="shadow-sm">
+              <ErrorState
+                title="Não foi possível carregar os avisos."
+                description={(noticesQuery.error as Error)?.message}
+                action={<RetryButton onClick={invalidate} disabled={noticesQuery.isFetching} />}
+              />
+            </Card>
+          ) : (
+            <div className="grid gap-3">
+              {noticesQuery.isLoading &&
+                Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-28 w-full" />)}
+
+              {!noticesQuery.isLoading && notices.length === 0 && (
+                <Card className="shadow-sm">
+                  <EmptyState
+                    icon={<Megaphone className="h-6 w-6" />}
+                    title={hasNoticeFilters ? "Nenhum aviso para este filtro." : "Nenhum aviso cadastrado."}
+                    description={
+                      hasNoticeFilters
+                        ? "Ajuste a busca, o status ou a severidade para ver outros avisos."
+                        : "Crie um aviso para comunicar instabilidade, manutenção ou uma orientação aos operadores."
+                    }
+                    action={
+                      hasNoticeFilters ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => { setNoticeSearch(""); setNoticeStatus("all"); setNoticeSeverity("all"); }}
+                        >
+                          Limpar filtros
+                        </Button>
+                      ) : (
+                        <Button size="sm" onClick={() => setNoticeDialog("new")}>
+                          <Plus className="h-4 w-4" /> Novo aviso
+                        </Button>
+                      )
+                    }
+                  />
+                </Card>
+              )}
+
+              {sortedNotices.map((notice) => (
+                <NoticeCard
+                  key={notice.id}
+                  notice={notice}
+                  busy={noticeStatusMutation.isPending}
+                  onEdit={() => setNoticeDialog(notice)}
+                  onStatus={(nextStatus) => noticeStatusMutation.mutate({ id: notice.id, status: nextStatus })}
+                />
+              ))}
+            </div>
+          )}
+
+          {!noticesQuery.isError && (
+            <PaginationFooter
+              page={noticePage}
+              pageSize={noticePageSize}
+              total={noticesTotal}
+              isLoading={noticesQuery.isLoading || noticesQuery.isFetching}
+              onPageChange={setNoticePage}
+              onPageSizeChange={(value) => {
+                setNoticePageSize(value);
+                setNoticePage(1);
+              }}
+            />
+          )}
+        </TabsContent>
+
+        {/* ------------------------------ ABA HISTÓRICO ------------------------------ */}
+        <TabsContent value="historico" className="mt-0 space-y-4">
+          <div className="min-w-0">
+            <h2 className="font-display text-lg font-semibold">Histórico</h2>
+            <p className="text-sm text-muted-foreground">
+              Versões liberadas, bloqueadas e substituídas, com responsáveis e motivos.
+            </p>
+          </div>
+
+          {historyQuery.isError ? (
+            <Card className="shadow-sm">
+              <ErrorState
+                title="Não foi possível carregar o histórico."
+                description={(historyQuery.error as Error)?.message}
+                action={<RetryButton onClick={invalidate} disabled={historyQuery.isFetching} />}
+              />
+            </Card>
+          ) : (
+            <div className="grid gap-3">
+              {historyQuery.isLoading &&
+                Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)}
+
+              {!historyQuery.isLoading && history.length === 0 && (
+                <Card className="shadow-sm">
+                  <EmptyState
+                    icon={<History className="h-6 w-6" />}
+                    title="Nenhum evento no histórico ainda."
+                    description="Quando uma versão for liberada ou bloqueada, o evento aparece aqui com o responsável."
+                  />
+                </Card>
+              )}
+
+              {history.map((release) => (
+                <HistoryRow key={release.id} release={release} />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
 
       <ReleaseDialog
         open={dialogOpen}
@@ -430,6 +911,39 @@ export function AtualizacoesPage() {
         }}
       />
 
+      <VersionPickerDialog
+        open={versionPickerOpen}
+        options={releaseOptions}
+        loading={releaseOptionsQuery.isLoading}
+        onOpenChange={setVersionPickerOpen}
+        onPick={(id) => {
+          setVersionPickerOpen(false);
+          setPendingNoteId(id);
+        }}
+      />
+
+      <ReleaseNoteDialog
+        release={noteDialogRelease}
+        open={Boolean(noteDialogRelease)}
+        onOpenChange={(open) => !open && setNoteDialogRelease(null)}
+        onSaved={() => {
+          setNoteDialogRelease(null);
+          invalidate();
+        }}
+      />
+
+      <NoticeDialog
+        open={Boolean(noticeDialog)}
+        notice={noticeDialog === "new" ? null : noticeDialog}
+        units={noticeUnitsQuery.data ?? []}
+        operators={noticeOperatorsQuery.data ?? []}
+        onOpenChange={(open) => !open && setNoticeDialog(null)}
+        onSaved={() => {
+          setNoticeDialog(null);
+          invalidate();
+        }}
+      />
+
       <ConfirmActionDialog
         confirm={confirm}
         reason={blockReason}
@@ -442,16 +956,108 @@ export function AtualizacoesPage() {
   );
 }
 
+function TabCount({ value, tone = "neutral" }: { value: number; tone?: "neutral" | "warning" }) {
+  if (!value) return null;
+  return (
+    <span
+      className={cn(
+        "ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+        tone === "warning" ? "bg-warning/20 text-warning-foreground" : "bg-muted text-muted-foreground",
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
+function DefItem({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function CurrentReleaseCard({
+  current,
+  onEditNote,
+  onBlock,
+}: {
+  current: AppRelease;
+  onEditNote: () => void;
+  onBlock: () => void;
+}) {
+  const note = current.release_note;
+  return (
+    <Card className="mb-6 border-success/40 p-5 shadow-sm">
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <StatusBadge tone="success" label="Produção" />
+            <span className="font-display text-2xl font-semibold tracking-tight">{current.version}</span>
+            <span className="text-sm text-muted-foreground">{current.title ?? "Sem título"}</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+            <DefItem label="Canal" value={current.channel} />
+            <DefItem label="Obrigatória" value={current.mandatory ? "Sim" : "Não"} />
+            <DefItem label="Versão mínima" value={current.minimum_version ?? "—"} />
+            <DefItem label="Liberada por" value={current.released_by_name ?? "—"} />
+            <DefItem label="Liberada em" value={fmtDate(current.released_at)} />
+          </div>
+
+          {(note?.status === "published" || current.release_notes) && (
+            <div className="mt-4 max-w-3xl rounded-lg border border-border bg-muted/30 p-3">
+              {note?.status === "published" ? (
+                <>
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">Nota publicada</Badge>
+                    <span className="text-sm font-semibold">{note.title}</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">{note.summary}</p>
+                </>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm text-muted-foreground">{current.release_notes}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 flex-row flex-wrap gap-2 lg:flex-col">
+          <Button size="sm" variant="outline" onClick={onEditNote}>
+            {note ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {note ? "Editar nota" : "Criar nota"}
+          </Button>
+          <Button size="sm" variant="outline" className="text-destructive" onClick={onBlock}>
+            <ShieldAlert className="h-4 w-4" /> Bloquear versão
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function FileLine({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="truncate" title={value ?? ""}>
+      <span className="text-muted-foreground/70">{label}:</span> {value ?? "—"}
+    </div>
+  );
+}
+
 function ReleaseRow({
   release,
   onEdit,
   onConfirm,
+  onNote,
   onSendToTesting,
   busyTesting,
 }: {
   release: AppRelease;
   onEdit: () => void;
   onConfirm: (action: "approve" | "release" | "block" | "rollback") => void;
+  onNote: () => void;
   onSendToTesting: () => void;
   busyTesting: boolean;
 }) {
@@ -462,48 +1068,86 @@ function ReleaseRow({
   const canRelease = release.status === "approved" && ready;
   const canBlock = release.status !== "blocked" && release.status !== "superseded";
   const canRollback = (release.status === "released" || release.status === "superseded") && !release.is_current && ready;
+  const last = lastAction(release);
 
   return (
     <TableRow>
       <TableCell className="align-top">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-semibold">{release.version}</span>
-          {release.is_current && <Badge className="bg-success/30 text-success-foreground">Atual</Badge>}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {release.channel} · {release.mandatory ? "obrigatória" : "opcional"} · mín. {release.minimum_version ?? "-"}
+          {release.channel} · {release.mandatory ? "obrigatória" : "opcional"} · mín. {release.minimum_version ?? "—"}
         </div>
-        <div className="mt-1 text-xs text-muted-foreground">{release.title ?? "Sem título"}</div>
+        <div className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground" title={release.title ?? ""}>
+          {release.title ?? "Sem título"}
+        </div>
       </TableCell>
+
       <TableCell className="align-top">
-        <span className={cn("inline-flex rounded-full px-2.5 py-1 text-xs font-semibold", STATUS_CLASS[release.status])}>
-          {statusLabel(release.status)}
-        </span>
+        <ReleaseStatusBadge release={release} />
         {!ready && (
-          <p className="mt-2 text-xs text-destructive">
-            Campos obrigatórios incompletos para liberar.
+          <p className="mt-2 flex items-start gap-1 text-xs text-destructive">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            Campos obrigatórios incompletos.
           </p>
         )}
       </TableCell>
-      <TableCell className="max-w-[260px] align-top text-xs text-muted-foreground">
-        <div className="truncate" title={release.manifest_key ?? ""}>Manifest: {release.manifest_key ?? "-"}</div>
-        <div className="truncate" title={release.installer_key ?? ""}>Installer: {release.installer_key ?? "-"}</div>
-        <div className="truncate" title={release.blockmap_key ?? ""}>Blockmap: {release.blockmap_key ?? "-"}</div>
-        <div className="truncate" title={release.sha512 ?? ""}>SHA-512: {release.sha512 ?? "-"}</div>
-        <div>{fmtBytes(release.size_bytes)}</div>
-      </TableCell>
+
       <TableCell className="max-w-[240px] align-top">
-        <p className="line-clamp-3 whitespace-pre-wrap text-sm text-muted-foreground">
-          {release.release_notes ?? "-"}
-        </p>
+        <div className="grid gap-0.5 rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+          <FileLine label="manifest" value={release.manifest_key} />
+          <FileLine label="installer" value={release.installer_key} />
+          <FileLine label="blockmap" value={release.blockmap_key} />
+          <FileLine label="sha512" value={release.sha512} />
+          <div className="pt-0.5 text-foreground/70">{fmtBytes(release.size_bytes)}</div>
+        </div>
       </TableCell>
+
+      <TableCell className="max-w-[210px] align-top">
+        {release.release_note ? (
+          <div className="grid gap-2">
+            <StatusBadge
+              tone={release.release_note.status === "published" ? "success" : "neutral"}
+              label={release.release_note.status === "published" ? "Publicada" : "Rascunho"}
+              className="w-fit"
+            />
+            <p className="line-clamp-2 text-sm text-muted-foreground">{release.release_note.summary}</p>
+            <Button size="sm" variant="outline" onClick={onNote}>
+              {canEdit ? <Pencil className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              {canEdit ? "Editar nota" : "Ver nota"}
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" onClick={onNote}>
+            <Plus className="h-4 w-4" /> Criar nota
+          </Button>
+        )}
+      </TableCell>
+
       <TableCell className="align-top text-xs text-muted-foreground">
-        <div>Criada: {release.created_by_name ?? "-"} · {fmtDate(release.created_at)}</div>
-        <div>Aprovada: {release.approved_by_name ?? "-"} · {fmtDate(release.approved_at)}</div>
-        <div>Liberada: {release.released_by_name ?? "-"} · {fmtDate(release.released_at)}</div>
-        <div>Bloqueada: {release.blocked_by_name ?? "-"} · {fmtDate(release.blocked_at)}</div>
-        {release.block_reason && <div className="mt-1 text-destructive">Motivo: {release.block_reason}</div>}
+        <div className="grid gap-0.5">
+          {release.created_by_name && <div>Criada: {release.created_by_name}</div>}
+          {release.approved_by_name && <div>Aprovada: {release.approved_by_name}</div>}
+          {release.released_by_name && <div>Liberada: {release.released_by_name}</div>}
+          {release.blocked_by_name && <div className="text-destructive">Bloqueada: {release.blocked_by_name}</div>}
+          {!release.created_by_name &&
+            !release.approved_by_name &&
+            !release.released_by_name &&
+            !release.blocked_by_name && <div>—</div>}
+        </div>
       </TableCell>
+
+      <TableCell className="max-w-[180px] align-top text-xs text-muted-foreground">
+        <div className="font-medium text-foreground/80">{last.label}</div>
+        <div>{fmtDate(last.at)}</div>
+        {release.block_reason && (
+          <div className="mt-1 line-clamp-2 text-destructive" title={release.block_reason}>
+            Motivo: {release.block_reason}
+          </div>
+        )}
+      </TableCell>
+
       <TableCell className="align-top">
         <div className="flex flex-wrap justify-end gap-1.5">
           {canEdit && (
@@ -540,6 +1184,520 @@ function ReleaseRow({
         </div>
       </TableCell>
     </TableRow>
+  );
+}
+
+function ReleaseNoteRow({ note, onOpen }: { note: AppReleaseNote; onOpen: () => void }) {
+  const published = note.status === "published";
+  return (
+    <Card className="p-4 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Badge variant="outline">Versão {note.version_number}</Badge>
+            <StatusBadge tone={published ? "success" : "neutral"} label={published ? "Publicada" : "Rascunho"} />
+            {note.release_is_current && <StatusBadge tone="success" label="Produção" />}
+          </div>
+          <p className="font-medium">{note.title}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{note.summary}</p>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>{published ? `Publicada: ${fmtDate(note.published_at)}` : `Atualizada: ${fmtDate(note.updated_at)}`}</span>
+            {note.created_by_name && <span>Criada por: {note.created_by_name}</span>}
+            {published && <span>Lidas: {note.read_count}</span>}
+            {published && <span>Confirmadas: {note.ack_count}</span>}
+          </div>
+        </div>
+        <div className="shrink-0">
+          <Button size="sm" variant="outline" onClick={onOpen}>
+            <Pencil className="h-4 w-4" /> Ver / editar
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function HistoryRow({ release }: { release: AppRelease }) {
+  const last = lastAction(release);
+  const meta = RELEASE_STATUS_META[release.status];
+  const Icon =
+    release.status === "blocked" ? Ban : release.status === "released" ? CheckCircle2 : Clock;
+  const iconClass =
+    release.status === "blocked"
+      ? "bg-destructive/10 text-destructive"
+      : release.status === "released"
+        ? "bg-success/25 text-success-foreground"
+        : "bg-muted text-muted-foreground";
+
+  return (
+    <Card className="p-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", iconClass)}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">{release.version}</span>
+            <ReleaseStatusBadge release={release} />
+            <span className="ml-auto text-xs text-muted-foreground">{fmtDate(last.at)}</span>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {last.label}
+            {last.by ? ` por ${last.by}` : ""}
+            {release.title ? ` · ${release.title}` : ""}
+          </p>
+          {release.status === "blocked" && release.block_reason && (
+            <p className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+              Motivo do bloqueio: {release.block_reason}
+            </p>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function NoticeCard({
+  notice,
+  busy,
+  onEdit,
+  onStatus,
+}: {
+  notice: AppNotice;
+  busy: boolean;
+  onEdit: () => void;
+  onStatus: (status: NoticeStatus) => void;
+}) {
+  const label = noticeStatusLabel(notice);
+  const severity = NOTICE_SEVERITY_META[notice.severity];
+  const isActive = notice.status === "active";
+
+  return (
+    <Card className={cn("p-4 shadow-sm", isActive && "border-success/40")}>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <StatusBadge tone={noticeStatusTone(label)} label={label} />
+            <StatusBadge tone={severity.tone} label={severity.label} dot={false} />
+            {notice.requires_ack && <Badge variant="outline">Exige confirmação</Badge>}
+            <span className="text-xs text-muted-foreground">Público: {audienceLabel(notice)}</span>
+          </div>
+          <p className="font-semibold">{notice.title}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{notice.message}</p>
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>Início: {fmtDate(notice.starts_at)}</span>
+            <span>Fim: {fmtDate(notice.ends_at)}</span>
+            <span>Lidas: {notice.read_count}</span>
+            <span>Confirmadas: {notice.ack_count}</span>
+            <span>Atualizado: {fmtDate(notice.updated_at)}</span>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          <Button size="sm" variant="outline" onClick={onEdit}>
+            <Pencil className="h-4 w-4" /> Editar
+          </Button>
+          {notice.status !== "active" && (
+            <Button size="sm" variant="outline" onClick={() => onStatus("active")} disabled={busy}>
+              Ativar
+            </Button>
+          )}
+          {notice.status === "active" && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => onStatus("disabled")} disabled={busy}>
+                Desativar
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => onStatus("expired")} disabled={busy}>
+                Expirar agora
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function VersionPickerDialog({
+  open,
+  options,
+  loading,
+  onOpenChange,
+  onPick,
+}: {
+  open: boolean;
+  options: { id: string; version: string; status: ReleaseStatus; has_note: boolean }[];
+  loading: boolean;
+  onOpenChange: (open: boolean) => void;
+  onPick: (id: string) => void;
+}) {
+  const [selected, setSelected] = useState<string>("");
+
+  useEffect(() => {
+    if (!open) setSelected("");
+  }, [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Nova nota de atualização</DialogTitle>
+          <DialogDescription>
+            Selecione a versão à qual esta nota ficará vinculada. Toda nota pertence sempre a uma versão real do app.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-2">
+          <Label>Versão</Label>
+          <Select value={selected || undefined} onValueChange={setSelected} disabled={loading}>
+            <SelectTrigger>
+              <SelectValue placeholder={loading ? "Carregando versões..." : "Selecione a versão"} />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((opt) => (
+                <SelectItem key={opt.id} value={opt.id}>
+                  {opt.version} · {statusLabel(opt.status)}
+                  {opt.has_note ? " · já tem nota" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {!loading && options.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              Nenhuma versão cadastrada ainda. Crie uma versão para poder vincular uma nota.
+            </p>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={() => selected && onPick(selected)} disabled={!selected}>
+            Continuar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ReleaseNoteDialog({
+  release,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  release: AppRelease | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [input, setInput] = useState<AppReleaseNoteInput>({
+    app_release_id: "",
+    title: "",
+    summary: "",
+    content: "",
+    status: "draft",
+  });
+  const [novidades, setNovidades] = useState("");
+  const [correcoes, setCorrecoes] = useState("");
+  const [observacoes, setObservacoes] = useState("");
+
+  useEffect(() => {
+    if (!release) return;
+    const note = release.release_note;
+    const sections = splitNoteContent(note?.content);
+    setInput({
+      app_release_id: release.id,
+      title: note?.title ?? `Atualização ${release.version}`,
+      summary: note?.summary ?? "",
+      content: note?.content ?? "",
+      status: note?.status ?? "draft",
+    });
+    setNovidades(sections.novidades);
+    setCorrecoes(sections.correcoes);
+    setObservacoes(sections.observacoes);
+  }, [release, open]);
+
+  const payload = {
+    ...input,
+    content: buildNoteContent(novidades, correcoes, observacoes),
+  };
+  const formErrors = releaseNoteFormErrors(payload);
+
+  const mutation = useMutation({
+    mutationFn: () => upsertAppReleaseNote(payload),
+    onSuccess: () => {
+      toast.success(input.status === "published" ? "Nota publicada" : "Nota salva como rascunho");
+      onSaved();
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível salvar a nota", {
+        description: errorMessage(err),
+      });
+    },
+  });
+
+  if (!release) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>{release.release_note ? "Editar nota" : "Criar nota"} · {release.version}</DialogTitle>
+          <DialogDescription>
+            A nota fica vinculada somente a esta versão. Ela só deve ser publicada quando estiver pronta para o app dos operadores.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Versão">
+            <Input value={release.version} disabled readOnly />
+          </Field>
+          <Field label="Status da nota">
+            <Select value={input.status} onValueChange={(value) => setInput((cur) => ({ ...cur, status: value as "draft" | "published" }))}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="draft">Rascunho</SelectItem>
+                <SelectItem value="published">Publicada</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Título" className="sm:col-span-2">
+            <Input value={input.title} onChange={(e) => setInput((cur) => ({ ...cur, title: e.target.value }))} />
+          </Field>
+          <Field label="Resumo curto" className="sm:col-span-2">
+            <Textarea value={input.summary} onChange={(e) => setInput((cur) => ({ ...cur, summary: e.target.value }))} rows={3} />
+          </Field>
+          <Field label="Novidades" className="sm:col-span-2">
+            <Textarea value={novidades} onChange={(e) => setNovidades(e.target.value)} rows={4} />
+          </Field>
+          <Field label="Correções" className="sm:col-span-2">
+            <Textarea value={correcoes} onChange={(e) => setCorrecoes(e.target.value)} rows={4} />
+          </Field>
+          <Field label="Observações" className="sm:col-span-2">
+            <Textarea value={observacoes} onChange={(e) => setObservacoes(e.target.value)} rows={3} />
+          </Field>
+        </div>
+
+        {formErrors.length > 0 && (
+          <ul className="list-disc space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 pl-6 text-xs text-destructive">
+            {formErrors.map((err) => (
+              <li key={err}>{err}</li>
+            ))}
+          </ul>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || formErrors.length > 0}>
+            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+            Salvar nota
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function NoticeDialog({
+  open,
+  notice,
+  units,
+  operators,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  notice: AppNotice | null;
+  units: { id: string; label: string }[];
+  operators: { id: string; label: string }[];
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [input, setInput] = useState<AppNoticeInput>(EMPTY_NOTICE_INPUT);
+
+  useEffect(() => {
+    if (!open) return;
+    setInput(
+      notice
+        ? {
+            id: notice.id,
+            title: notice.title,
+            message: notice.message,
+            severity: notice.severity,
+            status: notice.status,
+            starts_at: toDateTimeInput(notice.starts_at),
+            ends_at: toDateTimeInput(notice.ends_at),
+            audience_type: notice.audience_type,
+            condominium_id: notice.condominium_id ?? "",
+            operator_id: notice.operator_id ?? "",
+            shift: notice.shift ?? "",
+            requires_ack: notice.requires_ack,
+          }
+        : EMPTY_NOTICE_INPUT,
+    );
+  }, [notice, open]);
+
+  const update = <K extends keyof AppNoticeInput>(key: K, value: AppNoticeInput[K]) =>
+    setInput((cur) => ({ ...cur, [key]: value }));
+
+  const formErrors = noticeFormErrors(input);
+  const mutation = useMutation({
+    mutationFn: () => upsertAppNotice(input),
+    onSuccess: () => {
+      toast.success(notice ? "Aviso atualizado" : "Aviso criado");
+      onSaved();
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível salvar o aviso", {
+        description: errorMessage(err),
+      });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>{notice ? "Editar aviso" : "Novo aviso"}</DialogTitle>
+          <DialogDescription>
+            Avisos são independentes de versão e aparecem no app conforme status, período e público.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Título" className="sm:col-span-2">
+            <Input value={input.title} onChange={(e) => update("title", e.target.value)} />
+          </Field>
+          <Field label="Mensagem" className="sm:col-span-2">
+            <Textarea value={input.message} onChange={(e) => update("message", e.target.value)} rows={5} />
+          </Field>
+          <Field label="Severidade">
+            <Select value={input.severity} onValueChange={(value) => update("severity", value as NoticeSeverity)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {NOTICE_SEVERITIES.filter((item) => item.value !== "all").map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Status">
+            <Select value={input.status} onValueChange={(value) => update("status", value as NoticeStatus)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {NOTICE_STATUSES.filter((item) => item.value !== "all").map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Início">
+            <Input type="datetime-local" value={input.starts_at} onChange={(e) => update("starts_at", e.target.value)} />
+          </Field>
+          <Field label="Fim">
+            <Input type="datetime-local" value={input.ends_at} onChange={(e) => update("ends_at", e.target.value)} />
+          </Field>
+          <Field label="Público">
+            <Select value={input.audience_type} onValueChange={(value) => update("audience_type", value as AppNoticeInput["audience_type"])}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos</SelectItem>
+                <SelectItem value="condominium">Condomínio</SelectItem>
+                <SelectItem value="shift">Turno</SelectItem>
+                <SelectItem value="user">Operador</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          {input.audience_type === "condominium" && (
+            <Field label="Condomínio">
+              <Select value={input.condominium_id || undefined} onValueChange={(value) => update("condominium_id", value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
+                <SelectContent>
+                  {units.map((unit) => (
+                    <SelectItem key={unit.id} value={unit.id}>
+                      {unit.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+          {input.audience_type === "shift" && (
+            <Field label="Turno">
+              <Select value={input.shift || undefined} onValueChange={(value) => update("shift", value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="day">Diurno</SelectItem>
+                  <SelectItem value="night">Noturno</SelectItem>
+                  <SelectItem value="other">Outro</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+          {input.audience_type === "user" && (
+            <Field label="Operador">
+              <Select value={input.operator_id || undefined} onValueChange={(value) => update("operator_id", value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
+                <SelectContent>
+                  {operators.map((operator) => (
+                    <SelectItem key={operator.id} value={operator.id}>
+                      {operator.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+          <div className="flex items-center justify-between rounded-lg border border-border p-3 sm:col-span-2">
+            <div>
+              <Label>Exige confirmação de leitura</Label>
+              <p className="text-xs text-muted-foreground">O app deve registrar confirmação quando o operador aceitar o aviso.</p>
+            </div>
+            <Switch checked={input.requires_ack} onCheckedChange={(value) => update("requires_ack", value)} />
+          </div>
+        </div>
+
+        {formErrors.length > 0 && (
+          <ul className="list-disc space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 pl-6 text-xs text-destructive">
+            {formErrors.map((err) => (
+              <li key={err}>{err}</li>
+            ))}
+          </ul>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || formErrors.length > 0}>
+            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+            Salvar aviso
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -839,6 +1997,15 @@ function ConfirmActionDialog({
               Confirme que os 3 objetos acima já foram enviados ao bucket R2 privado (
               <code>npm run release:publish:r2</code>). O Admin não acessa o R2 diretamente — a
               existência dos arquivos depende de confirmação operacional.
+            </p>
+          </div>
+        )}
+
+        {action === "release" && release && release.release_note?.status !== "published" && (
+          <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
+            <div className="font-medium">Nota de atualização não publicada</div>
+            <p className="mt-1 text-muted-foreground">
+              Esta versão pode ser liberada, mas o app só terá nota oficial se houver uma nota publicada vinculada a ela.
             </p>
           </div>
         )}

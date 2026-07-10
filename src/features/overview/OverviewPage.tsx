@@ -61,10 +61,10 @@ function MetricCard({
   loading?: boolean;
 }) {
   return (
-    <Card className="shadow-sm">
-      <CardContent className="p-5">
+    <Card className="border-border/80 shadow-sm">
+      <CardContent className="p-4">
         <div className="flex items-center gap-2.5">
-          <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", iconClass)}>
+          <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", iconClass)}>
             {icon}
           </div>
           <div className="text-xs font-medium text-muted-foreground">{label}</div>
@@ -72,7 +72,7 @@ function MetricCard({
         {loading ? (
           <Skeleton className="mt-4 h-8 w-16" />
         ) : (
-          <div className="mt-4 font-display text-3xl font-bold leading-none tracking-tight tabular-nums">
+          <div className="mt-3 font-display text-[26px] font-bold leading-none tracking-tight tabular-nums">
             {value}
           </div>
         )}
@@ -92,15 +92,15 @@ function OperationCard({ groups, loading }: { groups: StatusGroup[]; loading: bo
     { label: "Fora do turno", value: get("outside_shift"), dot: STATUS_DOT.outside_shift },
   ];
   return (
-    <Card className="shadow-sm">
-      <CardContent className="p-5">
+    <Card className="border-border/80 shadow-sm">
+      <CardContent className="p-4">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-secondary">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-secondary">
             <Headphones className="h-5 w-5" />
           </div>
           <div className="text-xs font-medium text-muted-foreground">Operação agora</div>
         </div>
-        <div className="mt-4 space-y-2">
+        <div className="mt-3 space-y-1.5">
           {rows.map((r) => (
             <div key={r.label} className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm text-foreground">
@@ -132,15 +132,15 @@ function PendingCard({
   loading: boolean;
 }) {
   return (
-    <Card className="shadow-sm">
-      <CardContent className="p-5">
+    <Card className="border-border/80 shadow-sm">
+      <CardContent className="p-4">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-warning/15 text-warning">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-warning/15 text-warning">
             <Inbox className="h-5 w-5" />
           </div>
           <div className="text-xs font-medium text-muted-foreground">Pendências</div>
         </div>
-        <div className="mt-4 space-y-2">
+        <div className="mt-3 space-y-1.5">
           <Link
             to="/feedback"
             className="flex items-center justify-between rounded-md px-1 py-0.5 text-sm transition-colors hover:text-primary"
@@ -420,7 +420,7 @@ export function OverviewPage() {
       )}
 
       {/* Cards principais */}
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={<Users className="h-5 w-5" />}
           iconClass="bg-primary/10 text-primary"
@@ -451,13 +451,13 @@ export function OverviewPage() {
       </div>
 
       {/* Status + Atenção */}
-      <div className="mb-6 grid gap-6 lg:grid-cols-2">
-        <StatusPanel groups={groups} total={total} loading={states.isLoading} />
+      <div className="mb-5 grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)]">
         <AttentionPanel rows={rows} loading={states.isLoading} />
+        <StatusPanel groups={groups} total={total} loading={states.isLoading} />
       </div>
 
       {/* Atividade + Resumo do dia */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)]">
         <ActivityPanel items={activity.data ?? []} loading={activity.isLoading} />
         <DailySummaryPanel metrics={daily.data ?? []} loading={daily.isLoading} />
       </div>

@@ -153,9 +153,50 @@
     color: var(--color-foreground);
     font-family: var(--font-sans);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    min-width: 320px;
   }
   h1, h2, h3, .font-display {
     font-family: var(--font-display);
     letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  .admin-table-shell thead th {
+    position: sticky;
+    top: 0;
+    z-index: 12;
+    background: color-mix(in srgb, var(--card) 94%, var(--muted));
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+
+  .admin-table-shell thead th:first-child {
+    left: 0;
+    z-index: 14;
+  }
+
+  .admin-table-shell tbody td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 8;
+    background: var(--card);
+    box-shadow: 1px 0 0 var(--border);
+  }
+
+  .admin-table-shell tbody tr:hover td:first-child {
+    background: color-mix(in srgb, var(--muted) 35%, var(--card));
+  }
+
+  .admin-table-shell [data-slot="table-container"] {
+    overflow: visible;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
