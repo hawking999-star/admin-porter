@@ -35,7 +35,7 @@ export const navGroups: NavGroup[] = [
   {
     label: "Engajamento",
     items: [
-      { to: "/challenges", label: "Desafios", description: "Desafios e regras", icon: Puzzle },
+      { to: "/challenges", label: "Desafios", description: "Desafios e regras", icon: Puzzle, ready: true },
       { to: "/musicas", label: "Músicas", description: "Playlists dos Operadores", icon: Music, ready: true },
       { to: "/feedback", label: "Feedback", description: "Retornos dos Operadores", icon: MessageSquare, ready: true },
     ],

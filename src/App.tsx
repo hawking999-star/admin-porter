@@ -6,7 +6,7 @@ import { AuthProvider, useAuth } from "@/features/auth/AuthProvider";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { AppShell } from "@/components/layout/AppShell";
 import { ComingSoonPage } from "@/components/shared";
-import { Puzzle, ClipboardList, Code2 } from "lucide-react";
+import { ClipboardList, Code2 } from "lucide-react";
 
 const OverviewPage = lazy(() => import("@/features/overview/OverviewPage").then((module) => ({ default: module.OverviewPage })));
 const CondominiosPage = lazy(() => import("@/features/condominios/CondominiosPage").then((module) => ({ default: module.CondominiosPage })));
@@ -16,6 +16,7 @@ const MusicasPage = lazy(() => import("@/features/musicas/MusicasPage").then((mo
 const LogsPage = lazy(() => import("@/features/logs/LogsPage").then((module) => ({ default: module.LogsPage })));
 const AtualizacoesPage = lazy(() => import("@/features/atualizacoes/AtualizacoesPage").then((module) => ({ default: module.AtualizacoesPage })));
 const AnalyticsPage = lazy(() => import("@/features/analytics/AnalyticsPage").then((module) => ({ default: module.AnalyticsPage })));
+const ChallengesPage = lazy(() => import("@/features/challenges/ChallengesPage").then((module) => ({ default: module.ChallengesPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -96,23 +97,7 @@ export default function App() {
               <Route path="/" element={<OverviewPage />} />
               <Route path="/condominios" element={<CondominiosPage />} />
               <Route path="/usuarios" element={<UsuariosPage />} />
-              <Route
-                path="/challenges"
-                element={
-                  <ComingSoonPage
-                    title="Desafios"
-                    description="Desafios e regras de engajamento para os Operadores."
-                    icon={Puzzle}
-                    planned={[
-                      "Criação de desafios e regras",
-                      "Metas por Operador e por condomínio",
-                      "Acompanhamento do progresso",
-                      "Recompensas e reconhecimento",
-                      "Histórico de desafios encerrados",
-                    ]}
-                  />
-                }
-              />
+              <Route path="/challenges" element={<ChallengesPage />} />
               <Route path="/musicas" element={<MusicasPage />} />
               <Route path="/feedback" element={<FeedbackPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
