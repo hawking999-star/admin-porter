@@ -29,6 +29,7 @@ import {
   ListOrdered,
   History,
   ChevronDown,
+  HardDrive,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/errors";
@@ -58,10 +59,13 @@ import {
   countPlaylistStats,
   dismissSkippedTrack,
   enqueueTrackReplacement,
+  getMusicStorageOverview,
+  listOrphanedMusicTracks,
   listOperatorMusicLibraryPage,
   listPlaylists,
   removePlaylistTrack,
   renameMusicPlaylist,
+  queueOrphanedMusicDeletions,
   retryPlaylistImport,
   reviewPlaylist,
   playlistTypeLabel,
@@ -69,6 +73,8 @@ import {
   type MusicTrack,
   type OperatorMusicLibrary,
   type OperatorRequestHistory,
+  type MusicStorageOverview,
+  type OrphanedMusicTrack,
   type Playlist,
 } from "./queries";
 import { PaginationFooter, StatCard, ErrorState, RetryButton } from "@/components/shared";
@@ -424,7 +430,7 @@ async function copy(text: string) {
 
 export function MusicasPage() {
   const qc = useQueryClient();
-  const [activeArea, setActiveArea] = useState<"requests" | "library">("requests");
+  const [activeArea, setActiveArea] = useState<"requests" | "library" | "storage">("requests");
   const [search, setSearch] = useState("");
   const [librarySearch, setLibrarySearch] = useState("");
   const [requestsPage, setRequestsPage] = useState(1);
@@ -455,6 +461,7 @@ export function MusicasPage() {
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState<Record<string, string>>(() => loadNotes());
   const [noteDraft, setNoteDraft] = useState("");
+  const [storageCleanupOpen, setStorageCleanupOpen] = useState(false);
 
   useEffect(() => {
     setRequestsPage(1);
@@ -525,6 +532,18 @@ export function MusicasPage() {
       return active ? 5000 : false;
     },
   });
+  const storageOverviewQuery = useQuery({
+    queryKey: ["music-storage-overview"],
+    queryFn: getMusicStorageOverview,
+    staleTime: 30_000,
+    enabled: activeArea === "storage",
+  });
+  const orphanedTracksQuery = useQuery({
+    queryKey: ["orphaned-music-tracks"],
+    queryFn: listOrphanedMusicTracks,
+    staleTime: 30_000,
+    enabled: activeArea === "storage",
+  });
 
   const toggle = (cur: string, val: string, set: (v: string) => void) =>
     set(cur === val ? "all" : val);
@@ -548,7 +567,21 @@ export function MusicasPage() {
     qc.invalidateQueries({ queryKey: ["playlists"] });
     qc.invalidateQueries({ queryKey: ["playlist-stats"] });
     qc.invalidateQueries({ queryKey: ["music-library"] });
+    qc.invalidateQueries({ queryKey: ["music-storage-overview"] });
+    qc.invalidateQueries({ queryKey: ["orphaned-music-tracks"] });
   };
+
+  const storageCleanupMutation = useMutation({
+    mutationFn: queueOrphanedMusicDeletions,
+    onSuccess: (queued) => {
+      invalidateMusic();
+      setStorageCleanupOpen(false);
+      toast.success(queued ? `${queued} faixa(s) enviada(s) para limpeza` : "Nenhuma faixa sem playlist para limpar");
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível agendar a limpeza", { description: errorMessage(err) });
+    },
+  });
 
   const mutation = useMutation({
     mutationFn: ({ id, action, reason }: { id: string; action: "approve" | "reject"; reason?: string }) =>
@@ -651,13 +684,22 @@ export function MusicasPage() {
 
   const operators = libraryQuery.data?.rows ?? [];
   const operatorsTotal = libraryQuery.data?.total ?? 0;
-  const activeRefreshing = activeArea === "requests" ? isFetching : libraryQuery.isFetching;
+  const activeRefreshing = activeArea === "requests"
+    ? isFetching
+    : activeArea === "library"
+      ? libraryQuery.isFetching
+      : storageOverviewQuery.isFetching || orphanedTracksQuery.isFetching;
   const refreshActiveArea = () => {
     if (activeArea === "requests") {
       void refetch();
       return;
     }
-    void libraryQuery.refetch();
+    if (activeArea === "library") {
+      void libraryQuery.refetch();
+      return;
+    }
+    void storageOverviewQuery.refetch();
+    void orphanedTracksQuery.refetch();
   };
 
   const detail = useMemo(
@@ -727,6 +769,13 @@ export function MusicasPage() {
           onClick={() => setActiveArea("library")}
         >
           Biblioteca dos Operadores
+        </AreaButton>
+        <AreaButton
+          active={activeArea === "storage"}
+          icon={<HardDrive className="h-4 w-4" />}
+          onClick={() => setActiveArea("storage")}
+        >
+          Armazenamento
         </AreaButton>
       </div>
 
@@ -870,7 +919,7 @@ export function MusicasPage() {
       )}
 
         </>
-      ) : (
+      ) : activeArea === "library" ? (
         <>
         <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
@@ -935,6 +984,16 @@ export function MusicasPage() {
           }}
         />
         </>
+      ) : (
+        <MusicStorageSection
+          overview={storageOverviewQuery.data ?? null}
+          tracks={orphanedTracksQuery.data ?? []}
+          loading={storageOverviewQuery.isLoading || orphanedTracksQuery.isLoading}
+          error={(storageOverviewQuery.error ?? orphanedTracksQuery.error) as Error | null}
+          refreshing={storageOverviewQuery.isFetching || orphanedTracksQuery.isFetching}
+          onRefresh={refreshActiveArea}
+          onCleanup={() => setStorageCleanupOpen(true)}
+        />
       )}
 
       {/* Drawer de detalhes */}
@@ -1078,6 +1137,33 @@ export function MusicasPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={storageCleanupOpen} onOpenChange={setStorageCleanupOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Limpar faixas sem playlist</DialogTitle>
+            <DialogDescription>
+              As faixas listadas serão desativadas e enviadas para a fila protegida de exclusão no R2. Cada exclusão é verificada novamente pelo Worker antes de remover o arquivo.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning-foreground">
+            Essa ação não remove músicas vinculadas a playlists. A execução depende do Worker de importação estar ativo.
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStorageCleanupOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={storageCleanupMutation.isPending}
+              onClick={() => storageCleanupMutation.mutate()}
+            >
+              {storageCleanupMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              Enviar para limpeza
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(confirmState)} onOpenChange={(o) => !o && setConfirmState(null)}>
         <DialogContent>
           {confirmState?.action === "approve" ? (
@@ -1178,6 +1264,147 @@ function AreaButton({
       {icon}
       {children}
     </button>
+  );
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = value / 1024;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ${units[index]}`;
+}
+
+function MusicStorageSection({
+  overview,
+  tracks,
+  loading,
+  error,
+  refreshing,
+  onRefresh,
+  onCleanup,
+}: {
+  overview: MusicStorageOverview | null;
+  tracks: OrphanedMusicTrack[];
+  loading: boolean;
+  error: Error | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onCleanup: () => void;
+}) {
+  const waitingMeasurement = Boolean(overview && overview.measured_tracks < overview.total_tracks);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="font-display text-lg font-semibold">Armazenamento de músicas</h2>
+          <p className="text-sm text-muted-foreground">
+            Uso do bucket R2 e faixas que não pertencem mais a nenhuma playlist.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} /> Atualizar
+          </Button>
+          <Button size="sm" variant="destructive" onClick={onCleanup} disabled={!overview?.orphaned_tracks}>
+            <Trash2 className="h-4 w-4" /> Limpar sem playlist
+          </Button>
+        </div>
+      </div>
+
+      {error ? (
+        <Card className="shadow-sm">
+          <ErrorState
+            title="Não foi possível carregar o armazenamento."
+            description={error.message}
+            action={<RetryButton onClick={onRefresh} disabled={refreshing} />}
+          />
+        </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              icon={<HardDrive className="h-5 w-5" />}
+              iconClassName="bg-primary/10 text-primary"
+              label="Uso medido no R2"
+              value={overview ? formatBytes(overview.used_bytes) : ""}
+              hint={waitingMeasurement ? `${overview?.measured_tracks ?? 0} de ${overview?.total_tracks ?? 0} faixas medidas` : "Todos os arquivos medidos"}
+              loading={loading}
+            />
+            <StatCard
+              icon={<Music className="h-5 w-5" />}
+              iconClassName="bg-success/25 text-success-foreground"
+              label="Faixas vinculadas"
+              value={overview?.linked_tracks ?? 0}
+              hint="Em pelo menos uma playlist"
+              loading={loading}
+            />
+            <StatCard
+              icon={<AlertTriangle className="h-5 w-5" />}
+              iconClassName="bg-warning/20 text-warning-foreground"
+              label="Sem playlist"
+              value={overview?.orphaned_tracks ?? 0}
+              hint="Disponíveis para limpeza segura"
+              loading={loading}
+            />
+            <StatCard
+              icon={<Trash2 className="h-5 w-5" />}
+              iconClassName="bg-muted text-muted-foreground"
+              label="Na fila de limpeza"
+              value={overview?.queued_deletions ?? 0}
+              hint="Aguardando o Worker R2"
+              loading={loading}
+            />
+          </div>
+
+          {waitingMeasurement && (
+            <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning-foreground">
+              O Worker está medindo os arquivos existentes no R2. O total exibido acima soma apenas os objetos já confirmados.
+            </div>
+          )}
+
+          <Card className="overflow-hidden shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+              <div>
+                <h3 className="font-semibold">Faixas sem playlist</h3>
+                <p className="text-xs text-muted-foreground">Amostra de até 50 faixas que podem ser enviadas para a fila de limpeza.</p>
+              </div>
+              <span className="text-sm text-muted-foreground">{overview?.orphaned_tracks ?? 0} encontradas</span>
+            </div>
+            {loading ? (
+              <div className="space-y-3 p-4">
+                {Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-12 w-full" />)}
+              </div>
+            ) : tracks.length ? (
+              <div className="divide-y divide-border">
+                {tracks.map((track) => (
+                  <div key={track.id} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{track.title}</p>
+                      <p className="truncate text-xs text-muted-foreground">{track.artist ?? "Artista não informado"} · {track.storage_object_key}</p>
+                    </div>
+                    <span className="shrink-0 text-sm text-muted-foreground">
+                      {track.size_bytes == null ? "Aguardando medição" : formatBytes(track.size_bytes)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="px-6 py-12 text-center">
+                <CheckCircle2 className="mx-auto h-8 w-8 text-success-foreground" />
+                <p className="mt-3 font-medium">Nenhuma faixa sem playlist</p>
+                <p className="mt-1 text-sm text-muted-foreground">O acervo atual está todo alocado em playlists.</p>
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+    </div>
   );
 }
 

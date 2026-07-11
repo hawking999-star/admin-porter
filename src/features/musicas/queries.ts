@@ -285,6 +285,53 @@ export async function dismissSkippedTrack(playlistId: string, youtubeId: string)
   if (error) throw error;
 }
 
+export type MusicStorageOverview = {
+  total_tracks: number;
+  linked_tracks: number;
+  orphaned_tracks: number;
+  queued_deletions: number;
+  measured_tracks: number;
+  used_bytes: number;
+  last_measured_at: string | null;
+};
+
+export type OrphanedMusicTrack = {
+  id: string;
+  title: string;
+  artist: string | null;
+  storage_object_key: string;
+  size_bytes: number | null;
+  created_at: string;
+};
+
+export async function getMusicStorageOverview(): Promise<MusicStorageOverview> {
+  const { data, error } = await supabase.rpc("admin_music_storage_overview");
+  if (error) throw error;
+  const row = (data ?? {}) as Partial<MusicStorageOverview>;
+  return {
+    total_tracks: Number(row.total_tracks ?? 0),
+    linked_tracks: Number(row.linked_tracks ?? 0),
+    orphaned_tracks: Number(row.orphaned_tracks ?? 0),
+    queued_deletions: Number(row.queued_deletions ?? 0),
+    measured_tracks: Number(row.measured_tracks ?? 0),
+    used_bytes: Number(row.used_bytes ?? 0),
+    last_measured_at: row.last_measured_at ?? null,
+  };
+}
+
+export async function listOrphanedMusicTracks(): Promise<OrphanedMusicTrack[]> {
+  const { data, error } = await supabase.rpc("admin_list_orphaned_music_tracks", { p_limit: 50 });
+  if (error) throw error;
+  return (data ?? []) as OrphanedMusicTrack[];
+}
+
+export async function queueOrphanedMusicDeletions(): Promise<number> {
+  const { data, error } = await supabase.rpc("admin_queue_orphaned_music_deletions");
+  if (error) throw error;
+  const result = (data ?? {}) as { queued?: unknown };
+  return Number(result.queued ?? 0);
+}
+
 export type MusicTrack = {
   playlist_track_id: string;
   track_id: string;

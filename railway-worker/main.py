@@ -53,6 +53,7 @@ MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
 AUDIO_BITRATE = int(env("AUDIO_BITRATE", "128"))  # kbps do mp3
 POLL_SECONDS = int(env("POLL_SECONDS", "10"))
 MAX_ATTEMPTS = int(env("MAX_ATTEMPTS", "3"))
+STORAGE_AUDIT_INTERVAL_SECONDS = int(env("STORAGE_AUDIT_INTERVAL_SECONDS", "3600"))
 YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
 YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
 # Ordem dos "player clients" do YouTube que o yt-dlp tenta ao baixar. Alguns
@@ -483,6 +484,38 @@ def process_storage_deletion(job: dict):
         raise
 
 
+def refresh_storage_sizes():
+    """Registra o tamanho real dos objetos R2 para o painel administrativo."""
+    offset = 0
+    page_size = 500
+    checked = 0
+    while True:
+        result = (
+            supabase.table("tracks")
+            .select("id,storage_object_key,metadata")
+            .eq("status", "available")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        rows = result.data or []
+        if not rows:
+            break
+        for track in rows:
+            try:
+                head = s3.head_object(Bucket=R2_BUCKET, Key=track["storage_object_key"])
+                metadata = dict(track.get("metadata") or {})
+                metadata["size_bytes"] = int(head["ContentLength"])
+                metadata["storage_checked_at"] = now_iso()
+                supabase.table("tracks").update({"metadata": metadata}).eq("id", track["id"]).execute()
+                checked += 1
+            except Exception as exc:  # noqa: BLE001
+                log(f"Não foi possível medir {track['storage_object_key']}: {exc}")
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    log(f"Auditoria de armazenamento concluída: {checked} objeto(s) medido(s).")
+
+
 # --------------------------------------------------------------------------- #
 # Processamento de um job
 # --------------------------------------------------------------------------- #
@@ -575,6 +608,8 @@ def process_single_track_job(job: dict, url: str):
                             "source": "youtube",
                             "source_url": f"https://www.youtube.com/watch?v={used_vid}",
                             "manual_replacement": True,
+                            "size_bytes": os.path.getsize(mp3),
+                            "storage_checked_at": now_iso(),
                         }
                         if substituted:
                             meta["substituted_from"] = vid
@@ -757,6 +792,8 @@ def process_job(job: dict):
                                 "youtube_id": used_vid,
                                 "source": "youtube",
                                 "source_url": f"https://www.youtube.com/watch?v={used_vid}",
+                                "size_bytes": os.path.getsize(mp3),
+                                "storage_checked_at": now_iso(),
                             }
                             if substituted:
                                 meta["substituted_from"] = vid
@@ -948,6 +985,7 @@ def main():
     check_ffmpeg()
     log("Worker iniciado. Aguardando jobs...")
     log(f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa")
+    next_storage_audit_at = 0.0
     while True:
         try:
             deletion_job = claim_storage_deletion_job()
@@ -957,6 +995,12 @@ def main():
                 except Exception as exc:  # noqa: BLE001
                     log(f"Falha ao excluir objeto órfão; retry agendado: {exc}")
                 continue
+            if time.monotonic() >= next_storage_audit_at:
+                try:
+                    refresh_storage_sizes()
+                except Exception as exc:  # noqa: BLE001
+                    log(f"Falha na auditoria de armazenamento: {exc}")
+                next_storage_audit_at = time.monotonic() + STORAGE_AUDIT_INTERVAL_SECONDS
             job = claim_next_job()
             if not job:
                 time.sleep(POLL_SECONDS)
