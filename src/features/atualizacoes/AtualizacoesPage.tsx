@@ -1430,6 +1430,11 @@ function ReleaseNoteDialog({
     content: buildNoteContent(novidades, correcoes, observacoes),
   };
   const formErrors = releaseNoteFormErrors(payload);
+  const previewSections = [
+    { title: "Novidades", content: novidades },
+    { title: "Correções", content: correcoes },
+    { title: "Observações", content: observacoes },
+  ].filter((section) => section.content.trim());
 
   const mutation = useMutation({
     mutationFn: () => upsertAppReleaseNote(payload),
@@ -1448,7 +1453,7 @@ function ReleaseNoteDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>{release.release_note ? "Editar nota" : "Criar nota"} · {release.version}</DialogTitle>
           <DialogDescription>
@@ -1456,7 +1461,9 @@ function ReleaseNoteDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
           <Field label="Versão">
             <Input value={release.version} disabled readOnly />
           </Field>
@@ -1471,21 +1478,36 @@ function ReleaseNoteDialog({
               </SelectContent>
             </Select>
           </Field>
+            </div>
           <Field label="Título" className="sm:col-span-2">
             <Input value={input.title} onChange={(e) => setInput((cur) => ({ ...cur, title: e.target.value }))} />
           </Field>
           <Field label="Resumo curto" className="sm:col-span-2">
-            <Textarea value={input.summary} onChange={(e) => setInput((cur) => ({ ...cur, summary: e.target.value }))} rows={3} />
+            <Textarea value={input.summary} onChange={(e) => setInput((cur) => ({ ...cur, summary: e.target.value }))} rows={2} />
           </Field>
           <Field label="Novidades" className="sm:col-span-2">
-            <Textarea value={novidades} onChange={(e) => setNovidades(e.target.value)} rows={4} />
+            <Textarea value={novidades} onChange={(e) => setNovidades(e.target.value)} rows={6} placeholder="Uma novidade por linha." />
           </Field>
+          <details className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+            <summary className="cursor-pointer text-sm font-medium">Detalhes opcionais</summary>
+            <div className="mt-4 space-y-4">
           <Field label="Correções" className="sm:col-span-2">
             <Textarea value={correcoes} onChange={(e) => setCorrecoes(e.target.value)} rows={4} />
           </Field>
           <Field label="Observações" className="sm:col-span-2">
             <Textarea value={observacoes} onChange={(e) => setObservacoes(e.target.value)} rows={3} />
           </Field>
+            </div>
+          </details>
+        </div>
+
+          <ReleaseNotePreview
+            version={release.version}
+            status={input.status}
+            title={input.title}
+            summary={input.summary}
+            sections={previewSections}
+          />
         </div>
 
         {formErrors.length > 0 && (
@@ -1507,6 +1529,70 @@ function ReleaseNoteDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ReleaseNotePreview({
+  version,
+  status,
+  title,
+  summary,
+  sections,
+}: {
+  version: string;
+  status: "draft" | "published";
+  title: string;
+  summary: string;
+  sections: Array<{ title: string; content: string }>;
+}) {
+  return (
+    <aside className="lg:sticky lg:top-0 lg:self-start">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Prévia no app</p>
+      <div className="overflow-hidden rounded-lg border border-border bg-background shadow-sm">
+        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-4 py-3">
+          <div>
+            <p className="text-xs text-muted-foreground">Porter Music</p>
+            <p className="text-sm font-semibold">Atualização disponível</p>
+          </div>
+          <Badge variant={status === "published" ? "default" : "secondary"} className="text-[10px]">
+            {status === "published" ? "Publicada" : "Rascunho"}
+          </Badge>
+        </div>
+        <div className="max-h-[470px] space-y-4 overflow-y-auto p-4">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="rounded bg-primary/10 px-2 py-1 font-medium text-primary">v{version}</span>
+            <span>Novidades do app</span>
+          </div>
+          <div>
+            <h3 className="text-base font-semibold leading-tight">{title.trim() || `Atualização ${version}`}</h3>
+            {summary.trim() && <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{summary}</p>}
+          </div>
+          {sections.length > 0 ? (
+            sections.map((section) => (
+              <section key={section.title}>
+                <h4 className="text-sm font-semibold">{section.title}</h4>
+                <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
+                  {section.content
+                    .split("\n")
+                    .map((line) => line.replace(/^[-•]\s*/, "").trim())
+                    .filter((line) => Boolean(line) && line.toLocaleLowerCase() !== section.title.toLocaleLowerCase())
+                    .map((line) => (
+                      <li key={line} className="flex gap-2">
+                        <span className="text-primary">•</span>
+                        <span>{line}</span>
+                      </li>
+                    ))}
+                </ul>
+              </section>
+            ))
+          ) : (
+            <p className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
+              A prévia aparecerá aqui enquanto você escreve.
+            </p>
+          )}
+        </div>
+      </div>
+    </aside>
   );
 }
 

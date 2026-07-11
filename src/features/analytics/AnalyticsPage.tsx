@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Area,
@@ -17,8 +17,6 @@ import {
   BarChart3,
   Clock3,
   Download,
-  Headphones,
-  HelpCircle,
   Loader2,
   Phone,
   RotateCcw,
@@ -37,7 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EmptyState, ErrorState, PaginationFooter, RetryButton } from "@/components/shared";
+import { EmptyState, ErrorState, RetryButton } from "@/components/shared";
 import {
   buildPeriodRange,
   fetchAnalyticsDashboard,
@@ -51,7 +49,7 @@ import {
   type ShiftFilter,
 } from "./queries";
 
-const RANKING_PAGE_SIZE = 50;
+const TOP_LIST_LIMIT = 5;
 
 function todayInput() {
   return new Date().toISOString().slice(0, 10);
@@ -143,14 +141,12 @@ function MetricCard({
   value,
   hint,
   loading,
-  unavailable,
 }: {
   icon: ReactNode;
   label: string;
   value: ReactNode;
   hint?: string;
   loading?: boolean;
-  unavailable?: boolean;
 }) {
   return (
     <Card className="flex min-h-[94px] items-center gap-3.5 border-border/80 p-3.5 shadow-sm">
@@ -158,7 +154,6 @@ function MetricCard({
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
           {icon}
         </div>
-        {unavailable && <HelpCircle className="h-4 w-4 text-warning" />}
       </div>
       <div className="min-w-0 space-y-0.5">
         <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
@@ -176,7 +171,7 @@ function MetricCard({
 function CardsSkeleton() {
   return (
     <>
-      {Array.from({ length: 8 }).map((_, i) => (
+      {Array.from({ length: 7 }).map((_, i) => (
         <MetricCard key={i} icon={<Loader2 className="h-5 w-5" />} label="Carregando" value="" loading />
       ))}
     </>
@@ -227,13 +222,6 @@ function metricCards(metrics: AnalyticsMetrics) {
       value: formatPercent(metrics.challenge_accuracy_rate),
       hint: metrics.challenges_answered ? "Sobre desafios respondidos" : "Sem respostas no período",
     },
-    {
-      icon: <Headphones className="h-5 w-5" />,
-      label: "Músicas reproduzidas",
-      value: "Indisponível",
-      hint: "Fonte de dados ainda não disponível",
-      unavailable: true,
-    },
   ];
 }
 
@@ -244,16 +232,11 @@ export function AnalyticsPage() {
   const [unitId, setUnitId] = useState("all");
   const [operatorId, setOperatorId] = useState("all");
   const [shift, setShift] = useState<ShiftFilter>("all");
-  const [rankingPage, setRankingPage] = useState(1);
 
   const range = useMemo(() => buildPeriodRange(period, customFrom, customTo), [period, customFrom, customTo]);
 
-  useEffect(() => {
-    setRankingPage(1);
-  }, [period, customFrom, customTo, unitId, operatorId, shift]);
-
   const query = useQuery({
-    queryKey: ["analytics-dashboard", range.startAt, range.endAt, unitId, operatorId, shift, rankingPage],
+    queryKey: ["analytics-dashboard", range.startAt, range.endAt, unitId, operatorId, shift],
     queryFn: () =>
       fetchAnalyticsDashboard({
         startAt: range.startAt,
@@ -261,8 +244,8 @@ export function AnalyticsPage() {
         unitId,
         operatorId,
         shift,
-        rankingPage,
-        rankingPageSize: RANKING_PAGE_SIZE,
+        rankingPage: 1,
+        rankingPageSize: TOP_LIST_LIMIT,
       }),
     staleTime: 30_000,
     placeholderData: keepPreviousData,
@@ -289,6 +272,23 @@ export function AnalyticsPage() {
   const units = data?.filter_options.units ?? [];
   const operators = data?.filter_options.operators.filter((op) => unitId === "all" || op.unit_id === unitId) ?? [];
   const shifts = data?.filter_options.shifts ?? [];
+  const selectedUnitName = units.find((unit) => unit.id === unitId)?.name;
+  const topCondominiums = useMemo(() => {
+    return [...(data?.condominiums ?? [])]
+      .sort((a, b) => {
+        return (
+          b.sessions - a.sessions ||
+          b.online_seconds - a.online_seconds ||
+          b.active_operators - a.active_operators ||
+          a.unit_name.localeCompare(b.unit_name, "pt-BR")
+        );
+      })
+      .slice(0, TOP_LIST_LIMIT);
+  }, [data?.condominiums]);
+  const operatorRankingDescription =
+    unitId === "all"
+      ? "Top 5 entre todos os condomínios, ordenado por tempo online."
+      : `Top 5 de ${selectedUnitName ?? "condomínio selecionado"}, ordenado por tempo online.`;
 
   return (
     <>
@@ -411,7 +411,6 @@ export function AnalyticsPage() {
                   label={card.label}
                   value={card.value}
                   hint={card.hint}
-                  unavailable={card.unavailable}
                 />
               ))
             )}
@@ -498,11 +497,11 @@ export function AnalyticsPage() {
           </div>
 
           <Card className="mt-5 p-5 shadow-sm">
-            <h2 className="font-display text-lg font-semibold text-foreground">Métricas por condomínio</h2>
-            <p className="mb-4 text-sm text-muted-foreground">Resumo agregado por condomínio com base nas fontes reais filtradas.</p>
+            <h2 className="font-display text-lg font-semibold text-foreground">Top 5 condomínios</h2>
+            <p className="mb-4 text-sm text-muted-foreground">Ordenado por sessões e tempo online dentro dos filtros atuais.</p>
             {query.isLoading ? (
               <TableSkeleton columns={8} />
-            ) : data?.condominiums.length === 0 ? (
+            ) : topCondominiums.length === 0 ? (
               <EmptyState title="Nenhum condomínio com dados." description="Ajuste os filtros ou aguarde registros operacionais reais." />
             ) : (
               <div className="overflow-x-auto">
@@ -520,7 +519,7 @@ export function AnalyticsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data?.condominiums.map((row) => (
+                    {topCondominiums.map((row) => (
                       <tr key={row.unit_id} className="border-b last:border-0">
                         <td className="py-3 pr-4 font-medium">{row.unit_name}</td>
                         <td className="py-3 pr-4">{row.active_operators}</td>
@@ -539,56 +538,47 @@ export function AnalyticsPage() {
           </Card>
 
           <Card className="mt-5 p-5 shadow-sm">
-            <h2 className="font-display text-lg font-semibold text-foreground">Ranking dos Operadores</h2>
-            <p className="mb-4 text-sm text-muted-foreground">Ordenado por tempo online e limitado a 50 registros por página.</p>
+            <h2 className="font-display text-lg font-semibold text-foreground">Top 5 Operadores</h2>
+            <p className="mb-4 text-sm text-muted-foreground">{operatorRankingDescription}</p>
             {query.isLoading ? (
               <TableSkeleton columns={10} />
             ) : data?.ranking.rows.length === 0 ? (
               <EmptyState title="Nenhum Operador no ranking." description="Não há Operadores com acesso dentro dos filtros aplicados." />
             ) : (
-              <>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1180px] text-sm">
-                    <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
-                      <tr className="border-b">
-                        <th className="py-3 pr-4">Operador</th>
-                        <th className="py-3 pr-4">Condomínio</th>
-                        <th className="py-3 pr-4">Online</th>
-                        <th className="py-3 pr-4">Ocioso</th>
-                        <th className="py-3 pr-4">Atendimento</th>
-                        <th className="py-3 pr-4">Recebidos</th>
-                        <th className="py-3 pr-4">Respondidos</th>
-                        <th className="py-3 pr-4">Resposta</th>
-                        <th className="py-3 pr-4">Acerto</th>
-                        <th className="py-3 pr-4">Último evento/sessão</th>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1180px] text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr className="border-b">
+                      <th className="py-3 pr-4">Operador</th>
+                      <th className="py-3 pr-4">Condomínio</th>
+                      <th className="py-3 pr-4">Online</th>
+                      <th className="py-3 pr-4">Ocioso</th>
+                      <th className="py-3 pr-4">Atendimento</th>
+                      <th className="py-3 pr-4">Recebidos</th>
+                      <th className="py-3 pr-4">Respondidos</th>
+                      <th className="py-3 pr-4">Resposta</th>
+                      <th className="py-3 pr-4">Acerto</th>
+                      <th className="py-3 pr-4">Último evento/sessão</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data?.ranking.rows.map((row) => (
+                      <tr key={row.operator_id} className="border-b last:border-0">
+                        <td className="py-3 pr-4 font-medium">{row.operator_name}</td>
+                        <td className="py-3 pr-4">{row.unit_name ?? "-"}</td>
+                        <td className="py-3 pr-4">{formatSeconds(row.online_seconds)}</td>
+                        <td className="py-3 pr-4">{formatSeconds(row.idle_seconds)}</td>
+                        <td className="py-3 pr-4">{formatSeconds(row.call_seconds)}</td>
+                        <td className="py-3 pr-4">{row.challenges_received}</td>
+                        <td className="py-3 pr-4">{row.challenges_answered}</td>
+                        <td className="py-3 pr-4">{formatPercent(row.challenge_response_rate)}</td>
+                        <td className="py-3 pr-4">{formatPercent(row.challenge_accuracy_rate)}</td>
+                        <td className="py-3 pr-4">{formatDateTime(row.last_event_at)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {data?.ranking.rows.map((row) => (
-                        <tr key={row.operator_id} className="border-b last:border-0">
-                          <td className="py-3 pr-4 font-medium">{row.operator_name}</td>
-                          <td className="py-3 pr-4">{row.unit_name ?? "-"}</td>
-                          <td className="py-3 pr-4">{formatSeconds(row.online_seconds)}</td>
-                          <td className="py-3 pr-4">{formatSeconds(row.idle_seconds)}</td>
-                          <td className="py-3 pr-4">{formatSeconds(row.call_seconds)}</td>
-                          <td className="py-3 pr-4">{row.challenges_received}</td>
-                          <td className="py-3 pr-4">{row.challenges_answered}</td>
-                          <td className="py-3 pr-4">{formatPercent(row.challenge_response_rate)}</td>
-                          <td className="py-3 pr-4">{formatPercent(row.challenge_accuracy_rate)}</td>
-                          <td className="py-3 pr-4">{formatDateTime(row.last_event_at)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <PaginationFooter
-                  page={rankingPage}
-                  pageSize={RANKING_PAGE_SIZE}
-                  total={data?.ranking.total ?? 0}
-                  isLoading={query.isFetching}
-                  onPageChange={setRankingPage}
-                />
-              </>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </Card>
         </>
