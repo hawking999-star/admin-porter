@@ -304,18 +304,34 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
   const qc = useQueryClient();
   const { summary, skipped } = importReport(playlist);
   const [replaceTarget, setReplaceTarget] = useState<SkippedTrack | null>(null);
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setDismissedIds(new Set());
+  }, [playlist.id]);
+
   const dismiss = useMutation({
     mutationFn: (youtubeId: string) => dismissSkippedTrack(playlist.id, youtubeId),
+    onMutate: (youtubeId) => {
+      setDismissedIds((current) => new Set(current).add(youtubeId));
+    },
     onSuccess: () => {
-      qc.invalidateQueries();
+      qc.invalidateQueries({ queryKey: ["playlist-stats"] });
       toast.success("Faixa dispensada");
     },
-    onError: (err: unknown) =>
-      toast.error("Não foi possível dispensar", { description: errorMessage(err) }),
+    onError: (err: unknown, youtubeId) => {
+      setDismissedIds((current) => {
+        const next = new Set(current);
+        next.delete(youtubeId);
+        return next;
+      });
+      toast.error("Não foi possível dispensar", { description: errorMessage(err) });
+    },
   });
-  if (!skipped.length) return null;
-  const unavailable = skipped.filter((t) => isUnavailableCode(t.code));
-  const errors = skipped.filter((t) => !isUnavailableCode(t.code));
+  const visibleSkipped = skipped.filter((t) => !t.youtube_id || !dismissedIds.has(t.youtube_id));
+  if (!visibleSkipped.length) return null;
+  const unavailable = visibleSkipped.filter((t) => isUnavailableCode(t.code));
+  const errors = visibleSkipped.filter((t) => !isUnavailableCode(t.code));
   const hasErrors = errors.length > 0;
   return (
     <div
@@ -330,7 +346,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
         {errors.length ? ` · ${errors.length} com falha` : ""}
       </p>
       <ul className="space-y-1">
-        {skipped.map((t, i) => {
+        {visibleSkipped.map((t, i) => {
           const permanent = isUnavailableCode(t.code);
           return (
             <li key={t.youtube_id ?? i} className="flex items-start gap-1.5">
@@ -351,7 +367,10 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                 <span className="ml-1 flex shrink-0 items-start gap-1">
                   <button
                     type="button"
-                    onClick={() => setReplaceTarget(t)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setReplaceTarget(t);
+                    }}
                     className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-muted"
                   >
                     Trocar
@@ -359,7 +378,10 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                   <button
                     type="button"
                     disabled={dismiss.isPending || !t.youtube_id}
-                    onClick={() => t.youtube_id && dismiss.mutate(t.youtube_id)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (t.youtube_id) dismiss.mutate(t.youtube_id);
+                    }}
                     className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
                     title="Dispensar: tira a faixa do relatório"
                   >

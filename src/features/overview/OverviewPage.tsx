@@ -1,46 +1,62 @@
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
-  Users,
-  Radio,
+  AlertTriangle,
+  Bell,
+  Building2,
+  CalendarDays,
+  CheckCircle2,
+  ChevronRight,
+  Circle,
+  Clock,
+  CloudAlert,
   Headphones,
   Inbox,
-  Circle,
-  Shield,
-  Clock,
+  ListFilter,
   MessageSquare,
   Music,
-  UserCog,
+  Play,
+  Radio,
   RotateCw,
-  ChevronRight,
-  AlertTriangle,
-  CheckCircle2,
+  Shield,
+  Square,
+  Trophy,
+  UserRoundX,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  fetchOverviewCounts,
-  fetchOperatorStates,
-  fetchRecentActivity,
-  fetchDailySummary,
-  deriveAttention,
-  attentionReasonLabel,
-  fmtRelative,
-  fmtDuration,
-  statusLabel,
-  STATUS_DOT,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
   STATUS_BAR,
-  type StatusGroup,
-  type OperatorStatusRow,
-  type RecentActivity,
+  STATUS_DOT,
+  STATUS_ORDER,
+  attentionReasonLabel,
+  deriveAttention,
+  fetchDailySummary,
+  fetchOperatorStates,
+  fetchOverviewCounts,
+  fetchRecentActivity,
+  fmtDuration,
+  fmtRelative,
+  statusLabel,
   type ActivityKind,
   type DailyMetric,
+  type OperatorStatusRow,
+  type RecentActivity,
+  type StatusGroup,
 } from "./queries";
 
 /* ------------------------------ Card de métrica -------------------------- */
@@ -61,22 +77,23 @@ function MetricCard({
   loading?: boolean;
 }) {
   return (
-    <Card className="border-border/80 shadow-sm">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-2.5">
-          <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", iconClass)}>
+    <Card className="overflow-hidden border-border/80 bg-card shadow-sm shadow-secondary/5">
+      <CardContent className="relative min-h-[154px] p-5">
+        <div className="absolute -right-10 -top-12 h-28 w-28 rounded-full bg-primary/5" />
+        <div className="relative flex items-center gap-3">
+          <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-lg", iconClass)}>
             {icon}
           </div>
-          <div className="text-xs font-medium text-muted-foreground">{label}</div>
+          <div className="text-sm font-semibold text-foreground">{label}</div>
         </div>
         {loading ? (
-          <Skeleton className="mt-4 h-8 w-16" />
+          <Skeleton className="mt-6 h-10 w-20" />
         ) : (
-          <div className="mt-3 font-display text-[26px] font-bold leading-none tracking-tight tabular-nums">
+          <div className="relative mt-5 font-display text-[34px] font-bold leading-none tracking-tight text-secondary tabular-nums">
             {value}
           </div>
         )}
-        {hint && !loading && <div className="mt-2 text-xs text-muted-foreground">{hint}</div>}
+        {hint && !loading && <div className="relative mt-3 text-xs font-medium text-muted-foreground">{hint}</div>}
       </CardContent>
     </Card>
   );
@@ -91,16 +108,17 @@ function OperationCard({ groups, loading }: { groups: StatusGroup[]; loading: bo
     { label: "Ociosos", value: get("idle"), dot: STATUS_DOT.idle },
     { label: "Fora do turno", value: get("outside_shift"), dot: STATUS_DOT.outside_shift },
   ];
+
   return (
-    <Card className="border-border/80 shadow-sm">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-secondary">
+    <Card className="border-border/80 bg-card shadow-sm shadow-secondary/5">
+      <CardContent className="min-h-[154px] p-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-success/20 text-success-foreground">
             <Headphones className="h-5 w-5" />
           </div>
-          <div className="text-xs font-medium text-muted-foreground">Operação agora</div>
+          <div className="text-sm font-semibold text-foreground">Operação agora</div>
         </div>
-        <div className="mt-3 space-y-1.5">
+        <div className="mt-5 space-y-2.5">
           {rows.map((r) => (
             <div key={r.label} className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm text-foreground">
@@ -132,15 +150,15 @@ function PendingCard({
   loading: boolean;
 }) {
   return (
-    <Card className="border-border/80 shadow-sm">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-warning/15 text-warning">
+    <Card className="border-border/80 bg-card shadow-sm shadow-secondary/5">
+      <CardContent className="min-h-[154px] p-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-warning/15 text-warning">
             <Inbox className="h-5 w-5" />
           </div>
-          <div className="text-xs font-medium text-muted-foreground">Pendências</div>
+          <div className="text-sm font-semibold text-foreground">Pendências</div>
         </div>
-        <div className="mt-3 space-y-1.5">
+        <div className="mt-5 space-y-2">
           <Link
             to="/feedback"
             className="flex items-center justify-between rounded-md px-1 py-0.5 text-sm transition-colors hover:text-primary"
@@ -173,7 +191,7 @@ function PendingCard({
 
 function StatusPanel({ groups, total, loading }: { groups: StatusGroup[]; total: number; loading: boolean }) {
   return (
-    <Card className="shadow-sm">
+    <Card className="border-border/80 bg-card shadow-sm shadow-secondary/5">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-semibold">Status dos operadores</CardTitle>
@@ -185,7 +203,7 @@ function StatusPanel({ groups, total, loading }: { groups: StatusGroup[]; total:
           Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)
         ) : total === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            Nenhum operador com presença registrada ainda.
+            Nenhum operador com presença registrada para os filtros atuais.
           </p>
         ) : (
           <>
@@ -224,19 +242,29 @@ function StatusPanel({ groups, total, loading }: { groups: StatusGroup[]; total:
 
 /* -------------------------- Operadores em atenção ------------------------ */
 
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0))
+    .join("")
+    .toUpperCase();
+}
+
 function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading: boolean }) {
   const attention = useMemo(() => deriveAttention(rows), [rows]);
 
   return (
-    <Card className={cn("shadow-sm", !loading && attention.length > 0 && "border-warning/50")}>
-      <CardHeader className="pb-3">
+    <Card className="porter-contour-panel overflow-hidden border-sidebar-border bg-sidebar text-white shadow-sm shadow-secondary/20">
+      <CardHeader className="border-b border-white/10 pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-sm font-semibold">
             <AlertTriangle className="h-4 w-4 text-warning" />
             Operadores em atenção
           </CardTitle>
           {!loading && attention.length > 0 && (
-            <span className="inline-flex min-w-[2rem] items-center justify-center rounded-full bg-warning/15 px-2 py-0.5 font-mono text-xs font-semibold text-warning-foreground ring-1 ring-warning/40">
+            <span className="inline-flex min-w-[2rem] items-center justify-center rounded-full bg-warning px-2 py-0.5 font-mono text-xs font-semibold text-warning-foreground">
               {attention.length}
             </span>
           )}
@@ -244,29 +272,32 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
       </CardHeader>
       <CardContent className="space-y-1.5">
         {loading ? (
-          Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
+          Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full bg-white/10" />)
         ) : attention.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
             <CheckCircle2 className="h-8 w-8 text-success" />
-            <p className="text-sm text-muted-foreground">Nenhuma ocorrência crítica no momento.</p>
+            <p className="text-sm text-white/70">Nenhuma ocorrência crítica no momento.</p>
           </div>
         ) : (
           attention.map((a) => (
             <Link
               key={a.operator_id}
               to="/usuarios"
-              className="flex items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/50"
+              className="flex items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 transition-colors hover:border-white/15 hover:bg-white/8"
             >
-              <Circle className={cn("h-2.5 w-2.5 shrink-0 fill-current", STATUS_DOT[a.status] ?? "text-muted-foreground")} />
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary font-display text-xs font-bold text-primary-foreground shadow-[0_0_0_1px_rgba(255,255,255,.16)]">
+                {initials(a.display_name)}
+              </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">{a.display_name}</div>
-                <div className="truncate text-xs text-muted-foreground">
+                <div className="truncate text-xs text-white/55">
                   {attentionReasonLabel(a)}
-                  {a.unit_name ? ` · ${a.unit_name}` : ""}
+                  {a.unit_label ? ` · ${a.unit_label}` : ""}
+                  {` · ${a.repetitions}x hoje`}
                 </div>
               </div>
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{fmtDuration(a.since)}</span>
-              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/50" />
+              <span className="shrink-0 text-xs tabular-nums text-white/65">{fmtDuration(a.since)}</span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-white/45" />
             </Link>
           ))
         )}
@@ -286,7 +317,7 @@ const ACTIVITY_ICON: Record<ActivityKind, ReactNode> = {
 
 function ActivityPanel({ items, loading }: { items: RecentActivity[]; loading: boolean }) {
   return (
-    <Card className="shadow-sm">
+    <Card className="border-border/80 bg-card shadow-sm shadow-secondary/5">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-semibold">Atividade recente</CardTitle>
       </CardHeader>
@@ -329,26 +360,134 @@ function ActivityPanel({ items, loading }: { items: RecentActivity[]; loading: b
 /* ----------------------------- Resumo do dia ----------------------------- */
 
 function DailySummaryPanel({ metrics, loading }: { metrics: DailyMetric[]; loading: boolean }) {
+  const icons = [
+    { icon: <Play className="h-4 w-4" />, className: "bg-primary/10 text-primary" },
+    { icon: <Square className="h-4 w-4" />, className: "bg-secondary/10 text-secondary" },
+    { icon: <MessageSquare className="h-4 w-4" />, className: "bg-success/20 text-success-foreground" },
+    { icon: <UserRoundX className="h-4 w-4" />, className: "bg-warning/15 text-warning" },
+    { icon: <Trophy className="h-4 w-4" />, className: "bg-destructive/10 text-destructive" },
+    { icon: <CloudAlert className="h-4 w-4" />, className: "bg-primary/10 text-primary" },
+  ];
+
   return (
-    <Card className="shadow-sm">
+    <Card className="border-border/80 bg-card shadow-sm shadow-secondary/5">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-semibold">Resumo do dia</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
           {loading
-            ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-16 w-full rounded-lg" />)
-            : metrics.map((m) => (
-                <div key={m.label} className="rounded-lg border border-border bg-muted/30 p-3">
-                  <div className="text-2xl font-bold leading-none tracking-tight tabular-nums">
-                    {m.value === null ? <span className="text-base text-muted-foreground">—</span> : m.value}
+            ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-lg" />)
+            : metrics.map((m, index) => {
+                const item = icons[index] ?? icons[0];
+                return (
+                  <div key={m.label} className="flex min-h-[78px] items-center gap-3 rounded-lg border border-border bg-background/55 p-3">
+                    <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", item.className)}>
+                      {item.icon}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-display text-2xl font-bold leading-none tracking-tight text-secondary tabular-nums">
+                        {m.value === null ? <span className="text-base text-muted-foreground">—</span> : m.value}
+                      </div>
+                      <div className="mt-1.5 text-xs leading-tight text-muted-foreground">
+                        {m.value === null ? "Sem dados hoje" : m.label}
+                      </div>
+                    </div>
                   </div>
-                  <div className="mt-1.5 text-xs leading-tight text-muted-foreground">
-                    {m.value === null ? "Sem dados hoje" : m.label}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* -------------------------------- Filtros -------------------------------- */
+
+type UnitOption = {
+  value: string;
+  label: string;
+};
+
+function OverviewFilters({
+  unitOptions,
+  unit,
+  status,
+  hasFilters,
+  onUnitChange,
+  onStatusChange,
+  onClear,
+}: {
+  unitOptions: UnitOption[];
+  unit: string;
+  status: string;
+  hasFilters: boolean;
+  onUnitChange: (value: string) => void;
+  onStatusChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <Card className="mb-5 border-border/80 bg-card shadow-sm shadow-secondary/5">
+      <CardContent className="grid gap-4 p-4 md:grid-cols-[minmax(220px,1fr)_minmax(180px,0.65fr)_minmax(160px,0.55fr)_auto] md:items-end">
+        <div className="space-y-1.5">
+          <div className="text-xs font-semibold text-muted-foreground">Condomínio</div>
+          <Select value={unit} onValueChange={onUnitChange}>
+            <SelectTrigger className="h-10 bg-background">
+              <span className="flex min-w-0 items-center gap-2">
+                <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <SelectValue placeholder="Todos os condomínios" />
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os condomínios</SelectItem>
+              {unitOptions.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-xs font-semibold text-muted-foreground">Status</div>
+          <Select value={status} onValueChange={onStatusChange}>
+            <SelectTrigger className="h-10 bg-background">
+              <span className="flex min-w-0 items-center gap-2">
+                <ListFilter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <SelectValue placeholder="Todos" />
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos</SelectItem>
+              {STATUS_ORDER.map((item) => (
+                <SelectItem key={item} value={item}>
+                  {statusLabel(item)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-xs font-semibold text-muted-foreground">Período</div>
+          <div className="flex h-10 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm shadow-sm">
+            <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
+            Hoje
+          </div>
+        </div>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-10 justify-start text-primary hover:text-primary"
+          disabled={!hasFilters}
+          onClick={onClear}
+        >
+          <RotateCw className="h-4 w-4" />
+          Limpar filtros
+        </Button>
       </CardContent>
     </Card>
   );
@@ -358,14 +497,15 @@ function DailySummaryPanel({ metrics, loading }: { metrics: DailyMetric[]; loadi
 
 export function OverviewPage() {
   const queryClient = useQueryClient();
+  const [unitFilter, setUnitFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const counts = useQuery({ queryKey: ["overview", "counts"], queryFn: fetchOverviewCounts, staleTime: 30_000 });
   const states = useQuery({ queryKey: ["overview", "states"], queryFn: fetchOperatorStates, staleTime: 15_000 });
   const activity = useQuery({ queryKey: ["overview", "activity"], queryFn: fetchRecentActivity, staleTime: 30_000 });
   const daily = useQuery({ queryKey: ["overview", "daily"], queryFn: fetchDailySummary, staleTime: 60_000 });
 
-  const isFetching =
-    counts.isFetching || states.isFetching || activity.isFetching || daily.isFetching;
+  const isFetching = counts.isFetching || states.isFetching || activity.isFetching || daily.isFetching;
   const isError = counts.isError || states.isError || activity.isError || daily.isError;
 
   const lastUpdated = useMemo(() => {
@@ -380,20 +520,66 @@ export function OverviewPage() {
   const groups = states.data?.groups ?? [];
   const total = states.data?.total ?? 0;
   const rows = states.data?.rows ?? [];
+  const unitOptions = useMemo(
+    () => {
+      const options = new Map<string, UnitOption>();
+      for (const row of rows) {
+        const label = row.unit_label ?? row.unit_name;
+        if (!label) continue;
+        const value = row.unit_id ?? `unit:${label}`;
+        options.set(value, { value, label });
+      }
+      return Array.from(options.values()).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+    },
+    [rows],
+  );
+  const filteredRows = useMemo(
+    () =>
+      rows.filter((row) => {
+        const fallbackUnitValue = row.unit_label ? `unit:${row.unit_label}` : null;
+        const matchesUnit = unitFilter === "all" || row.unit_id === unitFilter || fallbackUnitValue === unitFilter;
+        const matchesStatus = statusFilter === "all" || row.status === statusFilter;
+        return matchesUnit && matchesStatus;
+      }),
+    [rows, statusFilter, unitFilter],
+  );
+  const filteredGroups = useMemo(
+    () =>
+      groups.map((group) => ({
+        ...group,
+        count: filteredRows.filter((row) => row.status === group.status).length,
+      })),
+    [filteredRows, groups],
+  );
+  const hasFilters = unitFilter !== "all" || statusFilter !== "all";
+  const visibleTotal = hasFilters ? filteredRows.length : total;
+  const pendingTotal = (counts.data?.pendingFeedback ?? 0) + (counts.data?.pendingPlaylists ?? 0);
+  const todayLabel = useMemo(
+    () => new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "long", year: "numeric" }).format(new Date()),
+    [],
+  );
 
   return (
     <>
       <PageHeader
         title="Visão Geral"
-        description="Acompanhamento em tempo real da operação, presença dos operadores e alertas recentes."
+        description="Acompanhe em tempo real a operação, presença dos operadores e alertas importantes."
         action={
-          <div className="flex items-center gap-3">
-            <span className="hidden text-xs text-muted-foreground sm:inline">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs text-muted-foreground shadow-sm">
+              <Bell className="mr-2 h-4 w-4" />
+              {pendingTotal}
+            </span>
+            <span className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs text-muted-foreground shadow-sm">
+              <CalendarDays className="mr-2 h-4 w-4" />
+              {todayLabel}
+            </span>
+            <span className="hidden text-xs text-muted-foreground xl:inline">
               Atualizado {lastUpdated ? fmtRelative(lastUpdated) : "agora"}
             </span>
-            <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching}>
+            <Button size="sm" onClick={refresh} disabled={isFetching}>
               <RotateCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
-              Atualizar
+              Atualizar dados
             </Button>
           </div>
         }
@@ -404,9 +590,7 @@ export function OverviewPage() {
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
             <div>
-              <p className="text-sm font-medium text-foreground">
-                Alguns dados não puderam ser carregados.
-              </p>
+              <p className="text-sm font-medium text-foreground">Alguns dados não puderam ser carregados.</p>
               <p className="text-xs text-muted-foreground">
                 Os números abaixo podem estar incompletos. Tente atualizar novamente.
               </p>
@@ -419,7 +603,19 @@ export function OverviewPage() {
         </div>
       )}
 
-      {/* Cards principais */}
+      <OverviewFilters
+        unitOptions={unitOptions}
+        unit={unitFilter}
+        status={statusFilter}
+        hasFilters={hasFilters}
+        onUnitChange={setUnitFilter}
+        onStatusChange={setStatusFilter}
+        onClear={() => {
+          setUnitFilter("all");
+          setStatusFilter("all");
+        }}
+      />
+
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={<Users className="h-5 w-5" />}
@@ -428,7 +624,7 @@ export function OverviewPage() {
           value={counts.data?.operators ?? 0}
           loading={counts.isLoading}
           hint={
-            <span className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1.5 text-success-foreground">
               <Circle className="h-2 w-2 fill-current text-success" />
               {counts.data?.operatorsOnline ?? 0} online agora
             </span>
@@ -442,7 +638,7 @@ export function OverviewPage() {
           loading={counts.isLoading}
           hint={`${counts.data?.sessionsEndedToday ?? 0} encerradas hoje`}
         />
-        <OperationCard groups={groups} loading={states.isLoading} />
+        <OperationCard groups={filteredGroups} loading={states.isLoading} />
         <PendingCard
           feedback={counts.data?.pendingFeedback ?? 0}
           playlists={counts.data?.pendingPlaylists ?? null}
@@ -450,17 +646,16 @@ export function OverviewPage() {
         />
       </div>
 
-      {/* Status + Atenção */}
       <div className="mb-5 grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)]">
-        <AttentionPanel rows={rows} loading={states.isLoading} />
-        <StatusPanel groups={groups} total={total} loading={states.isLoading} />
+        <AttentionPanel rows={filteredRows} loading={states.isLoading} />
+        <StatusPanel groups={filteredGroups} total={visibleTotal} loading={states.isLoading} />
       </div>
 
-      {/* Atividade + Resumo do dia */}
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)]">
-        <ActivityPanel items={activity.data ?? []} loading={activity.isLoading} />
+      <div className="mb-5">
         <DailySummaryPanel metrics={daily.data ?? []} loading={daily.isLoading} />
       </div>
+
+      <ActivityPanel items={activity.data ?? []} loading={activity.isLoading} />
     </>
   );
 }

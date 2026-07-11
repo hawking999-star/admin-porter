@@ -103,8 +103,13 @@ export type OperatorStatusRow = {
   operator_id: string;
   status: string;
   display_name: string;
+  unit_id: string | null;
   unit_name: string | null;
+  unit_city: string | null;
+  unit_state: string | null;
+  unit_label: string | null;
   effective_at: string | null;
+  status_repetitions_today: number;
 };
 
 export type StatusGroup = { status: string; label: string; count: number };
@@ -118,7 +123,7 @@ export type OperatorStatesResult = {
 export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   const { data, error } = await supabase
     .from("operator_states")
-    .select("operator_id, status, effective_at, operators(display_name, units(name))")
+    .select("operator_id, status, effective_at, operators(display_name, unit_id, units(id, name, city, state))")
     .order("effective_at", { ascending: false, nullsFirst: false })
     .limit(100);
   if (error) throw error;
@@ -127,9 +132,19 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
     operator_id: r.operator_id,
     status: r.status,
     display_name: r.operators?.display_name ?? "—",
+    unit_id: r.operators?.unit_id ?? r.operators?.units?.id ?? null,
     unit_name: r.operators?.units?.name ?? null,
+    unit_city: r.operators?.units?.city ?? null,
+    unit_state: r.operators?.units?.state ?? null,
+    unit_label: formatUnitLabel(r.operators?.units?.name ?? null, r.operators?.units?.city ?? null, r.operators?.units?.state ?? null),
     effective_at: r.effective_at ?? null,
+    status_repetitions_today: 0,
   }));
+
+  const repetitions = await fetchStatusRepetitions(rows.map((row) => row.operator_id));
+  for (const row of rows) {
+    row.status_repetitions_today = repetitions.get(`${row.operator_id}:${row.status}`) ?? 0;
+  }
 
   const groups: StatusGroup[] = STATUS_ORDER.map((s) => ({
     status: s,
@@ -138,6 +153,37 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   }));
 
   return { groups, rows, total: rows.length };
+}
+
+export function formatUnitLabel(name: string | null, city: string | null, state: string | null): string | null {
+  if (!name) return null;
+  const location = [city, state].filter(Boolean).join("/");
+  return location ? `${name} - ${location}` : name;
+}
+
+async function fetchStatusRepetitions(operatorIds: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (operatorIds.length === 0) return counts;
+
+  const { data, error } = await supabase
+    .from("operator_status_history")
+    .select("operator_id, to_status")
+    .in("operator_id", operatorIds)
+    .in("to_status", ["idle", "in_call", "blocked", "offline"])
+    .gte("occurred_at", startOfTodayISO())
+    .limit(1000);
+
+  if (error) return counts;
+
+  for (const row of data ?? []) {
+    const operatorId = (row as any).operator_id;
+    const status = (row as any).to_status;
+    if (!operatorId || !status) continue;
+    const key = `${operatorId}:${status}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  return counts;
 }
 
 /* --------------------------- Operadores em atenção ----------------------- */
@@ -152,19 +198,25 @@ export type AttentionOperator = {
   operator_id: string;
   display_name: string;
   unit_name: string | null;
+  unit_label: string | null;
   status: string;
   reason: AttentionReason;
   since: string | null;
+  repetitions: number;
   severity: number; // menor = mais urgente
 };
 
 /** Minutos em atendimento a partir dos quais consideramos "longo". */
 const LONG_CALL_MIN = 30;
+const IDLE_ATTENTION_MIN = 10;
+const MIN_ATTENTION_REPETITIONS = 3;
 
 /** Deriva a lista de operadores que precisam de atenção a partir dos estados. */
 export function deriveAttention(rows: OperatorStatusRow[]): AttentionOperator[] {
   const out: AttentionOperator[] = [];
   for (const r of rows) {
+    if (r.status_repetitions_today < MIN_ATTENTION_REPETITIONS) continue;
+
     let reason: AttentionReason | null = null;
     let severity = 9;
     if (r.status === "blocked") {
@@ -173,7 +225,7 @@ export function deriveAttention(rows: OperatorStatusRow[]): AttentionOperator[] 
     } else if (r.status === "in_call" && (minutesSince(r.effective_at) ?? 0) >= LONG_CALL_MIN) {
       reason = "long_call";
       severity = 2;
-    } else if (r.status === "idle") {
+    } else if (r.status === "idle" && (minutesSince(r.effective_at) ?? 0) >= IDLE_ATTENTION_MIN) {
       reason = "idle";
       severity = 3;
     } else if (r.status === "offline") {
@@ -185,9 +237,11 @@ export function deriveAttention(rows: OperatorStatusRow[]): AttentionOperator[] 
       operator_id: r.operator_id,
       display_name: r.display_name,
       unit_name: r.unit_name,
+      unit_label: r.unit_label,
       status: r.status,
       reason,
       since: r.effective_at,
+      repetitions: r.status_repetitions_today,
       severity,
     });
   }

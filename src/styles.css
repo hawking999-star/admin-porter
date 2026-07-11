@@ -190,6 +190,22 @@
   .admin-table-shell [data-slot="table-container"] {
     overflow: visible;
   }
+
+  .porter-contour-panel {
+    background:
+      radial-gradient(ellipse at 18% 18%, color-mix(in srgb, var(--primary) 18%, transparent), transparent 32%),
+      repeating-radial-gradient(
+        ellipse at 28% 78%,
+        color-mix(in srgb, var(--primary) 13%, transparent) 0 1px,
+        transparent 1px 18px
+      ),
+      repeating-radial-gradient(
+        ellipse at 72% 42%,
+        color-mix(in srgb, var(--primary) 10%, transparent) 0 1px,
+        transparent 1px 22px
+      ),
+      var(--sidebar);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
