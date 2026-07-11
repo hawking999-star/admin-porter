@@ -322,6 +322,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
       setDismissedIds((current) => new Set(current).add(youtubeId));
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["playlists"] });
       qc.invalidateQueries({ queryKey: ["playlist-stats"] });
       toast.success("Faixa dispensada");
     },
