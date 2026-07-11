@@ -56,6 +56,7 @@ import {
 } from "@/components/ui/sheet";
 import {
   archiveSecondaryPlaylist,
+  acknowledgePlaylistImportError,
   countPlaylistStats,
   dismissSkippedTrack,
   enqueueTrackReplacement,
@@ -181,6 +182,12 @@ function playlistImportError(p: Playlist): string | null {
     p.download?.error?.trim() ||
     null
   );
+}
+
+function isImportErrorAcknowledged(p: Playlist) {
+  if (!p.import_error_acknowledged_at) return false;
+  if (!p.last_error_at) return true;
+  return new Date(p.import_error_acknowledged_at).getTime() >= new Date(p.last_error_at).getTime();
 }
 
 function technicalErrorText(p: Playlist): string | null {
@@ -616,6 +623,17 @@ export function MusicasPage() {
     },
   });
 
+  const acknowledgeImportErrorMutation = useMutation({
+    mutationFn: (id: string) => acknowledgePlaylistImportError(id),
+    onSuccess: () => {
+      invalidateMusic();
+      toast.success("Erro de importação confirmado");
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível confirmar o erro", { description: errorMessage(err) });
+    },
+  });
+
   const renameMutation = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) => renameMusicPlaylist(id, name),
     onSuccess: () => {
@@ -902,6 +920,7 @@ export function MusicasPage() {
           onApprove={askApprove}
           onReject={askReject}
           onRetry={(id) => retryMutation.mutate({ id })}
+          onAcknowledgeError={(id) => acknowledgeImportErrorMutation.mutate(id)}
         />
       )}
 
@@ -1011,6 +1030,7 @@ export function MusicasPage() {
               onApprove={() => askApprove(detail.id)}
               onReject={() => askReject(detail.id)}
               onRetry={() => retryMutation.mutate({ id: detail.id })}
+              onAcknowledgeError={() => acknowledgeImportErrorMutation.mutate(detail.id)}
             />
           )}
         </SheetContent>
@@ -1902,6 +1922,7 @@ function PlaylistList({
   onApprove,
   onReject,
   onRetry,
+  onAcknowledgeError,
 }: {
   items: PlaylistListItem[];
   busy: boolean;
@@ -1909,6 +1930,7 @@ function PlaylistList({
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
   onRetry: (id: string) => void;
+  onAcknowledgeError: (id: string) => void;
 }) {
   const [showAwaiting, setShowAwaiting] = useState(false);
   // Secundárias não recebem link (o operador monta com músicas da principal),
@@ -1951,6 +1973,7 @@ function PlaylistList({
                 onApprove={() => onApprove(p.id)}
                 onReject={() => onReject(p.id)}
                 onRetry={() => onRetry(p.id)}
+                onAcknowledgeError={() => onAcknowledgeError(p.id)}
               />
             ))}
           </div>
@@ -2015,6 +2038,7 @@ function PlaylistCard({
   onApprove,
   onReject,
   onRetry,
+  onAcknowledgeError,
 }: {
   p: Playlist;
   platform: Platform;
@@ -2023,12 +2047,14 @@ function PlaylistCard({
   onApprove: () => void;
   onReject: () => void;
   onRetry: () => void;
+  onAcknowledgeError: () => void;
 }) {
   const m = platformMeta(platform);
   // Decisão é definitiva: só uma playlist "pendente" pode ser aprovada/rejeitada.
   const canApprove = p.approval_status === "pending";
   const canReject = p.approval_status === "pending";
   const canRetry = p.approval_status === "approved" && p.import_status === "failed";
+  const canAcknowledgeError = p.import_status === "failed" && !isImportErrorAcknowledged(p);
   const importError = playlistImportError(p);
   const stop = (fn: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -2086,7 +2112,7 @@ function PlaylistCard({
           <ImportPill p={p} />
         </div>
 
-        {p.import_status === "failed" && (
+        {canAcknowledgeError && (
           <div className="mt-2 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive ring-1 ring-destructive/20">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
@@ -2097,7 +2123,7 @@ function PlaylistCard({
         )}
 
         {/* Relatório: null quando não há faixas puladas; neutro p/ indisponíveis */}
-        <ImportReport playlist={p} />
+        {!isImportErrorAcknowledged(p) && <ImportReport playlist={p} />}
 
         {/* Motivo da rejeição — bem visível */}
         {p.approval_status === "rejected" && (
@@ -2147,6 +2173,11 @@ function PlaylistCard({
             <RefreshCw className="h-4 w-4" /> Tentar importar novamente
           </Button>
         )}
+        {canAcknowledgeError && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={stop(onAcknowledgeError)}>
+            <Check className="h-4 w-4" /> OK
+          </Button>
+        )}
       </div>
     </Card>
   );
@@ -2181,6 +2212,13 @@ function IconAction({
 function ImportPill({ p }: { p: Playlist }) {
   const download = p.download;
   if (!download && p.approval_status !== "approved") return null;
+  if (p.import_status === "failed" && isImportErrorAcknowledged(p)) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-border">
+        <Check className="h-3.5 w-3.5" /> Erro confirmado
+      </span>
+    );
+  }
   if (!download) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-border">
@@ -2243,6 +2281,7 @@ function DetailPanel({
   onApprove,
   onReject,
   onRetry,
+  onAcknowledgeError,
 }: {
   p: Playlist;
   platform: Platform;
@@ -2253,6 +2292,7 @@ function DetailPanel({
   onApprove: () => void;
   onReject: () => void;
   onRetry: () => void;
+  onAcknowledgeError: () => void;
 }) {
   const embed = buildEmbed(p.source_url, platform);
   const m = platformMeta(platform);
@@ -2260,6 +2300,7 @@ function DetailPanel({
   const canApprove = p.approval_status === "pending";
   const canReject = p.approval_status === "pending";
   const canRetry = p.approval_status === "approved" && p.import_status === "failed";
+  const canAcknowledgeError = p.import_status === "failed" && !isImportErrorAcknowledged(p);
   const importError = playlistImportError(p);
   const technicalError = technicalErrorText(p);
 
@@ -2320,7 +2361,7 @@ function DetailPanel({
         )}
       </div>
 
-      {(p.import_status === "failed" || p.approval_status === "rejected") && (
+      {(canAcknowledgeError || p.approval_status === "rejected") && (
         <div className="mt-5 rounded-lg border border-border bg-muted/30 p-3">
           <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Motivo
@@ -2334,7 +2375,10 @@ function DetailPanel({
               <p className="text-sm text-destructive">
                 Falha ao importar: {importError || "motivo técnico não informado pelo backend"}
               </p>
-              <ImportReport playlist={p} />
+              <Button size="sm" variant="outline" className="mt-3" onClick={onAcknowledgeError} disabled={busy}>
+                <Check className="h-4 w-4" /> OK, marcar como resolvido
+              </Button>
+              {!isImportErrorAcknowledged(p) && <ImportReport playlist={p} />}
               {technicalError && (
                 <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 text-xs text-muted-foreground">
                   {technicalError}

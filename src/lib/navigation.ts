@@ -33,7 +33,7 @@ export const navGroups: NavGroup[] = [
     ],
   },
   {
-    label: "Engajamento",
+    label: "Conteúdo",
     items: [
       { to: "/challenges", label: "Desafios", description: "Desafios e regras", icon: Puzzle, ready: true },
       { to: "/musicas", label: "Músicas", description: "Playlists dos Operadores", icon: Music, ready: true },
@@ -41,13 +41,13 @@ export const navGroups: NavGroup[] = [
     ],
   },
   {
-    label: "Sistema",
+    label: "Gestão e sistema",
     items: [
-      { to: "/analytics", label: "Analytics", description: "Relatórios e métricas", icon: BarChart3, ready: true },
-      { to: "/logs", label: "Logs", description: "Eventos e diagnóstico", icon: ClipboardList, ready: true },
-      { to: "/auditoria", label: "Auditoria", description: "Ações administrativas", icon: ClipboardList },
+      { to: "/analytics", label: "Relatórios", description: "Métricas operacionais", icon: BarChart3, ready: true },
       { to: "/atualizacoes", label: "Atualizações", description: "Versões do app", icon: BellRing, ready: true },
-      { to: "/integracao", label: "Integração", description: "Diagnóstico técnico", icon: Code2 },
+      { to: "/integracao", label: "Integrações", description: "Filas e conexões", icon: Code2, ready: true },
+      { to: "/logs", label: "Logs do sistema", description: "Eventos e diagnóstico", icon: ClipboardList, ready: true },
+      { to: "/auditoria", label: "Auditoria", description: "Ações administrativas", icon: ClipboardList },
     ],
   },
 ];

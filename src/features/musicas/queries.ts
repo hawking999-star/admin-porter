@@ -68,6 +68,7 @@ export type Playlist = {
   error_code: string | null;
   error_details: Record<string, unknown> | null;
   last_error_at: string | null;
+  import_error_acknowledged_at: string | null;
   import_started_at: string | null;
   import_finished_at: string | null;
   operator_name: string | null;
@@ -115,13 +116,13 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
   let query = supabase
     .from("playlists")
     .select(
-      "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, created_at)",
+      "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_error_acknowledged_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, created_at)",
       { count: "exact" },
     )
     .order("submitted_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
-  if (filters.status === "import_failed") query = query.eq("import_status", "failed");
+  if (filters.status === "import_failed") query = query.eq("import_status", "failed").is("import_error_acknowledged_at", null);
   if (filters.operatorId) query = query.eq("created_by_operator_id", filters.operatorId);
   if (filters.status && filters.status !== "all" && filters.status !== "import_failed") {
     query = query.eq("approval_status", filters.status);
@@ -169,6 +170,7 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
       error_code: p.error_code ?? null,
       error_details: p.error_details ?? null,
       last_error_at: p.last_error_at ?? null,
+      import_error_acknowledged_at: p.import_error_acknowledged_at ?? null,
       import_started_at: p.import_started_at ?? null,
       import_finished_at: p.import_finished_at ?? null,
       operator_name: p.operators?.display_name ?? null,
@@ -223,7 +225,7 @@ export async function countPlaylistStats(): Promise<PlaylistStats> {
     supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "pending"),
     supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "approved"),
     supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "rejected"),
-    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("import_status", "failed"),
+    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("import_status", "failed").is("import_error_acknowledged_at", null),
     supabase.from("playlists").select("id", { count: "exact", head: true }).gte("submitted_at", startToday.toISOString()),
     supabase.from("playlists").select("id", { count: "exact", head: true }).gte("submitted_at", startWeek.toISOString()),
   ]);
@@ -281,6 +283,13 @@ export async function dismissSkippedTrack(playlistId: string, youtubeId: string)
   const { error } = await supabase.rpc("admin_dismiss_skipped_track", {
     p_playlist_id: playlistId,
     p_youtube_id: youtubeId,
+  });
+  if (error) throw error;
+}
+
+export async function acknowledgePlaylistImportError(playlistId: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_acknowledge_playlist_import_error", {
+    p_playlist_id: playlistId,
   });
   if (error) throw error;
 }
