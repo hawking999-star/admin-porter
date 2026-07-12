@@ -1,11 +1,28 @@
-import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, Database, HardDrive, RefreshCw, TriangleAlert } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import {
+  CheckCircle2,
+  Check,
+  ClipboardCopy,
+  Database,
+  HardDrive,
+  RefreshCw,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorState, RetryButton, StatCard } from "@/components/shared";
 import { cn } from "@/lib/utils";
-import { getIntegrationStatus, type IntegrationQueueStatus } from "./queries";
+import {
+  acknowledgeImportError,
+  getIntegrationStatus,
+  listPendingImportErrors,
+  retryImport,
+  type IntegrationQueueStatus,
+  type PendingImportError,
+} from "./queries";
 
 function formatDate(value: string | null) {
   if (!value) return "Sem atividade registrada";
@@ -16,6 +33,36 @@ function formatDate(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Não foi possível concluir a ação.";
+}
+
+function isRetryable(error: PendingImportError) {
+  return error.approval_status === "approved" && /(^|\.)youtube\.com|youtu\.be/i.test(error.source_url ?? "");
+}
+
+function buildErrorReport(errors: PendingImportError[]) {
+  const generatedAt = new Date().toLocaleString("pt-BR");
+  const sections = errors.map((error, index) => [
+    `${index + 1}. Playlist: ${error.playlist_name}`,
+    `Operador: ${error.operator_name ?? "não informado"}`,
+    `Condomínio: ${error.unit_name ?? "não informado"}`,
+    `Data da falha: ${formatDate(error.last_error_at)}`,
+    `Código: ${error.error_code ?? "não informado"}`,
+    `Mensagem: ${error.error_message ?? "motivo técnico não informado"}`,
+    `Origem: ${error.source_url ?? "não informada"}`,
+    error.error_details ? `Detalhes: ${JSON.stringify(error.error_details)}` : null,
+  ].filter(Boolean).join("\n")).join("\n\n");
+
+  return [
+    "PORTER MUSIC — RELATÓRIO DE ERROS DE IMPORTAÇÃO",
+    `Gerado em: ${generatedAt}`,
+    `Erros pendentes: ${errors.length}`,
+    "",
+    sections,
+  ].join("\n");
 }
 
 function QueueCard({ title, description, queue, icon }: {
@@ -63,13 +110,56 @@ function QueueMetric({ label, value, danger = false }: { label: string; value: n
 }
 
 export function IntegracaoPage() {
+  const queryClient = useQueryClient();
   const statusQuery = useQuery({
     queryKey: ["integration-status"],
     queryFn: getIntegrationStatus,
     staleTime: 15_000,
     refetchInterval: 30_000,
   });
+  const errorsQuery = useQuery({
+    queryKey: ["integration-import-errors"],
+    queryFn: listPendingImportErrors,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+  const refresh = () => {
+    void statusQuery.refetch();
+    void errorsQuery.refetch();
+  };
+  const invalidate = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["integration-status"] }),
+    queryClient.invalidateQueries({ queryKey: ["integration-import-errors"] }),
+    queryClient.invalidateQueries({ queryKey: ["playlists"] }),
+  ]);
+  const acknowledgeMutation = useMutation({
+    mutationFn: acknowledgeImportError,
+    onSuccess: async () => {
+      await invalidate();
+      toast.success("Erro marcado como tratado");
+    },
+    onError: (error: unknown) => toast.error("Não foi possível marcar como tratado", { description: errorMessage(error) }),
+  });
+  const retryMutation = useMutation({
+    mutationFn: retryImport,
+    onSuccess: async () => {
+      await invalidate();
+      toast.success("Importação reenfileirada");
+    },
+    onError: (error: unknown) => toast.error("Não foi possível reenfileirar", { description: errorMessage(error) }),
+  });
   const status = statusQuery.data;
+  const errors = errorsQuery.data ?? [];
+  const isRefreshing = statusQuery.isFetching || errorsQuery.isFetching;
+
+  const copyReport = async () => {
+    try {
+      await navigator.clipboard.writeText(buildErrorReport(errors));
+      toast.success("Relatório copiado");
+    } catch {
+      toast.error("Não foi possível copiar o relatório");
+    }
+  };
 
   return (
     <>
@@ -77,8 +167,8 @@ export function IntegracaoPage() {
         title="Integrações"
         description="Acompanhe as filas que conectam o painel, o importador e o armazenamento de músicas."
         action={
-          <Button variant="outline" size="sm" onClick={() => statusQuery.refetch()} disabled={statusQuery.isFetching}>
-            <RefreshCw className={cn("h-4 w-4", statusQuery.isFetching && "animate-spin")} /> Atualizar
+          <Button variant="outline" size="sm" onClick={refresh} disabled={isRefreshing}>
+            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} /> Atualizar
           </Button>
         }
       />
@@ -87,37 +177,16 @@ export function IntegracaoPage() {
         <Card className="shadow-sm">
           <ErrorState
             title="Não foi possível consultar as integrações."
-            description={(statusQuery.error as Error).message}
-            action={<RetryButton onClick={() => statusQuery.refetch()} disabled={statusQuery.isFetching} />}
+            description={errorMessage(statusQuery.error)}
+            action={<RetryButton onClick={refresh} disabled={isRefreshing} />}
           />
         </Card>
       ) : (
         <div className="space-y-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <StatCard
-              icon={<Database className="h-5 w-5" />}
-              iconClassName="bg-success/25 text-success-foreground"
-              label="Supabase"
-              value={status?.database_connected ? "Conectado" : "Verificando"}
-              hint="Leitura autenticada pelo painel"
-              loading={statusQuery.isLoading}
-            />
-            <StatCard
-              icon={<TriangleAlert className="h-5 w-5" />}
-              iconClassName="bg-warning/20 text-warning-foreground"
-              label="Falhas de importação"
-              value={status?.imports.with_errors ?? 0}
-              hint="Jobs que exigem acompanhamento"
-              loading={statusQuery.isLoading}
-            />
-            <StatCard
-              icon={<HardDrive className="h-5 w-5" />}
-              iconClassName="bg-primary/10 text-primary"
-              label="Limpeza no R2"
-              value={status?.storage_cleanup.queued ?? 0}
-              hint="Arquivos aguardando remoção segura"
-              loading={statusQuery.isLoading}
-            />
+            <StatCard icon={<Database className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Supabase" value={status?.database_connected ? "Conectado" : "Verificando"} hint="Leitura autenticada pelo painel" loading={statusQuery.isLoading} />
+            <StatCard icon={<TriangleAlert className="h-5 w-5" />} iconClassName="bg-warning/20 text-warning-foreground" label="Falhas de importação" value={status?.imports.with_errors ?? 0} hint="Erros pendentes de tratamento" loading={statusQuery.isLoading} />
+            <StatCard icon={<HardDrive className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Limpeza no R2" value={status?.storage_cleanup.queued ?? 0} hint="Arquivos aguardando remoção segura" loading={statusQuery.isLoading} />
           </div>
 
           {status && (
@@ -127,9 +196,56 @@ export function IntegracaoPage() {
             </div>
           )}
 
+          {errorsQuery.isError ? (
+            <Card className="shadow-sm">
+              <ErrorState title="Não foi possível carregar os erros de importação." description={errorMessage(errorsQuery.error)} action={<RetryButton onClick={() => errorsQuery.refetch()} disabled={errorsQuery.isFetching} />} />
+            </Card>
+          ) : errors.length > 0 ? (
+            <Card className="overflow-hidden shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border p-5">
+                <div>
+                  <h2 className="font-semibold">Tratamento de erros de importação</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Confirme itens já tratados para retirá-los da fila ou reenfileire importações elegíveis. Casos complexos podem ser copiados para o desenvolvedor.</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={copyReport}>
+                  <ClipboardCopy className="h-4 w-4" /> Copiar relatório ({errors.length})
+                </Button>
+              </div>
+              <div className="divide-y divide-border">
+                {errors.map((error) => {
+                  const retryable = isRetryable(error);
+                  const busy = acknowledgeMutation.isPending || retryMutation.isPending;
+                  return (
+                    <div key={error.playlist_id} className="p-5">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-medium">{error.playlist_name}</h3>
+                            {error.error_code && <span className="rounded bg-destructive/10 px-2 py-0.5 font-mono text-xs text-destructive">{error.error_code}</span>}
+                          </div>
+                          <p className="mt-1 break-words text-sm text-destructive">{error.error_message ?? "Motivo técnico não informado pelo backend."}</p>
+                          <p className="mt-2 text-xs text-muted-foreground">Operador: {error.operator_name ?? "não informado"} · Condomínio: {error.unit_name ?? "não informado"} · Falha: {formatDate(error.last_error_at)}</p>
+                          {error.source_url && <p className="mt-1 break-all text-xs text-muted-foreground">Origem: {error.source_url}</p>}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {retryable && <Button size="sm" variant="outline" onClick={() => retryMutation.mutate(error.playlist_id)} disabled={busy}><RotateCcw className="h-4 w-4" /> Reenfileirar</Button>}
+                          <Button size="sm" variant="outline" onClick={() => acknowledgeMutation.mutate(error.playlist_id)} disabled={busy}><Check className="h-4 w-4" /> Marcar como tratado</Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          ) : !errorsQuery.isLoading ? (
+            <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success-foreground">
+              <CheckCircle2 className="h-4 w-4" /> Nenhum erro de importação pendente neste momento.
+            </div>
+          ) : null}
+
           {!statusQuery.isLoading && status && status.imports.running === 0 && status.imports.queued === 0 && (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-              <CheckCircle2 className="h-4 w-4 text-success-foreground" /> Nenhuma importação pendente neste momento.
+              <CheckCircle2 className="h-4 w-4 text-success-foreground" /> Nenhuma importação em processamento neste momento.
             </div>
           )}
         </div>

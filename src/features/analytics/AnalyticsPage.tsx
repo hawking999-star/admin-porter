@@ -206,9 +206,9 @@ function metricCards(metrics: AnalyticsMetrics) {
     },
     {
       icon: <Phone className="h-5 w-5" />,
-      label: "Tempo atendimento",
+      label: "Tempo em atendimento",
       value: formatSeconds(metrics.call_seconds),
-      hint: "Status in_call no histórico",
+      hint: "Em atendimento no histórico operacional",
     },
     {
       icon: <ShieldCheck className="h-5 w-5" />,
