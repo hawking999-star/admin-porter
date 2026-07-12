@@ -22,6 +22,7 @@ import {
   Download,
   Loader2,
   Phone,
+  PhoneIncoming,
   RotateCcw,
   ShieldCheck,
   Trophy,
@@ -38,7 +39,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EmptyState, ErrorState, RetryButton } from "@/components/shared";
+import { EmptyState, ErrorState, PeriodFilter, RetryButton } from "@/components/shared";
+import { todayInput, type PeriodPreset } from "@/lib/period";
 import {
   buildPeriodRange,
   fetchAnalyticsDashboard,
@@ -48,15 +50,10 @@ import {
   formatSeconds,
   type AnalyticsDashboard,
   type AnalyticsMetrics,
-  type PeriodPreset,
   type ShiftFilter,
 } from "./queries";
 
 const TOP_LIST_LIMIT = 5;
-
-function todayInput() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function csvCell(value: unknown) {
   const raw = value == null ? "" : String(value);
@@ -72,6 +69,7 @@ function downloadCsv(data: AnalyticsDashboard) {
   lines.push(["Tempo online", formatSeconds(data.metrics.online_seconds)].map(csvCell).join(","));
   lines.push(["Tempo ocioso", formatSeconds(data.metrics.idle_seconds)].map(csvCell).join(","));
   lines.push(["Tempo em atendimento", formatSeconds(data.metrics.call_seconds)].map(csvCell).join(","));
+  lines.push(["Ligacoes atendidas", data.metrics.answered_calls].map(csvCell).join(","));
   lines.push(["Taxa resposta desafios", formatPercent(data.metrics.challenge_response_rate)].map(csvCell).join(","));
   lines.push(["Taxa acerto desafios", formatPercent(data.metrics.challenge_accuracy_rate)].map(csvCell).join(","));
   lines.push("");
@@ -174,7 +172,7 @@ function MetricCard({
 function CardsSkeleton() {
   return (
     <>
-      {Array.from({ length: 7 }).map((_, i) => (
+      {Array.from({ length: 8 }).map((_, i) => (
         <MetricCard key={i} icon={<Loader2 className="h-5 w-5" />} label="Carregando" value="" loading />
       ))}
     </>
@@ -218,6 +216,12 @@ function metricCards(metrics: AnalyticsMetrics, averageByCondominium = false) {
       hint: scopeHint ?? "Em atendimento no histórico operacional",
     },
     {
+      icon: <PhoneIncoming className="h-5 w-5" />,
+      label: averageByCondominium ? "Média de ligações atendidas" : "Ligações atendidas",
+      value: formatCount(metrics.answered_calls),
+      hint: scopeHint ?? "Entradas em atendimento no período",
+    },
+    {
       icon: <ShieldCheck className="h-5 w-5" />,
       label: "Resposta desafios",
       value: formatPercent(metrics.challenge_response_rate),
@@ -233,7 +237,7 @@ function metricCards(metrics: AnalyticsMetrics, averageByCondominium = false) {
 }
 
 export function AnalyticsPage() {
-  const [period, setPeriod] = useState<PeriodPreset>("today");
+  const [period, setPeriod] = useState<PeriodPreset>("7d");
   const [customFrom, setCustomFrom] = useState(todayInput());
   const [customTo, setCustomTo] = useState(todayInput());
   const [unitId, setUnitId] = useState("all");
@@ -271,6 +275,7 @@ export function AnalyticsPage() {
       online_seconds: data.metrics.online_seconds / condominiumCount,
       idle_seconds: data.metrics.idle_seconds / condominiumCount,
       call_seconds: data.metrics.call_seconds / condominiumCount,
+      answered_calls: data.metrics.answered_calls / condominiumCount,
     };
   }, [data, showCondominiumAverage]);
   const chartData = (data?.timeseries ?? []).map((point) => ({
@@ -327,34 +332,14 @@ export function AnalyticsPage() {
             <p className="mt-1 text-sm text-muted-foreground">Todos os cards e tabelas usam estes filtros.</p>
           </div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <Select value={period} onValueChange={(value) => setPeriod(value as PeriodPreset)}>
-              <SelectTrigger className="h-10 rounded-lg">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="today">Hoje</SelectItem>
-                <SelectItem value="7d">7 dias</SelectItem>
-                <SelectItem value="30d">30 dias</SelectItem>
-                <SelectItem value="custom">Personalizado</SelectItem>
-              </SelectContent>
-            </Select>
-
-            {period === "custom" ? (
-              <>
-                <input
-                  type="date"
-                  value={customFrom}
-                  onChange={(event) => setCustomFrom(event.target.value)}
-                  className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
-                />
-                <input
-                  type="date"
-                  value={customTo}
-                  onChange={(event) => setCustomTo(event.target.value)}
-                  className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
-                />
-              </>
-            ) : null}
+            <PeriodFilter
+              value={period}
+              customFrom={customFrom}
+              customTo={customTo}
+              onValueChange={setPeriod}
+              onCustomFromChange={setCustomFrom}
+              onCustomToChange={setCustomTo}
+            />
 
             <Select value={unitId} onValueChange={setUnitId}>
               <SelectTrigger className="h-10 rounded-lg">

@@ -39,6 +39,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PeriodFilter } from "@/components/shared";
+import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
 import {
   STATUS_BAR,
   STATUS_DOT,
@@ -359,7 +361,7 @@ function ActivityPanel({ items, loading }: { items: RecentActivity[]; loading: b
 
 /* ----------------------------- Resumo do dia ----------------------------- */
 
-function DailySummaryPanel({ metrics, loading }: { metrics: DailyMetric[]; loading: boolean }) {
+function DailySummaryPanel({ metrics, loading, title }: { metrics: DailyMetric[]; loading: boolean; title: string }) {
   const icons = [
     { icon: <Play className="h-4 w-4" />, className: "bg-primary/10 text-primary" },
     { icon: <Square className="h-4 w-4" />, className: "bg-secondary/10 text-secondary" },
@@ -372,7 +374,7 @@ function DailySummaryPanel({ metrics, loading }: { metrics: DailyMetric[]; loadi
   return (
     <Card className="border-border/80 bg-card shadow-sm shadow-secondary/5">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-semibold">Resumo do dia</CardTitle>
+        <CardTitle className="text-sm font-semibold">{title}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
@@ -413,17 +415,29 @@ function OverviewFilters({
   unitOptions,
   unit,
   status,
+  period,
+  customFrom,
+  customTo,
   hasFilters,
   onUnitChange,
   onStatusChange,
+  onPeriodChange,
+  onCustomFromChange,
+  onCustomToChange,
   onClear,
 }: {
   unitOptions: UnitOption[];
   unit: string;
   status: string;
+  period: PeriodPreset;
+  customFrom: string;
+  customTo: string;
   hasFilters: boolean;
   onUnitChange: (value: string) => void;
   onStatusChange: (value: string) => void;
+  onPeriodChange: (value: PeriodPreset) => void;
+  onCustomFromChange: (value: string) => void;
+  onCustomToChange: (value: string) => void;
   onClear: () => void;
 }) {
   return (
@@ -471,10 +485,14 @@ function OverviewFilters({
 
         <div className="space-y-1.5">
           <div className="text-xs font-semibold text-muted-foreground">Período</div>
-          <div className="flex h-10 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm shadow-sm">
-            <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
-            Hoje
-          </div>
+          <PeriodFilter
+            value={period}
+            customFrom={customFrom}
+            customTo={customTo}
+            onValueChange={onPeriodChange}
+            onCustomFromChange={onCustomFromChange}
+            onCustomToChange={onCustomToChange}
+          />
         </div>
 
         <Button
@@ -499,11 +517,15 @@ export function OverviewPage() {
   const queryClient = useQueryClient();
   const [unitFilter, setUnitFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [period, setPeriod] = useState<PeriodPreset>("7d");
+  const [customFrom, setCustomFrom] = useState(todayInput());
+  const [customTo, setCustomTo] = useState(todayInput());
+  const periodRange = useMemo(() => buildPeriodRange(period, customFrom, customTo), [period, customFrom, customTo]);
 
   const counts = useQuery({ queryKey: ["overview", "counts"], queryFn: fetchOverviewCounts, staleTime: 30_000 });
   const states = useQuery({ queryKey: ["overview", "states"], queryFn: fetchOperatorStates, staleTime: 15_000 });
-  const activity = useQuery({ queryKey: ["overview", "activity"], queryFn: fetchRecentActivity, staleTime: 30_000 });
-  const daily = useQuery({ queryKey: ["overview", "daily"], queryFn: fetchDailySummary, staleTime: 60_000 });
+  const activity = useQuery({ queryKey: ["overview", "activity", periodRange.startAt, periodRange.endAt], queryFn: () => fetchRecentActivity(periodRange.startAt, periodRange.endAt), staleTime: 30_000 });
+  const daily = useQuery({ queryKey: ["overview", "daily", periodRange.startAt, periodRange.endAt], queryFn: () => fetchDailySummary(periodRange.startAt, periodRange.endAt), staleTime: 60_000 });
 
   const isFetching = counts.isFetching || states.isFetching || activity.isFetching || daily.isFetching;
   const isError = counts.isError || states.isError || activity.isError || daily.isError;
@@ -551,7 +573,7 @@ export function OverviewPage() {
       })),
     [filteredRows, groups],
   );
-  const hasFilters = unitFilter !== "all" || statusFilter !== "all";
+  const hasFilters = unitFilter !== "all" || statusFilter !== "all" || period !== "7d";
   const visibleTotal = hasFilters ? filteredRows.length : total;
   const pendingTotal = (counts.data?.pendingFeedback ?? 0) + (counts.data?.pendingPlaylists ?? 0);
   const todayLabel = useMemo(
@@ -607,12 +629,19 @@ export function OverviewPage() {
         unitOptions={unitOptions}
         unit={unitFilter}
         status={statusFilter}
+        period={period}
+        customFrom={customFrom}
+        customTo={customTo}
         hasFilters={hasFilters}
         onUnitChange={setUnitFilter}
         onStatusChange={setStatusFilter}
+        onPeriodChange={setPeriod}
+        onCustomFromChange={setCustomFrom}
+        onCustomToChange={setCustomTo}
         onClear={() => {
           setUnitFilter("all");
           setStatusFilter("all");
+          setPeriod("7d");
         }}
       />
 
@@ -652,7 +681,7 @@ export function OverviewPage() {
       </div>
 
       <div className="mb-5">
-        <DailySummaryPanel metrics={daily.data ?? []} loading={daily.isLoading} />
+        <DailySummaryPanel metrics={daily.data ?? []} loading={daily.isLoading} title="Resumo do período" />
       </div>
 
       <ActivityPanel items={activity.data ?? []} loading={activity.isLoading} />

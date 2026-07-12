@@ -13,4 +13,5 @@ export { SearchInput } from "./SearchInput";
 export { FilterBar } from "./FilterBar";
 export { DataTable } from "./DataTable";
 export { PaginationFooter } from "./PaginationFooter";
+export { PeriodFilter } from "./PeriodFilter";
 export { PageHeader } from "@/components/layout/PageHeader";

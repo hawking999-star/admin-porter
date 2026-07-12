@@ -365,27 +365,35 @@ const PLAYLIST_TYPE_PT: Record<string, string> = {
   secondary: "Playlist secundária",
 };
 
-export async function fetchRecentActivity(): Promise<RecentActivity[]> {
+export async function fetchRecentActivity(sinceAt: string, untilAt: string): Promise<RecentActivity[]> {
   const [audits, sessions, feedback, playlists] = await Promise.all([
     supabase
       .from("admin_audit_logs")
       .select("id, action, entity_type, occurred_at, admin_users(display_name)")
+      .gte("occurred_at", sinceAt)
+      .lte("occurred_at", untilAt)
       .order("occurred_at", { ascending: false })
       .limit(8),
     supabase
       .from("operator_sessions")
       .select("id, status, started_at, ended_at, operators(display_name)")
+      .gte("started_at", sinceAt)
+      .lte("started_at", untilAt)
       .order("started_at", { ascending: false })
       .limit(8),
     supabase
       .from("feedback")
       .select("id, type, created_at, operators(display_name)")
+      .gte("created_at", sinceAt)
+      .lte("created_at", untilAt)
       .order("created_at", { ascending: false })
       .limit(6),
     supabase
       .from("playlists")
       .select("id, name, type, approval_status, submitted_at, reviewed_at, operators(display_name)")
       .not("submitted_at", "is", null)
+      .gte("submitted_at", sinceAt)
+      .lte("submitted_at", untilAt)
       .order("submitted_at", { ascending: false })
       .limit(6),
   ]);
@@ -465,10 +473,11 @@ async function countSince(
   table: string,
   column: string,
   since: string,
+  until: string,
   extra?: (q: any) => any,
 ): Promise<number | null> {
   try {
-    let q = supabase.from(table).select("id", { count: "exact", head: true }).gte(column, since);
+    let q = supabase.from(table).select("id", { count: "exact", head: true }).gte(column, since).lte(column, until);
     if (extra) q = extra(q);
     const { count, error } = await q;
     if (error) return null;
@@ -478,15 +487,14 @@ async function countSince(
   }
 }
 
-export async function fetchDailySummary(): Promise<DailyMetric[]> {
-  const today = startOfTodayISO();
+export async function fetchDailySummary(sinceAt: string, untilAt: string): Promise<DailyMetric[]> {
   const [started, ended, feedbackToday, idleToday, challengesToday, failures] = await Promise.all([
-    countSince("operator_sessions", "started_at", today),
-    countSince("operator_sessions", "ended_at", today, (q) => q.eq("status", "ended")),
-    countSince("feedback", "created_at", today),
-    countSince("operator_status_history", "occurred_at", today, (q) => q.eq("to_status", "idle")),
-    countSince("challenge_logs", "answered_at", today),
-    countSince("download_jobs", "last_error_at", today, (q) => q.eq("status", "error")),
+    countSince("operator_sessions", "started_at", sinceAt, untilAt),
+    countSince("operator_sessions", "ended_at", sinceAt, untilAt, (q) => q.eq("status", "ended")),
+    countSince("feedback", "created_at", sinceAt, untilAt),
+    countSince("operator_status_history", "occurred_at", sinceAt, untilAt, (q) => q.eq("to_status", "idle")),
+    countSince("challenge_logs", "answered_at", sinceAt, untilAt),
+    countSince("download_jobs", "last_error_at", sinceAt, untilAt, (q) => q.eq("status", "error")),
   ]);
 
   return [
