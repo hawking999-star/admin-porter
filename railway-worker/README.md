@@ -106,6 +106,9 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 | `AUDIO_BITRATE` | 128 | Qualidade do mp3, em kbps |
 | `POLL_SECONDS` | 10 | De quanto em quanto tempo checa a fila |
 | `MAX_ATTEMPTS` | 3 | Tentativas antes de marcar erro |
+| `STALE_JOB_SECONDS` | 1800 | Recupera jobs abandonados após 30 minutos sem progresso |
+| `STALE_JOB_CHECK_SECONDS` | 60 | Intervalo da verificação de jobs abandonados |
+| `GLOBAL_FAILURE_ABORT_THRESHOLD` | 3 | Encerra cedo após erros globais consecutivos do YouTube |
 
 ## Como ele respeita os limites
 
