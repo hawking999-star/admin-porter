@@ -199,8 +199,8 @@ function toDateTimeInput(iso: string | null) {
 function splitNoteContent(content: string | null | undefined) {
   const text = content ?? "";
   const pick = (label: string, next?: string) => {
-    const end = next ? `\\n\\s*${next}\\s*\\n` : "$";
-    const match = text.match(new RegExp(`${label}\\s*\\n([\\s\\S]*?)(?:${end})`, "i"));
+    const end = next ? `\\n\\s*(?:${next})\\s*\\n` : "$";
+    const match = text.match(new RegExp(`(?:${label})\\s*\\n([\\s\\S]*?)(?:${end})`, "i"));
     return match?.[1]?.trim() ?? "";
   };
   const novidades = pick("Novidades", "Correções|Correcoes");
@@ -1735,7 +1735,7 @@ function NoticeDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>{notice ? "Editar aviso" : "Novo aviso"}</DialogTitle>
           <DialogDescription>
@@ -1743,7 +1743,8 @@ function NoticeDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Título" className="sm:col-span-2">
             <Input value={input.title} onChange={(e) => update("title", e.target.value)} />
           </Field>
@@ -1850,6 +1851,9 @@ function NoticeDialog({
             </div>
             <Switch checked={input.requires_ack} onCheckedChange={(value) => update("requires_ack", value)} />
           </div>
+          </div>
+
+          <NoticePreview input={input} />
         </div>
 
         {formErrors.length > 0 && (
@@ -1871,6 +1875,69 @@ function NoticeDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function NoticePreview({ input }: { input: AppNoticeInput }) {
+  const severity = NOTICE_SEVERITY_META[input.severity];
+  const colors: Record<NoticeSeverity, { header: string; icon: string; accent: string }> = {
+    info: {
+      header: "bg-blue-50 text-blue-950 dark:bg-blue-950/40 dark:text-blue-100",
+      icon: "bg-blue-100 text-blue-700 dark:bg-blue-900/70 dark:text-blue-200",
+      accent: "text-blue-600",
+    },
+    warning: {
+      header: "bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100",
+      icon: "bg-amber-100 text-amber-700 dark:bg-amber-900/70 dark:text-amber-200",
+      accent: "text-amber-600",
+    },
+    critical: {
+      header: "bg-red-50 text-red-950 dark:bg-red-950/40 dark:text-red-100",
+      icon: "bg-red-100 text-red-700 dark:bg-red-900/70 dark:text-red-200",
+      accent: "text-red-600",
+    },
+    success: {
+      header: "bg-emerald-50 text-emerald-950 dark:bg-emerald-950/40 dark:text-emerald-100",
+      icon: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/70 dark:text-emerald-200",
+      accent: "text-emerald-600",
+    },
+  };
+  const color = colors[input.severity];
+
+  return (
+    <aside className="lg:sticky lg:top-0 lg:self-start">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Prévia no app</p>
+      <div className="overflow-hidden rounded-lg border border-border bg-background shadow-sm">
+        <div className={cn("flex items-center gap-3 border-b border-border px-4 py-3", color.header)}>
+          <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full", color.icon)}>
+            <Megaphone className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs opacity-70">Porter Music</p>
+            <p className="text-sm font-semibold">Novo aviso</p>
+          </div>
+          <StatusBadge tone={severity.tone} label={severity.label} dot={false} />
+        </div>
+        <div className="max-h-[470px] space-y-4 overflow-y-auto p-4">
+          <div>
+            <h3 className="text-base font-semibold leading-tight">{input.title.trim() || "Título do aviso"}</h3>
+            {input.message.trim() ? (
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{input.message}</p>
+            ) : (
+              <p className="mt-2 rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
+                A mensagem aparecerá aqui enquanto você escreve.
+              </p>
+            )}
+          </div>
+          {input.requires_ack && (
+            <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm">
+              <Check className={cn("h-4 w-4 shrink-0", color.accent)} />
+              <span>Li e confirmo este aviso</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </aside>
   );
 }
 
