@@ -72,6 +72,7 @@ import {
   listAppReleases,
   listAppNotices,
   listNoticeOperators,
+  listNoticeAcknowledgements,
   listNoticeUnits,
   listReleaseHistory,
   listReleaseNotes,
@@ -102,6 +103,7 @@ import {
   type AppReleaseNoteInput,
   type NoticeSeverity,
   type NoticeStatus,
+  type NoticeAcknowledgement,
   type ReleaseStatus,
 } from "./queries";
 
@@ -276,6 +278,7 @@ export function AtualizacoesPage() {
   const [pendingNoteId, setPendingNoteId] = useState<string | null>(null);
   const [versionPickerOpen, setVersionPickerOpen] = useState(false);
   const [noticeDialog, setNoticeDialog] = useState<AppNotice | null | "new">(null);
+  const [noticeReadsTarget, setNoticeReadsTarget] = useState<AppNotice | null>(null);
   const [confirm, setConfirm] = useState<null | {
     release: AppRelease;
     action: "approve" | "release" | "block" | "rollback";
@@ -346,6 +349,12 @@ export function AtualizacoesPage() {
     queryFn: listNoticeOperators,
     staleTime: 60_000,
     enabled: noticeDialogOpen,
+  });
+  const noticeReadsQuery = useQuery({
+    queryKey: ["notice-acknowledgements", noticeReadsTarget?.id],
+    queryFn: () => listNoticeAcknowledgements(noticeReadsTarget?.id as string),
+    enabled: Boolean(noticeReadsTarget),
+    staleTime: 15_000,
   });
 
   // Abre o editor de nota a partir da aba Notas / seletor de versão: carrega a
@@ -841,6 +850,7 @@ export function AtualizacoesPage() {
                   busy={noticeStatusMutation.isPending}
                   onEdit={() => setNoticeDialog(notice)}
                   onStatus={(nextStatus) => noticeStatusMutation.mutate({ id: notice.id, status: nextStatus })}
+                  onViewReads={() => setNoticeReadsTarget(notice)}
                 />
               ))}
             </div>
@@ -948,6 +958,14 @@ export function AtualizacoesPage() {
           setNoticeDialog(null);
           invalidate();
         }}
+      />
+
+      <NoticeReadDialog
+        notice={noticeReadsTarget}
+        rows={noticeReadsQuery.data ?? []}
+        loading={noticeReadsQuery.isLoading}
+        error={noticeReadsQuery.error as Error | null}
+        onOpenChange={(open) => !open && setNoticeReadsTarget(null)}
       />
 
       <ConfirmActionDialog
@@ -1268,11 +1286,13 @@ function NoticeCard({
   busy,
   onEdit,
   onStatus,
+  onViewReads,
 }: {
   notice: AppNotice;
   busy: boolean;
   onEdit: () => void;
   onStatus: (status: NoticeStatus) => void;
+  onViewReads: () => void;
 }) {
   const label = noticeStatusLabel(notice);
   const severity = NOTICE_SEVERITY_META[notice.severity];
@@ -1299,6 +1319,9 @@ function NoticeCard({
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          <Button size="sm" variant="outline" onClick={onViewReads}>
+            <Eye className="h-4 w-4" /> Ver leituras
+          </Button>
           <Button size="sm" variant="outline" onClick={onEdit}>
             <Pencil className="h-4 w-4" /> Editar
           </Button>
@@ -1593,6 +1616,64 @@ function ReleaseNotePreview({
         </div>
       </div>
     </aside>
+  );
+}
+
+function NoticeReadDialog({
+  notice,
+  rows,
+  loading,
+  error,
+  onOpenChange,
+}: {
+  notice: AppNotice | null;
+  rows: NoticeAcknowledgement[];
+  loading: boolean;
+  error: Error | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open={Boolean(notice)} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Leituras do aviso</DialogTitle>
+          <DialogDescription>{notice?.title ?? "Aviso"}</DialogDescription>
+        </DialogHeader>
+
+        {error ? (
+          <ErrorState title="Não foi possível carregar as leituras." description={error.message} />
+        ) : loading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-14 w-full" />)}
+          </div>
+        ) : rows.length ? (
+          <div className="overflow-hidden rounded-lg border border-border">
+            <div className="divide-y divide-border">
+              {rows.map((row) => (
+                <div key={row.id} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{row.operator_name}</p>
+                    <p className="text-xs text-muted-foreground">{row.unit_name ?? "Condomínio não informado"}</p>
+                  </div>
+                  <div className="shrink-0 text-xs text-muted-foreground sm:text-right">
+                    <p>Lido: {fmtDate(row.read_at)}</p>
+                    <p>{row.acknowledged_at ? `Confirmado: ${fmtDate(row.acknowledged_at)}` : "Sem confirmação"}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-5 py-10 text-center text-sm text-muted-foreground">
+            Nenhum operador leu este aviso ainda.
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Fechar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

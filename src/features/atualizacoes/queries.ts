@@ -123,6 +123,15 @@ export type NoticeAudienceOption = {
   label: string;
 };
 
+export type NoticeAcknowledgement = {
+  id: string;
+  operator_id: string;
+  operator_name: string;
+  unit_name: string | null;
+  read_at: string;
+  acknowledged_at: string | null;
+};
+
 export type AppReleaseInput = {
   version?: string;
   title: string;
@@ -769,6 +778,24 @@ export async function listNoticeOperators(): Promise<NoticeAudienceOption[]> {
   return (data ?? []).map((operator: any) => ({
     id: operator.id,
     label: [operator.display_name, operator.units?.name].filter(Boolean).join(" - "),
+  }));
+}
+
+export async function listNoticeAcknowledgements(noticeId: string): Promise<NoticeAcknowledgement[]> {
+  const { data, error } = await supabase
+    .from("app_notice_acknowledgements")
+    .select("id, operator_id, read_at, acknowledged_at, operators(display_name, units(name))")
+    .eq("notice_id", noticeId)
+    .order("read_at", { ascending: false });
+  if (error) throw error;
+
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    operator_id: row.operator_id,
+    operator_name: row.operators?.display_name ?? "Operador não identificado",
+    unit_name: row.operators?.units?.name ?? null,
+    read_at: row.read_at,
+    acknowledged_at: row.acknowledged_at ?? null,
   }));
 }
 // fim das queries de atualizações
