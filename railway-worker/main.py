@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -53,6 +53,9 @@ MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
 AUDIO_BITRATE = int(env("AUDIO_BITRATE", "128"))  # kbps do mp3
 POLL_SECONDS = int(env("POLL_SECONDS", "10"))
 MAX_ATTEMPTS = int(env("MAX_ATTEMPTS", "3"))
+STALE_JOB_SECONDS = int(env("STALE_JOB_SECONDS", "1800"))
+STALE_JOB_CHECK_SECONDS = int(env("STALE_JOB_CHECK_SECONDS", "60"))
+GLOBAL_FAILURE_ABORT_THRESHOLD = int(env("GLOBAL_FAILURE_ABORT_THRESHOLD", "3"))
 STORAGE_AUDIT_INTERVAL_SECONDS = int(env("STORAGE_AUDIT_INTERVAL_SECONDS", "3600"))
 YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
 YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
@@ -80,6 +83,30 @@ PERMANENT_SKIP_CODES = {
     "TRACK_SIZE_LIMIT_EXCEEDED",
     "TRACK_DURATION_LIMIT_EXCEEDED",
     "TRACK_DURATION_UNKNOWN",
+}
+# Estes erros afetam o importador inteiro, não apenas uma faixa. Continuar
+# percorrendo a playlist só repete a mesma falha e deixa o job parecendo travado.
+JOB_ABORT_CODES = {
+    "YOUTUBE_COOKIES_MISSING",
+    "YOUTUBE_COOKIES_INVALID",
+    "WORKER_ENV_MISSING",
+    "SUPABASE_PERMISSION_DENIED",
+    "SUPABASE_ERROR",
+    "R2_ACCESS_DENIED",
+    "R2_ERROR",
+}
+# Erros de configuração não melhoram com retry automático. O Admin pode
+# reenfileirar depois que a variável/permissão for corrigida.
+NON_RETRYABLE_JOB_CODES = {
+    "YOUTUBE_COOKIES_MISSING",
+    "YOUTUBE_COOKIES_INVALID",
+    "WORKER_ENV_MISSING",
+    "SUPABASE_PERMISSION_DENIED",
+    "R2_ACCESS_DENIED",
+}
+DELAYED_ABORT_CODES = {
+    "YOUTUBE_COOKIES_MISSING",
+    "YOUTUBE_COOKIES_INVALID",
 }
 # Dos permanentes, quais vale tentar substituir por outra versão (mesma música).
 SUBSTITUTABLE_CODES = {
@@ -259,6 +286,47 @@ def claim_next_job() -> dict | None:
 def update_job(job_id: str, **fields):
     fields["updated_at"] = now_iso()
     supabase.table("download_jobs").update(fields).eq("id", job_id).execute()
+
+
+def recover_stale_running_jobs():
+    """Recupera jobs abandonados por restart/crash sem disputar jobs ativos."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_JOB_SECONDS)).isoformat()
+    stale = (
+        supabase.table("download_jobs")
+        .select("id, attempts")
+        .eq("status", "running")
+        .lt("updated_at", cutoff)
+        .execute()
+    )
+    for job in stale.data or []:
+        attempts = job.get("attempts") or 0
+        if attempts >= MAX_ATTEMPTS:
+            update_job(
+                job["id"],
+                status="error",
+                error="worker interrompido durante a importação",
+                error_code="WORKER_STALE_TIMEOUT",
+                error_message="Falha ao importar: o Worker foi interrompido durante o processamento.",
+                error_details={"stale_after_seconds": STALE_JOB_SECONDS},
+                last_error_at=now_iso(),
+                finished_at=now_iso(),
+                locked_at=None,
+            )
+            log(f"Job {job['id']} abandonado finalizado após {attempts} tentativa(s).")
+        else:
+            update_job(
+                job["id"],
+                status="queued",
+                error=None,
+                error_code=None,
+                error_message=None,
+                error_details=None,
+                last_error_at=None,
+                started_at=None,
+                finished_at=None,
+                locked_at=None,
+            )
+            log(f"Job {job['id']} abandonado voltou para a fila.")
 
 
 def claim_storage_deletion_job() -> dict | None:
@@ -739,6 +807,7 @@ def process_job(job: dict):
     first_error_message = None
     first_error_details = None
     skipped: list[dict] = []  # relatório por-música: o que NÃO entrou e por quê
+    consecutive_job_errors = 0
 
     reused = 0
     with tempfile.TemporaryDirectory() as workdir:
@@ -839,12 +908,14 @@ def process_job(job: dict):
                 ).execute()
 
                 completed += 1
+                consecutive_job_errors = 0
                 update_job(job_id, completed=completed)
                 tag = "reuso" if found.data else "novo"
                 log(f"  ok {position}/{total} [{tag}] {entry['title'][:60]}")
             except Exception as exc:  # noqa: BLE001
-                failed += 1
                 code, friendly = classify_error(exc)
+                failed += 1
+                consecutive_job_errors = consecutive_job_errors + 1 if code in JOB_ABORT_CODES else 0
                 details = error_details(
                     exc,
                     playlist_id=playlist_id,
@@ -868,12 +939,19 @@ def process_job(job: dict):
                 update_job(
                     job_id,
                     failed=failed,
-                    error=str(exc),
-                    error_code=code,
-                    error_message=friendly,
-                    error_details=details,
-                    last_error_at=now_iso(),
                 )
+                abort_now = code in JOB_ABORT_CODES and (
+                    code not in DELAYED_ABORT_CODES
+                    or consecutive_job_errors >= GLOBAL_FAILURE_ABORT_THRESHOLD
+                )
+                if abort_now:
+                    # Deixa fail_job finalizar/repetir o job inteiro. Cookies têm
+                    # tolerância para um vídeo isolado; infraestrutura não tem.
+                    log(
+                        f"  ! importação abortada em {entry['id']} [{code}] "
+                        f"após {consecutive_job_errors} erro(s) consecutivo(s): {friendly}"
+                    )
+                    raise
                 log(f"  ! erro ao salvar {entry['id']} [{code}]: {exc}")
 
     # Falha permanente ("indisponível") NÃO é erro de sistema. Se o que dava pra
@@ -944,7 +1022,7 @@ def fail_job(job: dict, exc: Exception):
     attempts = job.get("attempts") or 1
     code, friendly = classify_error(exc)
     # Volta para a fila se ainda tem tentativas; senao marca erro definitivo.
-    if attempts < MAX_ATTEMPTS:
+    if code not in NON_RETRYABLE_JOB_CODES and attempts < MAX_ATTEMPTS:
         update_job(
             job["id"],
             status="queued",
@@ -986,8 +1064,15 @@ def main():
     log("Worker iniciado. Aguardando jobs...")
     log(f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa")
     next_storage_audit_at = 0.0
+    next_stale_job_check_at = 0.0
     while True:
         try:
+            if time.monotonic() >= next_stale_job_check_at:
+                try:
+                    recover_stale_running_jobs()
+                except Exception as exc:  # noqa: BLE001
+                    log(f"Falha ao recuperar jobs abandonados: {exc}")
+                next_stale_job_check_at = time.monotonic() + STALE_JOB_CHECK_SECONDS
             deletion_job = claim_storage_deletion_job()
             if deletion_job:
                 try:
