@@ -3,9 +3,12 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
+  Cell,
   CartesianGrid,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -178,49 +181,53 @@ function CardsSkeleton() {
   );
 }
 
-function metricCards(metrics: AnalyticsMetrics) {
+function metricCards(metrics: AnalyticsMetrics, averageByCondominium = false) {
+  const scopeHint = averageByCondominium ? "Média por condomínio" : undefined;
+  const formatCount = (value: number) =>
+    averageByCondominium ? value.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : value;
+
   return [
     {
       icon: <Users className="h-5 w-5" />,
-      label: "Operadores ativos",
-      value: metrics.active_operators,
-      hint: "Com sessão no período",
+      label: averageByCondominium ? "Média de Operadores ativos" : "Operadores ativos",
+      value: formatCount(metrics.active_operators),
+      hint: scopeHint ?? "Com sessão no período",
     },
     {
       icon: <Activity className="h-5 w-5" />,
-      label: "Total de sessões",
-      value: metrics.total_sessions,
-      hint: "Sessões sobrepostas ao filtro",
+      label: averageByCondominium ? "Média de sessões" : "Total de sessões",
+      value: formatCount(metrics.total_sessions),
+      hint: scopeHint ?? "Sessões sobrepostas ao filtro",
     },
     {
       icon: <Clock3 className="h-5 w-5" />,
       label: "Tempo total online",
       value: formatSeconds(metrics.online_seconds),
-      hint: "Derivado de operator_sessions",
+      hint: scopeHint ?? "Derivado de operator_sessions",
     },
     {
       icon: <AlertCircle className="h-5 w-5" />,
       label: "Tempo ocioso",
       value: formatSeconds(metrics.idle_seconds),
-      hint: "Derivado de operator_status_history",
+      hint: scopeHint ?? "Derivado de operator_status_history",
     },
     {
       icon: <Phone className="h-5 w-5" />,
       label: "Tempo em atendimento",
       value: formatSeconds(metrics.call_seconds),
-      hint: "Em atendimento no histórico operacional",
+      hint: scopeHint ?? "Em atendimento no histórico operacional",
     },
     {
       icon: <ShieldCheck className="h-5 w-5" />,
       label: "Resposta desafios",
       value: formatPercent(metrics.challenge_response_rate),
-      hint: metrics.challenges_received ? `${metrics.challenges_answered}/${metrics.challenges_received} respondidos` : "Sem desafios no período",
+      hint: averageByCondominium ? "Taxa consolidada do período" : metrics.challenges_received ? `${metrics.challenges_answered}/${metrics.challenges_received} respondidos` : "Sem desafios no período",
     },
     {
       icon: <Trophy className="h-5 w-5" />,
       label: "Acerto desafios",
       value: formatPercent(metrics.challenge_accuracy_rate),
-      hint: metrics.challenges_answered ? "Sobre desafios respondidos" : "Sem respostas no período",
+      hint: averageByCondominium ? "Taxa consolidada do período" : metrics.challenges_answered ? "Sobre desafios respondidos" : "Sem respostas no período",
     },
   ];
 }
@@ -252,6 +259,20 @@ export function AnalyticsPage() {
   });
 
   const data = query.data;
+  const showCondominiumAverage = unitId === "all" && operatorId === "all";
+  const metricsForCards = useMemo(() => {
+    if (!data || !showCondominiumAverage || data.condominiums.length === 0) return data?.metrics;
+
+    const condominiumCount = data.condominiums.length;
+    return {
+      ...data.metrics,
+      active_operators: data.metrics.active_operators / condominiumCount,
+      total_sessions: data.metrics.total_sessions / condominiumCount,
+      online_seconds: data.metrics.online_seconds / condominiumCount,
+      idle_seconds: data.metrics.idle_seconds / condominiumCount,
+      call_seconds: data.metrics.call_seconds / condominiumCount,
+    };
+  }, [data, showCondominiumAverage]);
   const chartData = (data?.timeseries ?? []).map((point) => ({
     label: formatBucket(point.bucket_start),
     sessions: point.sessions,
@@ -260,6 +281,8 @@ export function AnalyticsPage() {
     call: Number((point.call_seconds / 3600).toFixed(2)),
   }));
   const statusData = data?.status_breakdown ?? [];
+  const totalVisibleOperators = statusData.reduce((total, item) => total + item.count, 0);
+  const statusColors: Record<string, string> = { active: "var(--chart-success)", in_call: "var(--chart-challenges)", idle: "var(--chart-warning)", offline: "#94a3b8" };
   const hasAnyOperationalData = Boolean(
     data &&
       (data.metrics.total_sessions > 0 ||
@@ -401,10 +424,10 @@ export function AnalyticsPage() {
           )}
 
           <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {query.isLoading || !data ? (
+            {query.isLoading || !metricsForCards ? (
               <CardsSkeleton />
             ) : (
-              metricCards(data.metrics).map((card) => (
+              metricCards(metricsForCards, showCondominiumAverage).map((card) => (
                 <MetricCard
                   key={card.label}
                   icon={card.icon}
@@ -444,11 +467,15 @@ export function AnalyticsPage() {
 
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,0.8fr)]">
             <Card className="p-5 shadow-sm">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <h2 className="font-display text-lg font-semibold text-foreground">Evolução operacional</h2>
                   <p className="text-sm text-muted-foreground">Sessões e horas por bucket do período filtrado.</p>
                 </div>
+                <Select defaultValue="8">
+                  <SelectTrigger className="h-10 w-[138px]"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="8">Últimas 8 horas</SelectItem><SelectItem value="24">Últimas 24 horas</SelectItem></SelectContent>
+                </Select>
               </div>
               {query.isLoading ? (
                 <Skeleton className="h-[320px] w-full" />
@@ -463,10 +490,8 @@ export function AnalyticsPage() {
                       <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
                       <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
                       <Tooltip />
-                      <Area yAxisId="left" type="monotone" dataKey="online" name="Horas online" stroke="var(--chart-challenges)" fill="var(--chart-challenges)" fillOpacity={0.16} />
-                      <Area yAxisId="left" type="monotone" dataKey="idle" name="Horas ocioso" stroke="var(--chart-warning)" fill="var(--chart-warning)" fillOpacity={0.14} />
-                      <Area yAxisId="left" type="monotone" dataKey="call" name="Horas atendimento" stroke="var(--chart-active)" fill="var(--chart-active)" fillOpacity={0.12} />
-                      <Area yAxisId="right" type="step" dataKey="sessions" name="Sessões" stroke="var(--chart-success)" fill="var(--chart-success)" fillOpacity={0.22} />
+                      <Area yAxisId="left" type="monotone" dataKey="online" name="Horas" stroke="var(--chart-success)" fill="var(--chart-success)" fillOpacity={0.16} dot={{ r: 4 }} />
+                      <Line yAxisId="right" type="monotone" dataKey="sessions" name="Sessões" stroke="var(--chart-challenges)" strokeWidth={2} dot={{ r: 5 }} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -474,7 +499,7 @@ export function AnalyticsPage() {
             </Card>
 
             <Card className="p-5 shadow-sm">
-              <h2 className="font-display text-lg font-semibold text-foreground">Status operacional</h2>
+              <h2 className="font-display text-lg font-semibold text-foreground">Status operacional <span className="font-normal text-muted-foreground">(agora)</span></h2>
               <p className="mb-4 text-sm text-muted-foreground">Distribuição atual dos Operadores visíveis.</p>
               {query.isLoading ? (
                 <Skeleton className="h-[320px] w-full" />
@@ -482,15 +507,8 @@ export function AnalyticsPage() {
                 <EmptyState title="Sem status atual." description="A fonte operator_states ainda não retornou dados para os filtros." />
               ) : (
                 <div className="h-[320px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={statusData} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                      <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Bar dataKey="count" name="Operadores" fill="var(--chart-challenges)" radius={[6, 6, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <div className="relative h-[190px] w-full"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={statusData} dataKey="count" nameKey="label" innerRadius={62} outerRadius={90} paddingAngle={1} strokeWidth={0}>{statusData.map((item) => <Cell key={item.status} fill={statusColors[item.status] ?? "#94a3b8"} />)}</Pie><Tooltip /></PieChart></ResponsiveContainer><div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center"><strong className="text-3xl">{totalVisibleOperators}</strong><span className="text-xs text-muted-foreground">Total online</span></div></div>
+                  <div className="grid w-full grid-cols-2 gap-2 text-sm">{statusData.map((item) => <div key={item.status} className="flex items-center gap-2"><span className="h-3 w-3 rounded-full" style={{ backgroundColor: statusColors[item.status] ?? "#94a3b8" }} /><span className="flex-1">{item.label}</span><span>{item.count}</span><span className="text-muted-foreground">{totalVisibleOperators ? Math.round(item.count / totalVisibleOperators * 100) : 0}%</span></div>)}</div>
                 </div>
               )}
             </Card>
