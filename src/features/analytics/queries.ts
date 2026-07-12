@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
+import { buildPeriodRange, type PeriodPreset } from "@/lib/period";
 
-export type PeriodPreset = "today" | "7d" | "30d" | "custom";
+export { buildPeriodRange, type PeriodPreset };
 export type ShiftFilter = "all" | "day" | "night" | "other";
 
 export type AnalyticsFilters = {
@@ -22,6 +23,7 @@ export type AnalyticsMetrics = {
   online_seconds: number;
   idle_seconds: number;
   call_seconds: number;
+  answered_calls: number;
   challenge_response_rate: number | null;
   challenge_accuracy_rate: number | null;
   challenges_received: number;
@@ -100,43 +102,33 @@ export type AnalyticsDashboard = {
   sources: AnalyticsSource[];
 };
 
-export function buildPeriodRange(preset: PeriodPreset, customFrom: string, customTo: string) {
-  const now = new Date();
-  const start = new Date(now);
-  const end = new Date(now);
-
-  if (preset === "today") {
-    start.setHours(0, 0, 0, 0);
-  } else if (preset === "7d") {
-    start.setDate(start.getDate() - 6);
-    start.setHours(0, 0, 0, 0);
-  } else if (preset === "30d") {
-    start.setDate(start.getDate() - 29);
-    start.setHours(0, 0, 0, 0);
-  } else {
-    const from = customFrom ? new Date(`${customFrom}T00:00:00`) : start;
-    const to = customTo ? new Date(`${customTo}T23:59:59.999`) : end;
-    return { startAt: from.toISOString(), endAt: to.toISOString() };
-  }
-
-  return { startAt: start.toISOString(), endAt: end.toISOString() };
-}
-
 export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promise<AnalyticsDashboard> {
-  const { data, error } = await supabase.rpc("admin_analytics_dashboard", {
-    p_request: {
-      start_at: filters.startAt,
-      end_at: filters.endAt,
-      unit_id: filters.unitId === "all" ? null : filters.unitId,
-      operator_id: filters.operatorId === "all" ? null : filters.operatorId,
-      shift: filters.shift,
-      ranking_page: filters.rankingPage,
-      ranking_page_size: filters.rankingPageSize,
-    },
-  });
+  const request = {
+    start_at: filters.startAt,
+    end_at: filters.endAt,
+    unit_id: filters.unitId === "all" ? null : filters.unitId,
+    operator_id: filters.operatorId === "all" ? null : filters.operatorId,
+    shift: filters.shift,
+    ranking_page: filters.rankingPage,
+    ranking_page_size: filters.rankingPageSize,
+  };
+  const [dashboardResult, callsResult] = await Promise.all([
+    supabase.rpc("admin_analytics_dashboard", { p_request: request }),
+    supabase.rpc("admin_analytics_answered_calls", { p_request: request }),
+  ]);
 
-  if (error) throw error;
-  return data as AnalyticsDashboard;
+  if (dashboardResult.error) throw dashboardResult.error;
+  if (callsResult.error) throw callsResult.error;
+
+  const dashboard = dashboardResult.data as AnalyticsDashboard;
+  const calls = (callsResult.data ?? {}) as { answered_calls?: unknown };
+  return {
+    ...dashboard,
+    metrics: {
+      ...dashboard.metrics,
+      answered_calls: Number(calls.answered_calls ?? 0),
+    },
+  };
 }
 
 export function formatSeconds(value: number | null | undefined): string {

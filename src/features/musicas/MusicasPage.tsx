@@ -78,7 +78,8 @@ import {
   type OrphanedMusicTrack,
   type Playlist,
 } from "./queries";
-import { PaginationFooter, StatCard, ErrorState, RetryButton } from "@/components/shared";
+import { PaginationFooter, PeriodFilter, StatCard, ErrorState, RetryButton } from "@/components/shared";
+import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
 import { useDebounce } from "@/hooks/useDebounce";
 import {
   OperatorAvatar,
@@ -448,10 +449,16 @@ export function MusicasPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [platformFilter, setPlatformFilter] = useState("all");
-  const [dateFilter, setDateFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState<PeriodPreset>("7d");
+  const [customFrom, setCustomFrom] = useState(todayInput());
+  const [customTo, setCustomTo] = useState(todayInput());
   const [operatorRequestFilter, setOperatorRequestFilter] = useState<string | null>(null);
   const debouncedSearch = useDebounce(search, 350);
   const debouncedLibrarySearch = useDebounce(librarySearch, 350);
+  const requestPeriodRange = useMemo(
+    () => buildPeriodRange(dateFilter, customFrom, customTo),
+    [dateFilter, customFrom, customTo],
+  );
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [selectedOperatorId, setSelectedOperatorId] = useState<string | null>(null);
@@ -473,7 +480,7 @@ export function MusicasPage() {
 
   useEffect(() => {
     setRequestsPage(1);
-  }, [debouncedSearch, statusFilter, typeFilter, platformFilter, dateFilter, operatorRequestFilter]);
+  }, [debouncedSearch, statusFilter, typeFilter, platformFilter, dateFilter, customFrom, customTo, operatorRequestFilter]);
 
   useEffect(() => {
     setLibraryPage(1);
@@ -489,6 +496,8 @@ export function MusicasPage() {
       typeFilter,
       platformFilter,
       dateFilter,
+      requestPeriodRange.startAt,
+      requestPeriodRange.endAt,
       operatorRequestFilter,
     ],
     queryFn: () =>
@@ -500,7 +509,8 @@ export function MusicasPage() {
         status: statusFilter,
         type: typeFilter,
         platform: platformFilter,
-        date: dateFilter as "all" | "today" | "7d" | "30d",
+        startAt: requestPeriodRange.startAt,
+        endAt: requestPeriodRange.endAt,
     }),
     staleTime: 30_000,
     placeholderData: keepPreviousData,
@@ -560,14 +570,14 @@ export function MusicasPage() {
     statusFilter !== "all" ||
     typeFilter !== "all" ||
     platformFilter !== "all" ||
-    dateFilter !== "all" ||
+    dateFilter !== "7d" ||
     Boolean(operatorRequestFilter);
   const clearRequestFilters = () => {
     setSearch("");
     setStatusFilter("all");
     setTypeFilter("all");
     setPlatformFilter("all");
-    setDateFilter("all");
+    setDateFilter("7d");
     setOperatorRequestFilter(null);
   };
 
@@ -883,15 +893,15 @@ export function MusicasPage() {
 
           <span className="mx-1.5 h-5 w-px bg-border" />
 
-          <FilterChip active={dateFilter === "today"} onClick={() => toggle(dateFilter, "today", setDateFilter)}>
-            Hoje
-          </FilterChip>
-          <FilterChip active={dateFilter === "7d"} onClick={() => toggle(dateFilter, "7d", setDateFilter)}>
-            Últimos 7 dias
-          </FilterChip>
-          <FilterChip active={dateFilter === "30d"} onClick={() => toggle(dateFilter, "30d", setDateFilter)}>
-            Últimos 30 dias
-          </FilterChip>
+          <PeriodFilter
+            value={dateFilter}
+            customFrom={customFrom}
+            customTo={customTo}
+            onValueChange={setDateFilter}
+            onCustomFromChange={setCustomFrom}
+            onCustomToChange={setCustomTo}
+            className="min-w-48"
+          />
         </div>
       </div>
 
@@ -1038,7 +1048,7 @@ export function MusicasPage() {
 
       {/* Modal de confirmação (aprovar / rejeitar) */}
       <Sheet open={Boolean(selectedOperatorId)} onOpenChange={(o) => !o && setSelectedOperatorId(null)}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-4xl">
+        <SheetContent className="w-[calc(100vw-1rem)] overflow-x-hidden overflow-y-auto p-4 sm:max-w-6xl sm:p-6">
           {selectedOperator && (
             <OperatorLibraryPanel
               operator={selectedOperator}
@@ -1639,6 +1649,7 @@ function OperatorLibraryPanel({
   onRemoveTrack: (playlist: MusicLibraryPlaylist, track: MusicTrack) => void;
 }) {
   const totals = operatorTotals(operator);
+  const principalRequestHistory = operator.request_history.filter((item) => item.type === "principal");
   const selectedPlaylist =
     operator.playlists.find((playlist) => playlist.id === selectedPlaylistId) ?? operator.playlists[0] ?? null;
 
@@ -1664,8 +1675,8 @@ function OperatorLibraryPanel({
         <MiniMetric label="Músicas" value={totals.tracks} />
       </div>
 
-      <div className="mt-5 grid gap-4 lg:grid-cols-[280px_1fr]">
-        <div className="space-y-3">
+      <div className="mt-5 grid min-w-0 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="min-w-0 space-y-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Library className="h-4 w-4" />
             Playlists
@@ -1705,9 +1716,9 @@ function OperatorLibraryPanel({
           <div className="pt-2">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <History className="h-4 w-4" />
-              Histórico
+              Solicitações da Principal
             </div>
-            <RequestHistoryList history={operator.request_history} />
+            <RequestHistoryList history={principalRequestHistory} />
           </div>
         </div>
 
@@ -1721,7 +1732,7 @@ function OperatorLibraryPanel({
             onRemoveTrack={(track) => onRemoveTrack(selectedPlaylist, track)}
           />
         ) : (
-          <Card className="flex min-h-[320px] items-center justify-center p-6 text-sm text-muted-foreground">
+          <Card className="flex min-h-[240px] min-w-0 items-center justify-center p-6 text-sm text-muted-foreground">
             Selecione uma playlist para ver as músicas.
           </Card>
         )}
@@ -1739,7 +1750,7 @@ function ImportStatusText({ playlist }: { playlist: MusicLibraryPlaylist }) {
 
 function RequestHistoryList({ history }: { history: OperatorRequestHistory[] }) {
   if (history.length === 0) {
-    return <Card className="p-3 text-xs text-muted-foreground">Sem histórico de solicitações.</Card>;
+    return <Card className="p-3 text-xs text-muted-foreground">Nenhuma solicitação da Principal.</Card>;
   }
   return (
     <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
@@ -1785,7 +1796,7 @@ function PlaylistLibraryDetail({
   const error = playlistLibraryError(playlist);
 
   return (
-    <Card className="p-4 shadow-sm">
+    <Card className="min-w-0 overflow-hidden p-4 shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border pb-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -1856,14 +1867,14 @@ function PlaylistLibraryDetail({
           </Card>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
-            <div className="max-h-[520px] overflow-auto">
-              <table className="w-full min-w-[680px] text-sm">
+            <div className="max-h-[min(520px,55vh)] overflow-y-auto">
+              <table className="w-full table-fixed text-sm">
                 <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
                   <tr>
-                    <th className="w-16 px-3 py-2 text-left">#</th>
+                    <th className="w-12 px-3 py-2 text-left">#</th>
                     <th className="px-3 py-2 text-left">Música</th>
-                    <th className="w-28 px-3 py-2 text-left">Duração</th>
-                    <th className="w-28 px-3 py-2 text-left">Status</th>
+                    <th className="hidden w-24 px-3 py-2 text-left sm:table-cell">Duração</th>
+                    <th className="hidden w-24 px-3 py-2 text-left xl:table-cell">Status</th>
                     <th className="w-28 px-3 py-2 text-right">Ações</th>
                   </tr>
                 </thead>
@@ -1871,12 +1882,15 @@ function PlaylistLibraryDetail({
                   {playlist.tracks.map((track) => (
                     <tr key={track.playlist_track_id} className="border-t border-border">
                       <td className="px-3 py-2 text-muted-foreground">{track.position}</td>
-                      <td className="px-3 py-2">
-                        <p className="font-medium">{track.title}</p>
-                        <p className="text-xs text-muted-foreground">{track.artist ?? "artista não informado"}</p>
+                      <td className="min-w-0 px-3 py-2">
+                        <p className="line-clamp-2 break-words font-medium" title={track.title}>{track.title}</p>
+                        <p className="truncate text-xs text-muted-foreground" title={track.artist ?? undefined}>
+                          {track.artist ?? "artista não informado"}
+                          <span className="sm:hidden"> · {durationText(track.duration_ms)}</span>
+                        </p>
                       </td>
-                      <td className="px-3 py-2 text-muted-foreground">{durationText(track.duration_ms)}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{trackStatusLabel(track.status)}</td>
+                      <td className="hidden px-3 py-2 text-muted-foreground sm:table-cell">{durationText(track.duration_ms)}</td>
+                      <td className="hidden px-3 py-2 text-muted-foreground xl:table-cell">{trackStatusLabel(track.status)}</td>
                       <td className="px-3 py-2">
                         <div className="flex justify-end gap-1">
                           {track.source_url && (

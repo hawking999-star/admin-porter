@@ -84,7 +84,8 @@ export type PlaylistFilters = PageParams & {
   status?: "all" | string;
   type?: "all" | string;
   platform?: "all" | string;
-  date?: "all" | "today" | "7d" | "30d";
+  startAt?: string;
+  endAt?: string;
 };
 
 export type PlaylistStats = {
@@ -130,13 +131,8 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
   if (filters.type && filters.type !== "all") query = query.eq("type", filters.type);
   if (filters.platform === "spotify") query = query.ilike("source_url", "%spotify%");
   if (filters.platform === "youtube") query = query.or("source_url.ilike.%youtube%,source_url.ilike.%youtu.be%");
-  if (filters.date && filters.date !== "all") {
-    const since = new Date();
-    since.setHours(0, 0, 0, 0);
-    if (filters.date === "7d") since.setDate(since.getDate() - 7);
-    if (filters.date === "30d") since.setDate(since.getDate() - 30);
-    query = query.gte("submitted_at", since.toISOString());
-  }
+  if (filters.startAt) query = query.gte("submitted_at", filters.startAt);
+  if (filters.endAt) query = query.lte("submitted_at", filters.endAt);
   if (term) {
     const clean = term.replace(/[%,()]/g, "");
     if (clean) {
