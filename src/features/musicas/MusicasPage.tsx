@@ -67,6 +67,7 @@ import {
   removePlaylistTrack,
   renameMusicPlaylist,
   queueOrphanedMusicDeletions,
+  reimportPlaylistRequest,
   retryPlaylistImport,
   reviewPlaylist,
   playlistTypeLabel,
@@ -470,6 +471,7 @@ export function MusicasPage() {
     track: MusicTrack;
   } | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<MusicLibraryPlaylist | null>(null);
+  const [reimportRequestTarget, setReimportRequestTarget] = useState<OperatorRequestHistory | null>(null);
   const [confirmState, setConfirmState] = useState<{ id: string; action: "approve" | "reject" } | null>(
     null,
   );
@@ -629,6 +631,20 @@ export function MusicasPage() {
     onError: (err: unknown) => {
       const msg = err instanceof Error ? err.message : "Erro ao reenfileirar importação";
       toast.error("Não foi possível tentar novamente", { description: msg });
+      invalidateMusic();
+    },
+  });
+
+  const reimportRequestMutation = useMutation({
+    mutationFn: (id: string) => reimportPlaylistRequest(id),
+    onSuccess: () => {
+      invalidateMusic();
+      setReimportRequestTarget(null);
+      toast.success("Envio reenfileirado para importação");
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Erro ao reimportar envio";
+      toast.error("Não foi possível reimportar este envio", { description: msg });
       invalidateMusic();
     },
   });
@@ -994,7 +1010,8 @@ export function MusicasPage() {
             renameMutation.isPending ||
             removeTrackMutation.isPending ||
             archiveMutation.isPending ||
-            retryMutation.isPending
+            retryMutation.isPending ||
+            reimportRequestMutation.isPending
           }
           onSearchChange={setLibrarySearch}
           onPageChange={setLibraryPage}
@@ -1057,7 +1074,8 @@ export function MusicasPage() {
                 renameMutation.isPending ||
                 removeTrackMutation.isPending ||
                 archiveMutation.isPending ||
-                retryMutation.isPending
+                retryMutation.isPending ||
+                reimportRequestMutation.isPending
               }
               onSelectPlaylist={setSelectedPlaylistId}
               onRename={(playlist) => {
@@ -1065,12 +1083,41 @@ export function MusicasPage() {
                 setRenameName(playlist.name);
               }}
               onRetry={(playlist) => retryMutation.mutate({ id: playlist.id })}
+              onReimportRequest={setReimportRequestTarget}
               onArchive={setArchiveTarget}
               onRemoveTrack={(playlist, track) => setRemoveTrackTarget({ playlist, track })}
             />
           )}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(reimportRequestTarget)} onOpenChange={(open) => !open && setReimportRequestTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reupar este envio?</DialogTitle>
+            <DialogDescription>
+              A Playlist principal ativa será importada novamente a partir deste link histórico. Os demais envios e suas músicas preservadas continuarão salvos.
+            </DialogDescription>
+          </DialogHeader>
+          {reimportRequestTarget?.source_url && (
+            <p className="break-all rounded-md bg-muted p-3 text-xs text-muted-foreground">
+              {reimportRequestTarget.source_url}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReimportRequestTarget(null)} disabled={reimportRequestMutation.isPending}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => reimportRequestTarget && reimportRequestMutation.mutate(reimportRequestTarget.id)}
+              disabled={!reimportRequestTarget || reimportRequestMutation.isPending}
+            >
+              {reimportRequestMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Confirmar reupload
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(renameTarget)} onOpenChange={(o) => !o && setRenameTarget(null)}>
         <DialogContent>
@@ -1636,6 +1683,7 @@ function OperatorLibraryPanel({
   onSelectPlaylist,
   onRename,
   onRetry,
+  onReimportRequest,
   onArchive,
   onRemoveTrack,
 }: {
@@ -1645,13 +1693,21 @@ function OperatorLibraryPanel({
   onSelectPlaylist: (id: string) => void;
   onRename: (playlist: MusicLibraryPlaylist) => void;
   onRetry: (playlist: MusicLibraryPlaylist) => void;
+  onReimportRequest: (request: OperatorRequestHistory) => void;
   onArchive: (playlist: MusicLibraryPlaylist) => void;
   onRemoveTrack: (playlist: MusicLibraryPlaylist, track: MusicTrack) => void;
 }) {
   const totals = operatorTotals(operator);
   const principalRequestHistory = operator.request_history.filter((item) => item.type === "principal");
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const selectedPlaylist =
     operator.playlists.find((playlist) => playlist.id === selectedPlaylistId) ?? operator.playlists[0] ?? null;
+  const selectedRequest =
+    operator.request_history.find((request) => request.id === selectedRequestId) ?? null;
+
+  useEffect(() => {
+    setSelectedRequestId(null);
+  }, [operator.id]);
 
   return (
     <div className="flex h-full flex-col">
@@ -1689,7 +1745,10 @@ function OperatorLibraryPanel({
                 <button
                   key={playlist.id}
                   type="button"
-                  onClick={() => onSelectPlaylist(playlist.id)}
+                  onClick={() => {
+                    setSelectedRequestId(null);
+                    onSelectPlaylist(playlist.id);
+                  }}
                   className={cn(
                     "w-full rounded-lg border p-3 text-left transition-colors",
                     selectedPlaylist?.id === playlist.id
@@ -1718,11 +1777,23 @@ function OperatorLibraryPanel({
               <History className="h-4 w-4" />
               Solicitações da Principal
             </div>
-            <RequestHistoryList history={principalRequestHistory} />
+            <RequestHistoryList
+              history={principalRequestHistory}
+              selectedRequestId={selectedRequestId}
+              busy={busy}
+              onSelect={setSelectedRequestId}
+              onReimport={onReimportRequest}
+            />
           </div>
         </div>
 
-        {selectedPlaylist ? (
+        {selectedRequest ? (
+          <RequestHistoryDetail
+            request={selectedRequest}
+            busy={busy}
+            onReimport={() => onReimportRequest(selectedRequest)}
+          />
+        ) : selectedPlaylist ? (
           <PlaylistLibraryDetail
             playlist={selectedPlaylist}
             busy={busy}
@@ -1748,29 +1819,179 @@ function ImportStatusText({ playlist }: { playlist: MusicLibraryPlaylist }) {
   return <span>Importação não iniciada</span>;
 }
 
-function RequestHistoryList({ history }: { history: OperatorRequestHistory[] }) {
+function RequestHistoryList({
+  history,
+  selectedRequestId,
+  busy,
+  onSelect,
+  onReimport,
+}: {
+  history: OperatorRequestHistory[];
+  selectedRequestId: string | null;
+  busy: boolean;
+  onSelect: (id: string) => void;
+  onReimport: (request: OperatorRequestHistory) => void;
+}) {
   if (history.length === 0) {
     return <Card className="p-3 text-xs text-muted-foreground">Nenhuma solicitação da Principal.</Card>;
   }
   return (
     <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-      {history.slice(0, 10).map((item) => (
-        <div key={item.id} className="rounded-lg border border-border bg-muted/20 p-2.5 text-xs">
-          <div className="flex items-center justify-between gap-2">
-            <span className="truncate font-medium">{item.name}</span>
-            <StatusPill status={item.approval_status} />
-          </div>
-          <p className="mt-1 text-muted-foreground">
-            {playlistTypeLabel(item.type)} · {relOrDate(item.submitted_at)}
-          </p>
-          {(item.rejection_reason || item.error_message) && (
-            <p className="mt-1 line-clamp-2 text-destructive">
-              {item.rejection_reason || item.error_message}
-            </p>
+      {history.map((item) => (
+        <div
+          key={item.id}
+          className={cn(
+            "rounded-lg border p-2.5 text-xs transition-colors",
+            selectedRequestId === item.id ? "border-primary bg-primary/5" : "border-border bg-muted/20",
           )}
+        >
+          <button type="button" className="w-full text-left" onClick={() => onSelect(item.id)}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-medium">{item.name}</span>
+              <StatusPill status={item.approval_status} />
+            </div>
+            <p className="mt-1 text-muted-foreground">
+              {item.track_count} músicas · {relOrDate(item.submitted_at)}
+            </p>
+            {(item.rejection_reason || item.error_message) && (
+              <p className="mt-1 line-clamp-2 text-destructive">
+                {item.rejection_reason || item.error_message}
+              </p>
+            )}
+          </button>
+          <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/70 pt-2">
+            <button
+              type="button"
+              className="min-w-0 truncate text-left text-primary hover:underline"
+              onClick={() => onSelect(item.id)}
+            >
+              Ver músicas deste envio
+            </button>
+            {item.approval_status === "approved" && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 shrink-0 px-2 text-xs"
+                disabled={busy}
+                onClick={() => onReimport(item)}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Reupar
+              </Button>
+            )}
+          </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function RequestHistoryDetail({
+  request,
+  busy,
+  onReimport,
+}: {
+  request: OperatorRequestHistory;
+  busy: boolean;
+  onReimport: () => void;
+}) {
+  return (
+    <Card className="min-w-0 overflow-hidden p-4 shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-border pb-4 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-display text-lg font-semibold">Envio da Playlist principal</h3>
+            <StatusPill status={request.approval_status} />
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Enviado {relOrDate(request.submitted_at)} · {request.track_count} músicas preservadas
+          </p>
+          {request.source_url && (
+            <p className="mt-2 break-all text-sm text-muted-foreground">{request.source_url}</p>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {request.source_url && (
+            <>
+              <IconAction title="Abrir link do envio" onClick={() => window.open(request.source_url!, "_blank", "noopener,noreferrer")}>
+                <ExternalLink className="h-4 w-4" />
+              </IconAction>
+              <IconAction title="Copiar link do envio" onClick={() => copy(request.source_url!)}>
+                <Copy className="h-4 w-4" />
+              </IconAction>
+            </>
+          )}
+          {request.approval_status === "approved" && (
+            <Button size="sm" variant="outline" onClick={onReimport} disabled={busy}>
+              <RefreshCw className="h-4 w-4" />
+              Reupar este envio
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {(request.rejection_reason || request.error_message) && (
+        <div className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive ring-1 ring-destructive/20">
+          {request.rejection_reason || request.error_message}
+        </div>
+      )}
+
+      <div className="mt-4">
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+          <ListOrdered className="h-4 w-4" />
+          Músicas preservadas neste envio
+        </div>
+        {request.tracks.length === 0 ? (
+          <Card className="p-6 text-center text-sm text-muted-foreground">
+            Nenhuma música foi preservada para este envio.
+          </Card>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-border">
+            <div className="max-h-[min(520px,55vh)] overflow-y-auto">
+              <table className="w-full table-fixed text-sm">
+                <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
+                  <tr>
+                    <th className="w-12 px-3 py-2 text-left">#</th>
+                    <th className="px-3 py-2 text-left">Música</th>
+                    <th className="hidden w-24 px-3 py-2 text-left sm:table-cell">Duração</th>
+                    <th className="w-20 px-3 py-2 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {request.tracks.map((track) => (
+                    <tr key={track.playlist_track_id} className="border-t border-border">
+                      <td className="px-3 py-2 text-muted-foreground">{track.position}</td>
+                      <td className="min-w-0 px-3 py-2">
+                        <p className="line-clamp-2 break-words font-medium" title={track.title}>{track.title}</p>
+                        <p className="truncate text-xs text-muted-foreground" title={track.artist ?? undefined}>
+                          {track.artist ?? "artista não informado"}
+                        </p>
+                      </td>
+                      <td className="hidden px-3 py-2 text-muted-foreground sm:table-cell">{durationText(track.duration_ms)}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex justify-end gap-1">
+                          {track.source_url && (
+                            <IconAction title="Abrir origem" onClick={() => window.open(track.source_url!, "_blank", "noopener,noreferrer")}>
+                              <ExternalLink className="h-4 w-4" />
+                            </IconAction>
+                          )}
+                          {track.public_url && (
+                            <IconAction title="Copiar URL" onClick={() => copy(track.public_url!)}>
+                              <Copy className="h-4 w-4" />
+                            </IconAction>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 
