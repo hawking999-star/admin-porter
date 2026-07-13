@@ -378,6 +378,7 @@ export type MusicLibraryPlaylist = {
 
 export type OperatorRequestHistory = {
   id: string;
+  playlist_id: string;
   name: string;
   type: PlaylistType;
   approval_status: PlaylistApproval;
@@ -387,6 +388,9 @@ export type OperatorRequestHistory = {
   reviewed_at: string | null;
   rejection_reason: string | null;
   error_message: string | null;
+  track_count: number;
+  latest_job: Record<string, unknown> | null;
+  tracks: MusicTrack[];
 };
 
 export type OperatorMusicLibrary = {
@@ -455,6 +459,13 @@ export async function removePlaylistTrack(playlistTrackId: string): Promise<void
 export async function archiveSecondaryPlaylist(id: string): Promise<void> {
   const { error } = await supabase.rpc("admin_archive_secondary_playlist", {
     p_playlist: id,
+  });
+  if (error) throw error;
+}
+
+export async function reimportPlaylistRequest(id: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_reimport_playlist_request", {
+    p_request: id,
   });
   if (error) throw error;
 }
