@@ -68,6 +68,17 @@ A confirmacao e idempotente por `(note_id, operator_id)`. Depois de `true`, cham
 `reloadCurrentReleaseNote()` e espere `null` para esse Operador. Outro Operador que ainda
 nao confirmou continua recebendo a mesma nota.
 
+## Modal atual do App
+
+O modal de Nota de atualizacao nao possui checkbox. Portanto, o botao `Entendi` e a
+confirmacao final do operador e deve chamar `p_acknowledge: true`. Nao use `false` nesse
+botao: `false` serve somente para telemetria de leitura e a RPC continuara devolvendo a
+mesma nota na proxima carga.
+
+Se o App quiser registrar que a nota foi aberta antes do clique, pode chamar `false` uma
+vez ao exibi-la. Isso e opcional e nunca deve fechar a nota nem substituir a chamada
+`true` do botao `Entendi`.
+
 ## Realtime
 
 Mantenha a assinatura de `public.app_release_notes`, mas use qualquer evento apenas como
