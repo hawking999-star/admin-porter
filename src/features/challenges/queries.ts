@@ -101,6 +101,68 @@ export type ChallengeStats = {
   applications: number;
 };
 
+export type ChallengeRules = {
+  min_interval_seconds: number;
+  max_interval_seconds: number;
+  response_seconds: number;
+  abandon_block_seconds: number;
+  error_block_seconds: number[];
+};
+
+export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
+  min_interval_seconds: 180,
+  max_interval_seconds: 300,
+  response_seconds: 60,
+  abandon_block_seconds: 300,
+  error_block_seconds: [300, 900, 3600],
+};
+
+export async function getChallengeRules(unitId: string | null): Promise<ChallengeRules> {
+  let query = supabase
+    .from("system_settings")
+    .select("value")
+    .eq("key", "challenge_rules")
+    .eq("active", true)
+    .eq("scope_type", unitId ? "unit" : "global")
+    .order("revision", { ascending: false })
+    .limit(1);
+  query = unitId ? query.eq("scope_id", unitId) : query.is("scope_id", null);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return { ...DEFAULT_CHALLENGE_RULES, ...((data?.value as Partial<ChallengeRules> | null) ?? {}) };
+}
+
+export async function saveChallengeRules(unitId: string | null, rules: ChallengeRules): Promise<void> {
+  const { error } = await supabase.rpc("admin_save_challenge_rules", { p_unit_id: unitId, p_rules: rules });
+  if (error) throw error;
+}
+
+export type ChallengeInput = {
+  id?: string;
+  unit_id: string | null;
+  title: string;
+  prompt: string;
+  alternatives: [string, string, string, string];
+  correct: string;
+  duration_seconds: number;
+  status: string;
+};
+
+export async function upsertChallenge(input: ChallengeInput): Promise<string> {
+  const payload = {
+    ...input,
+    answer_definition: { alternatives: input.alternatives, correct: input.correct },
+  };
+  const { data, error } = await supabase.rpc("admin_upsert_challenge", { p_challenge: payload });
+  if (error) throw error;
+  return data as string;
+}
+
+export async function setChallengeStatus(challengeId: string, status: "draft" | "active" | "inactive" | "archived"): Promise<void> {
+  const { error } = await supabase.rpc("admin_set_challenge_status", { p_challenge_id: challengeId, p_status: status });
+  if (error) throw error;
+}
+
 function pageRange(page: number, pageSize: number) {
   const from = Math.max(0, page - 1) * pageSize;
   return { from, to: from + pageSize - 1 };
