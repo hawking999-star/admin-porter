@@ -44,11 +44,131 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto"><DialogHeader><DialogTitle>Novo desafio</DialogTitle><DialogDescription>Crie manualmente ou importe um CSV. O PDF permanece fora desta primeira entrega.</DialogDescription></DialogHeader><div className="space-y-3"><Select value={unitId} onValueChange={setUnitId}><SelectTrigger><SelectValue placeholder="Condomínio" /></SelectTrigger><SelectContent>{units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2"><Button size="sm" variant="outline" onClick={downloadCsvTemplate}><Download className="h-4 w-4" /> Modelo CSV</Button><input ref={inputRef} className="hidden" type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />{file ? <span className="inline-flex items-center gap-1 text-sm"><FileUp className="h-4 w-4" />{file.name}<button onClick={() => setFile(null)}><X className="h-4 w-4" /></button></span> : <Button size="sm" variant="outline" onClick={() => inputRef.current?.click()}><FileSpreadsheet className="h-4 w-4" /> Importar CSV</Button>}</div>{!file && <div className="space-y-2 rounded-lg border p-3"><Input placeholder="Título" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /><Textarea placeholder="Enunciado" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />{form.alternatives.map((value, index) => <Input key={index} placeholder={`Alternativa ${"ABCD"[index]}`} value={value} onChange={(event) => { const alternatives = [...form.alternatives] as ChallengeInput["alternatives"]; alternatives[index] = event.target.value; setForm({ ...form, alternatives }); }} />)}<div className="grid grid-cols-2 gap-2"><Input maxLength={1} placeholder="Correta (A-D)" value={form.correct} onChange={(event) => setForm({ ...form, correct: event.target.value.toUpperCase() })} /><Input type="number" min="15" value={form.duration_seconds} onChange={(event) => setForm({ ...form, duration_seconds: Number(event.target.value) })} /></div></div>}</div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button><Button disabled={saving} onClick={submit}><Upload className="h-4 w-4" /> Salvar</Button></DialogFooter></DialogContent></Dialog>;
 }
 
+function timeLabel(totalSeconds: number) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return "0 segundos";
+  if (totalSeconds < 60) return `${totalSeconds} segundo(s)`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const secondsLeft = totalSeconds % 60;
+  return secondsLeft ? `${minutes} min e ${secondsLeft}s` : `${minutes} minuto(s)`;
+}
+
+function RuleField({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="space-y-1.5">
+      <span className="block text-sm font-semibold text-foreground">{label}</span>
+      <span className="block min-h-8 text-xs leading-relaxed text-muted-foreground">{description}</span>
+      <div className="relative">
+        <Input
+          type="number"
+          min="1"
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className="pr-20"
+        />
+        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+          segundos
+        </span>
+      </div>
+      <span className="block text-xs font-medium text-primary">Equivale a {timeLabel(value)}</span>
+    </label>
+  );
+}
+
 function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
-  const [scope, setScope] = useState("global"); const unitId = scope === "global" ? null : scope; const rules = useQuery({ queryKey: ["challenge-rules", unitId], queryFn: () => getChallengeRules(unitId), enabled: open }); const [draft, setDraft] = useState<ChallengeRules | null>(null);
-  const value = draft ?? rules.data ?? DEFAULT_CHALLENGE_RULES; const set = (key: keyof ChallengeRules, raw: string) => setDraft({ ...value, [key]: key === "error_block_seconds" ? raw.split(",").map(Number).filter(Boolean) : Number(raw) });
+  const [scope, setScope] = useState("global");
+  const unitId = scope === "global" ? null : scope;
+  const rules = useQuery({ queryKey: ["challenge-rules", unitId], queryFn: () => getChallengeRules(unitId), enabled: open });
+  const [draft, setDraft] = useState<ChallengeRules | null>(null);
+  const value = draft ?? rules.data ?? DEFAULT_CHALLENGE_RULES;
+  const update = (key: Exclude<keyof ChallengeRules, "error_block_seconds">, next: number) => setDraft({ ...value, [key]: next });
+  const updateErrorBlock = (index: number, next: number) => {
+    const errorBlocks = [...value.error_block_seconds];
+    errorBlocks[index] = next;
+    setDraft({ ...value, error_block_seconds: errorBlocks });
+  };
   async function save() { try { await saveChallengeRules(unitId, value); toast.success("Regras salvas."); onSaved(); onOpenChange(false); } catch (error) { toast.error(error instanceof Error ? error.message : "Não foi possível salvar regras."); } }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>Regras de desafios</DialogTitle><DialogDescription>Padrão global, com sobrescrita opcional por condomínio. Todos os tempos são decididos pelo servidor.</DialogDescription></DialogHeader><div className="space-y-3"><Select value={scope} onValueChange={(next) => { setScope(next); setDraft(null); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="global">Padrão global</SelectItem>{units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}</SelectContent></Select><div className="grid grid-cols-2 gap-2"><Input type="number" value={value.min_interval_seconds} onChange={(e) => set("min_interval_seconds", e.target.value)} placeholder="Mínimo entre desafios" /><Input type="number" value={value.max_interval_seconds} onChange={(e) => set("max_interval_seconds", e.target.value)} placeholder="Máximo entre desafios" /><Input type="number" value={value.response_seconds} onChange={(e) => set("response_seconds", e.target.value)} placeholder="Prazo de resposta" /><Input type="number" value={value.abandon_block_seconds} onChange={(e) => set("abandon_block_seconds", e.target.value)} placeholder="Bloqueio por abandono" /></div><Input value={value.error_block_seconds.join(",")} onChange={(e) => set("error_block_seconds", e.target.value)} placeholder="Faixas por erro em segundos: 300,900,3600" /></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button><Button onClick={save}>Salvar regras</Button></DialogFooter></DialogContent></Dialog>;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Regras de desafios</DialogTitle>
+          <DialogDescription>
+            Defina quando os desafios aparecem e quanto dura cada punição. O servidor controla todos os tempos, mesmo se o App for fechado.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          <div className="space-y-1.5">
+            <label className="text-sm font-semibold">Onde estas regras serão aplicadas?</label>
+            <Select value={scope} onValueChange={(next) => { setScope(next); setDraft(null); }}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global">Padrão global — usado por todos os condomínios sem regra própria</SelectItem>
+                {units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Ao escolher um condomínio, os valores salvos substituem o padrão global somente para os Operadores daquela unidade.
+            </p>
+          </div>
+
+          <section className="space-y-3 rounded-xl border border-border p-4">
+            <div>
+              <h3 className="text-sm font-semibold">Janela para o próximo desafio</h3>
+              <p className="text-xs text-muted-foreground">
+                O servidor sorteia um momento entre o mínimo e o máximo. Exemplo: 180–300 segundos significa que o desafio aparecerá aleatoriamente entre 3 e 5 minutos.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <RuleField label="Tempo mínimo" description="O desafio nunca aparece antes deste tempo após o início do ciclo." value={value.min_interval_seconds} onChange={(next) => update("min_interval_seconds", next)} />
+              <RuleField label="Tempo máximo" description="Limite para o servidor apresentar o desafio dentro da janela sorteada." value={value.max_interval_seconds} onChange={(next) => update("max_interval_seconds", next)} />
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              Com os valores atuais, cada desafio aparece entre <strong>{timeLabel(value.min_interval_seconds)}</strong> e <strong>{timeLabel(value.max_interval_seconds)}</strong>.
+            </div>
+          </section>
+
+          <section className="grid gap-4 rounded-xl border border-border p-4 sm:grid-cols-2">
+            <RuleField label="Tempo para responder" description="Contagem iniciada quando o desafio aparece. Se acabar sem resposta, o Operador entra na tela de ociosidade." value={value.response_seconds} onChange={(next) => update("response_seconds", next)} />
+            <RuleField label="Punição por fechar o App" description="Bloqueio aplicado no próximo login quando o App é fechado durante um desafio aberto." value={value.abandon_block_seconds} onChange={(next) => update("abandon_block_seconds", next)} />
+          </section>
+
+          <section className="space-y-3 rounded-xl border border-border p-4">
+            <div>
+              <h3 className="text-sm font-semibold">Bloqueio progressivo por resposta errada</h3>
+              <p className="text-xs text-muted-foreground">
+                A contagem reinicia a cada turno. Depois do 3º erro, continua sendo aplicado o tempo configurado para o 3º erro.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              {["1º erro", "2º erro", "3º erro ou mais"].map((label, index) => (
+                <RuleField key={label} label={label} description={`Bloqueio após o ${label.toLowerCase()}.`} value={value.error_block_seconds[index] ?? 0} onChange={(next) => updateErrorBlock(index, next)} />
+              ))}
+            </div>
+          </section>
+
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-100">
+            <strong>Durante ligações:</strong> nenhum desafio novo aparece. Se já houver um desafio aberto, ele é pausado. Após o fim da ligação, o servidor espera 90 segundos antes de reagendar.
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={save}>Salvar regras</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function ChallengesPage() {
