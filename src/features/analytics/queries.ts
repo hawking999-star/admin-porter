@@ -1,5 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { buildPeriodRange, type PeriodPreset } from "@/lib/period";
+import { effectiveStatisticsStart, fetchStatisticsResetInfo } from "@/lib/statistics";
+import { unitLabel } from "@/lib/unit-label";
 
 export { buildPeriodRange, type PeriodPreset };
 export type ShiftFilter = "all" | "day" | "night" | "other";
@@ -14,7 +16,15 @@ export type AnalyticsFilters = {
   rankingPageSize: number;
 };
 
-export type FilterOption = { id: string; name?: string; display_name?: string; unit_id?: string };
+export type FilterOption = {
+  id: string;
+  name?: string;
+  display_name?: string;
+  unit_id?: string;
+  city?: string | null;
+  state?: string | null;
+  code?: string | null;
+};
 export type ShiftOption = { value: ShiftFilter; label: string };
 
 export type AnalyticsMetrics = {
@@ -44,6 +54,9 @@ export type TimeseriesPoint = {
 export type CondominiumAnalyticsRow = {
   unit_id: string;
   unit_name: string;
+  unit_city?: string | null;
+  unit_state?: string | null;
+  unit_code?: string | null;
   active_operators: number;
   sessions: number;
   online_seconds: number;
@@ -57,16 +70,16 @@ export type CondominiumAnalyticsRow = {
 export type OperatorRankingRow = {
   operator_id: string;
   operator_name: string;
+  unit_id: string;
   unit_name: string | null;
-  sessions: number;
-  online_seconds: number;
-  idle_seconds: number;
-  call_seconds: number;
+  unit_city: string | null;
+  unit_state: string | null;
+  unit_code: string | null;
   challenges_received: number;
   challenges_answered: number;
-  challenge_response_rate: number | null;
+  challenges_correct: number;
   challenge_accuracy_rate: number | null;
-  last_event_at: string | null;
+  last_challenge_at: string | null;
 };
 
 export type StatusBreakdownRow = {
@@ -100,11 +113,14 @@ export type AnalyticsDashboard = {
   };
   status_breakdown: StatusBreakdownRow[];
   sources: AnalyticsSource[];
+  statistics_reset_at?: string | null;
 };
 
 export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promise<AnalyticsDashboard> {
+  const resetInfo = await fetchStatisticsResetInfo();
+  const effectiveStartAt = effectiveStatisticsStart(filters.startAt, filters.endAt, resetInfo.reset_at);
   const request = {
-    start_at: filters.startAt,
+    start_at: effectiveStartAt,
     end_at: filters.endAt,
     unit_id: filters.unitId === "all" ? null : filters.unitId,
     operator_id: filters.operatorId === "all" ? null : filters.operatorId,
@@ -112,18 +128,53 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
     ranking_page: filters.rankingPage,
     ranking_page_size: filters.rankingPageSize,
   };
-  const [dashboardResult, callsResult] = await Promise.all([
+  const [dashboardResult, callsResult, leaderboardResult, unitsResult] = await Promise.all([
     supabase.rpc("admin_analytics_dashboard", { p_request: request }),
     supabase.rpc("admin_analytics_answered_calls", { p_request: request }),
+    supabase.rpc("admin_challenge_leaderboard", { p_request: request }),
+    supabase.from("units").select("id, name, city, state, code").eq("active", true).order("name").limit(500),
   ]);
 
   if (dashboardResult.error) throw dashboardResult.error;
   if (callsResult.error) throw callsResult.error;
+  if (leaderboardResult.error) throw leaderboardResult.error;
+  if (unitsResult.error) throw unitsResult.error;
 
   const dashboard = dashboardResult.data as AnalyticsDashboard;
   const calls = (callsResult.data ?? {}) as { answered_calls?: unknown };
+  const leaderboard = (leaderboardResult.data ?? {}) as AnalyticsDashboard["ranking"];
+  const unitRows = (unitsResult.data ?? []) as Array<{
+    id: string;
+    name: string;
+    city: string | null;
+    state: string | null;
+    code: string | null;
+  }>;
+  const unitsById = new Map(unitRows.map((unit) => [unit.id, unit]));
+  const decoratedCondominiums = dashboard.condominiums.map((row) => {
+    const unit = unitsById.get(row.unit_id);
+    return {
+      ...row,
+      unit_name: unitLabel({
+        name: unit?.name ?? row.unit_name,
+        city: unit?.city,
+        state: unit?.state,
+        code: unit?.code,
+      }),
+      unit_city: unit?.city ?? null,
+      unit_state: unit?.state ?? null,
+      unit_code: unit?.code ?? null,
+    };
+  });
   return {
     ...dashboard,
+    statistics_reset_at: resetInfo.reset_at,
+    filter_options: {
+      ...dashboard.filter_options,
+      units: unitRows.map((unit) => ({ ...unit, name: unitLabel(unit) })),
+    },
+    condominiums: decoratedCondominiums,
+    ranking: leaderboard,
     metrics: {
       ...dashboard.metrics,
       answered_calls: Number(calls.answered_calls ?? 0),

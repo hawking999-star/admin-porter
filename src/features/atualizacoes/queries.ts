@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { unitLabel } from "@/lib/unit-label";
 
 export type ReleaseStatus = "draft" | "testing" | "approved" | "released" | "blocked" | "superseded";
 export type ReleaseNoteStatus = "draft" | "published";
@@ -673,7 +674,7 @@ const NOTICE_SELECT = `
   id, title, message, severity, status, starts_at, ends_at, is_active,
   audience_type, condominium_id, operator_id, shift, requires_ack,
   created_at, updated_at,
-  units(name),
+  units(name, city, state, code),
   operators(display_name),
   created_by_admin:admin_users!app_notices_created_by_fkey(display_name),
   updated_by_admin:admin_users!app_notices_updated_by_fkey(display_name),
@@ -693,7 +694,7 @@ function mapNotice(row: any): AppNotice {
     is_active: row.is_active,
     audience_type: row.audience_type,
     condominium_id: row.condominium_id ?? null,
-    condominium_name: row.units?.name ?? null,
+    condominium_name: row.units?.name ? unitLabel(row.units) : null,
     operator_id: row.operator_id ?? null,
     operator_name: row.operators?.display_name ?? null,
     shift: row.shift ?? null,
@@ -763,28 +764,30 @@ export async function listNoticeUnits(): Promise<NoticeAudienceOption[]> {
   if (error) throw error;
   return (data ?? []).map((unit: any) => ({
     id: unit.id,
-    label: [unit.name, unit.city, unit.state].filter(Boolean).join(" - "),
+    label: unitLabel(unit),
   }));
 }
 
 export async function listNoticeOperators(): Promise<NoticeAudienceOption[]> {
   const { data, error } = await supabase
     .from("operators")
-    .select("id, display_name, units(name)")
+    .select("id, display_name, units(name, city, state, code)")
     .eq("active", true)
     .order("display_name", { ascending: true })
     .limit(500);
   if (error) throw error;
   return (data ?? []).map((operator: any) => ({
     id: operator.id,
-    label: [operator.display_name, operator.units?.name].filter(Boolean).join(" - "),
+    label: operator.units?.name
+      ? `${operator.display_name} · ${unitLabel(operator.units)}`
+      : operator.display_name,
   }));
 }
 
 export async function listNoticeAcknowledgements(noticeId: string): Promise<NoticeAcknowledgement[]> {
   const { data, error } = await supabase
     .from("app_notice_acknowledgements")
-    .select("id, operator_id, read_at, acknowledged_at, operators(display_name, units(name))")
+    .select("id, operator_id, read_at, acknowledged_at, operators(display_name, units(name, city, state, code))")
     .eq("notice_id", noticeId)
     .order("read_at", { ascending: false });
   if (error) throw error;
@@ -793,7 +796,7 @@ export async function listNoticeAcknowledgements(noticeId: string): Promise<Noti
     id: row.id,
     operator_id: row.operator_id,
     operator_name: row.operators?.display_name ?? "Operador não identificado",
-    unit_name: row.operators?.units?.name ?? null,
+    unit_name: row.operators?.units?.name ? unitLabel(row.operators.units) : null,
     read_at: row.read_at,
     acknowledged_at: row.acknowledged_at ?? null,
   }));

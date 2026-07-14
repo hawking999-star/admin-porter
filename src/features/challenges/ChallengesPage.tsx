@@ -375,7 +375,7 @@ export function ChallengesPage() {
               <Card key={challenge.id} className="space-y-3 p-5">
                 <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">{challenge.title}</h3><StatusBadge label={badge.label} tone={badge.tone} /></div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">{challenge.prompt}</p>
-                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span>Tempo definido nas regras</span><span>{challenge.unit_name ?? "Global"}</span></div>
+                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span>Tempo definido nas regras</span><span>{challenge.unit_name ? unitLabel({ name: challenge.unit_name, city: challenge.unit_city, state: challenge.unit_state }) : "Global"}</span></div>
                 <div className="flex gap-2 border-t pt-3">
                   <Button size="sm" variant="outline" onClick={() => setEditingChallenge(challenge)}><Pencil className="h-4 w-4" /> Editar</Button>
                   <Button size="sm" variant="outline" onClick={() => changeStatus(challenge.id, challenge.status === "active" ? "inactive" : "active")}>{challenge.status === "active" ? "Inativar" : "Ativar"}</Button>

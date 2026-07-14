@@ -32,6 +32,7 @@ import {
   HardDrive,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { unitLabel } from "@/lib/unit-label";
 import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -96,15 +97,11 @@ import {
 /* --------------------------------- Helpers -------------------------------- */
 
 function unitText(p: Playlist) {
-  if (!p.unit_name) return "—";
-  const loc = [p.unit_city, p.unit_state].filter(Boolean).join("/");
-  return loc ? `${p.unit_name} — ${loc}` : p.unit_name;
+  return unitLabel({ name: p.unit_name, city: p.unit_city, state: p.unit_state });
 }
 
 function operatorUnitText(operator: OperatorMusicLibrary) {
-  if (!operator.unit_name) return "—";
-  const loc = [operator.unit_city, operator.unit_state].filter(Boolean).join("/");
-  return loc ? `${operator.unit_name} — ${loc}` : operator.unit_name;
+  return unitLabel({ name: operator.unit_name, city: operator.unit_city, state: operator.unit_state });
 }
 
 function fmtDate(iso: string | null) {
@@ -2168,6 +2165,7 @@ function PlaylistList({
   onAcknowledgeError: (id: string) => void;
 }) {
   const [showAwaiting, setShowAwaiting] = useState(false);
+  const [collapsedUnits, setCollapsedUnits] = useState<Set<string>>(() => new Set());
   // Secundárias não recebem link (o operador monta com músicas da principal),
   // então não entram na fila de "aguardando o operador enviar o link".
   const awaiting = useMemo(
@@ -2188,32 +2186,48 @@ function PlaylistList({
 
   return (
     <div className="space-y-6">
-      {groups.map(([unit, list]) => (
-        <section key={unit} className="space-y-3">
-          <div className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <Building2 className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{unit}</span>
-            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-normal normal-case">
-              {list.length}
-            </span>
-          </div>
-          <div className="space-y-3">
-            {list.map(({ p, platform }) => (
-              <PlaylistCard
-                key={p.id}
-                p={p}
-                platform={platform}
-                busy={busy}
-                onOpen={() => onOpen(p)}
-                onApprove={() => onApprove(p.id)}
-                onReject={() => onReject(p.id)}
-                onRetry={() => onRetry(p.id)}
-                onAcknowledgeError={() => onAcknowledgeError(p.id)}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
+      {groups.map(([unit, list]) => {
+        const collapsed = collapsedUnits.has(unit);
+        return (
+          <section key={unit} className="space-y-3">
+            <button
+              type="button"
+              aria-expanded={!collapsed}
+              onClick={() => setCollapsedUnits((current) => {
+                const next = new Set(current);
+                if (next.has(unit)) next.delete(unit);
+                else next.add(unit);
+                return next;
+              })}
+              className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:bg-muted/40"
+            >
+              <Building2 className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{unit}</span>
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-normal normal-case">
+                {list.length}
+              </span>
+              <ChevronDown className={cn("ml-auto h-4 w-4 shrink-0 transition-transform", !collapsed && "rotate-180")} />
+            </button>
+            {!collapsed && (
+              <div className="space-y-3">
+                {list.map(({ p, platform }) => (
+                  <PlaylistCard
+                    key={p.id}
+                    p={p}
+                    platform={platform}
+                    busy={busy}
+                    onOpen={() => onOpen(p)}
+                    onApprove={() => onApprove(p.id)}
+                    onReject={() => onReject(p.id)}
+                    onRetry={() => onRetry(p.id)}
+                    onAcknowledgeError={() => onAcknowledgeError(p.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
 
       {awaiting.length > 0 && (
         <section className="space-y-2">

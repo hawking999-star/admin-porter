@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+export { unitLabel } from "@/lib/unit-label";
 
 export type PaginatedResult<T> = {
   rows: T[];
@@ -61,23 +62,6 @@ export async function listUnitOptions(): Promise<UnitOption[]> {
     .limit(500);
   if (error) throw error;
   return (data ?? []) as UnitOption[];
-}
-
-/**
- * Rótulo de um condomínio para telas e listas.
- * Sempre acrescenta a localidade (Cidade/UF) para diferenciar condomínios
- * com o mesmo nome. Se não houver cidade, usa o código como desempate.
- */
-export function unitLabel(u: {
-  name: string | null;
-  city?: string | null;
-  state?: string | null;
-  code?: string | null;
-}): string {
-  const name = u.name ?? "—";
-  const loc = [u.city, u.state].filter(Boolean).join("/");
-  const suffix = loc || u.code || "";
-  return suffix ? `${name} — ${suffix}` : name;
 }
 
 /* --------------------------------- Turno --------------------------------- */

@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Area,
   AreaChart,
@@ -33,6 +34,17 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -41,6 +53,9 @@ import {
 } from "@/components/ui/select";
 import { EmptyState, ErrorState, PeriodFilter, RetryButton } from "@/components/shared";
 import { todayInput, type PeriodPreset } from "@/lib/period";
+import { errorMessage } from "@/lib/errors";
+import { resetStatistics } from "@/lib/statistics";
+import { unitLabel } from "@/lib/unit-label";
 import {
   buildPeriodRange,
   fetchAnalyticsDashboard,
@@ -103,27 +118,19 @@ function downloadCsv(data: AnalyticsDashboard) {
   lines.push([
     "Operador",
     "Condominio",
-    "Tempo online",
-    "Tempo ocioso",
-    "Tempo atendimento",
-    "Desafios recebidos",
-    "Desafios respondidos",
-    "Taxa resposta",
-    "Taxa acerto",
-    "Ultimo evento",
+    "Desafios",
+    "Acertos",
+    "Aproveitamento",
+    "Ultimo desafio",
   ].map(csvCell).join(","));
   for (const row of data.ranking.rows) {
     lines.push([
       row.operator_name,
-      row.unit_name,
-      formatSeconds(row.online_seconds),
-      formatSeconds(row.idle_seconds),
-      formatSeconds(row.call_seconds),
-      row.challenges_received,
+      unitLabel({ name: row.unit_name, city: row.unit_city, state: row.unit_state, code: row.unit_code }),
       row.challenges_answered,
-      formatPercent(row.challenge_response_rate),
+      row.challenges_correct,
       formatPercent(row.challenge_accuracy_rate),
-      formatDateTime(row.last_event_at),
+      formatDateTime(row.last_challenge_at),
     ].map(csvCell).join(","));
   }
 
@@ -223,13 +230,13 @@ function metricCards(metrics: AnalyticsMetrics, averageByCondominium = false) {
     },
     {
       icon: <ShieldCheck className="h-5 w-5" />,
-      label: "Resposta desafios",
+      label: "Desafios respondidos",
       value: formatPercent(metrics.challenge_response_rate),
       hint: averageByCondominium ? "Taxa consolidada do período" : metrics.challenges_received ? `${metrics.challenges_answered}/${metrics.challenges_received} respondidos` : "Sem desafios no período",
     },
     {
       icon: <Trophy className="h-5 w-5" />,
-      label: "Acerto desafios",
+      label: "Aproveitamento",
       value: formatPercent(metrics.challenge_accuracy_rate),
       hint: averageByCondominium ? "Taxa consolidada do período" : metrics.challenges_answered ? "Sobre desafios respondidos" : "Sem respostas no período",
     },
@@ -237,12 +244,25 @@ function metricCards(metrics: AnalyticsMetrics, averageByCondominium = false) {
 }
 
 export function AnalyticsPage() {
+  const queryClient = useQueryClient();
   const [period, setPeriod] = useState<PeriodPreset>("7d");
   const [customFrom, setCustomFrom] = useState(todayInput());
   const [customTo, setCustomTo] = useState(todayInput());
   const [unitId, setUnitId] = useState("all");
   const [operatorId, setOperatorId] = useState("all");
   const [shift, setShift] = useState<ShiftFilter>("all");
+
+  const resetMutation = useMutation({
+    mutationFn: resetStatistics,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["analytics-dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["overview"] }),
+      ]);
+      toast.success("Estatísticas zeradas. Os registros anteriores foram preservados para auditoria.");
+    },
+    onError: (error) => toast.error(errorMessage(error, "Não foi possível zerar as estatísticas.")),
+  });
 
   const query = useQuery({
     queryKey: ["analytics-dashboard", period, customFrom, customTo, unitId, operatorId, shift],
@@ -294,7 +314,7 @@ export function AnalyticsPage() {
       (data.metrics.total_sessions > 0 ||
         data.metrics.online_seconds > 0 ||
         data.condominiums.some((row) => row.sessions > 0) ||
-        data.ranking.rows.some((row) => row.sessions > 0)),
+        data.ranking.rows.some((row) => row.challenges_answered > 0)),
   );
   const unavailableSources = data?.sources.filter((source) => !source.available) ?? [];
 
@@ -316,14 +336,36 @@ export function AnalyticsPage() {
   }, [data?.condominiums]);
   const operatorRankingDescription =
     unitId === "all"
-      ? "Top 5 entre todos os condomínios, ordenado por tempo online."
-      : `Top 5 de ${selectedUnitName ?? "condomínio selecionado"}, ordenado por tempo online.`;
+      ? "Top 5 por aproveitamento nos desafios; em empate, vence quem respondeu mais."
+      : `Top 5 de ${selectedUnitName ?? "condomínio selecionado"} por aproveitamento nos desafios.`;
 
   return (
     <>
       <PageHeader
         title="Analytics"
         description="Painel operacional com métricas reais de sessões, presença, desafios e status dos Operadores."
+        action={
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" disabled={resetMutation.isPending}>
+                {resetMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                Zerar estatísticas
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Zerar as estatísticas visíveis?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Os relatórios passarão a contar a partir de agora. Logs, desafios, Operadores, configurações e sessões não serão apagados; sessões ativas continuarão gerando novas estatísticas.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction onClick={() => resetMutation.mutate()}>Confirmar e zerar</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        }
       />
 
       <Card className="sticky top-3 z-20 mb-5 border-border/80 bg-card/95 p-3.5 shadow-sm backdrop-blur-sm">
@@ -427,7 +469,11 @@ export function AnalyticsPage() {
 
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-muted-foreground">
-              {query.isFetching && !query.isLoading ? "Atualizando dados..." : "Dados agregados diretamente do Supabase."}
+              {query.isFetching && !query.isLoading
+                ? "Atualizando dados..."
+                : data?.statistics_reset_at
+                  ? `Estatísticas contadas desde ${formatDateTime(data.statistics_reset_at)}.`
+                  : "Dados agregados diretamente do Supabase."}
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => query.refetch()} disabled={query.isFetching}>
@@ -542,42 +588,34 @@ export function AnalyticsPage() {
           </Card>
 
           <Card className="mt-5 p-5 shadow-sm">
-            <h2 className="font-display text-lg font-semibold text-foreground">Top 5 Operadores</h2>
+            <h2 className="font-display text-lg font-semibold text-foreground">Melhores em desafios</h2>
             <p className="mb-4 text-sm text-muted-foreground">{operatorRankingDescription}</p>
             {query.isLoading ? (
-              <TableSkeleton columns={10} />
+              <TableSkeleton columns={6} />
             ) : data?.ranking.rows.length === 0 ? (
-              <EmptyState title="Nenhum Operador no ranking." description="Não há Operadores com acesso dentro dos filtros aplicados." />
+              <EmptyState title="Nenhum resultado no ranking." description="Ainda não há desafios respondidos dentro dos filtros aplicados." />
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1180px] text-sm">
+                <table className="w-full min-w-[760px] text-sm">
                   <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <tr className="border-b">
                       <th className="py-3 pr-4">Operador</th>
                       <th className="py-3 pr-4">Condomínio</th>
-                      <th className="py-3 pr-4">Online</th>
-                      <th className="py-3 pr-4">Ocioso</th>
-                      <th className="py-3 pr-4">Atendimento</th>
-                      <th className="py-3 pr-4">Recebidos</th>
-                      <th className="py-3 pr-4">Respondidos</th>
-                      <th className="py-3 pr-4">Resposta</th>
-                      <th className="py-3 pr-4">Acerto</th>
-                      <th className="py-3 pr-4">Último evento/sessão</th>
+                      <th className="py-3 pr-4">Desafios</th>
+                      <th className="py-3 pr-4">Acertos</th>
+                      <th className="py-3 pr-4">Aproveitamento</th>
+                      <th className="py-3 pr-4">Último desafio</th>
                     </tr>
                   </thead>
                   <tbody>
                     {data?.ranking.rows.map((row) => (
                       <tr key={row.operator_id} className="border-b last:border-0">
                         <td className="py-3 pr-4 font-medium">{row.operator_name}</td>
-                        <td className="py-3 pr-4">{row.unit_name ?? "-"}</td>
-                        <td className="py-3 pr-4">{formatSeconds(row.online_seconds)}</td>
-                        <td className="py-3 pr-4">{formatSeconds(row.idle_seconds)}</td>
-                        <td className="py-3 pr-4">{formatSeconds(row.call_seconds)}</td>
-                        <td className="py-3 pr-4">{row.challenges_received}</td>
+                        <td className="py-3 pr-4">{unitLabel({ name: row.unit_name, city: row.unit_city, state: row.unit_state, code: row.unit_code })}</td>
                         <td className="py-3 pr-4">{row.challenges_answered}</td>
-                        <td className="py-3 pr-4">{formatPercent(row.challenge_response_rate)}</td>
+                        <td className="py-3 pr-4">{row.challenges_correct}</td>
                         <td className="py-3 pr-4">{formatPercent(row.challenge_accuracy_rate)}</td>
-                        <td className="py-3 pr-4">{formatDateTime(row.last_event_at)}</td>
+                        <td className="py-3 pr-4">{formatDateTime(row.last_challenge_at)}</td>
                       </tr>
                     ))}
                   </tbody>

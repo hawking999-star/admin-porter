@@ -41,6 +41,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { PeriodFilter } from "@/components/shared";
 import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
+import { effectiveStatisticsStart, fetchStatisticsResetInfo } from "@/lib/statistics";
+import { listUnitOptions } from "@/features/usuarios/queries";
+import { unitLabel } from "@/lib/unit-label";
 import {
   STATUS_BAR,
   STATUS_DOT,
@@ -521,21 +524,24 @@ export function OverviewPage() {
   const [customFrom, setCustomFrom] = useState(todayInput());
   const [customTo, setCustomTo] = useState(todayInput());
   const periodRange = useMemo(() => buildPeriodRange(period, customFrom, customTo), [period, customFrom, customTo]);
+  const resetInfo = useQuery({ queryKey: ["overview", "statistics-reset"], queryFn: fetchStatisticsResetInfo, staleTime: 30_000 });
+  const effectiveStartAt = effectiveStatisticsStart(periodRange.startAt, periodRange.endAt, resetInfo.data?.reset_at);
 
-  const counts = useQuery({ queryKey: ["overview", "counts"], queryFn: fetchOverviewCounts, staleTime: 30_000 });
+  const counts = useQuery({ queryKey: ["overview", "counts", resetInfo.data?.reset_at], queryFn: () => fetchOverviewCounts(resetInfo.data?.reset_at ?? undefined), staleTime: 30_000, enabled: resetInfo.isSuccess });
   const states = useQuery({ queryKey: ["overview", "states"], queryFn: fetchOperatorStates, staleTime: 15_000 });
-  const activity = useQuery({ queryKey: ["overview", "activity", periodRange.startAt, periodRange.endAt], queryFn: () => fetchRecentActivity(periodRange.startAt, periodRange.endAt), staleTime: 30_000 });
-  const daily = useQuery({ queryKey: ["overview", "daily", periodRange.startAt, periodRange.endAt], queryFn: () => fetchDailySummary(periodRange.startAt, periodRange.endAt), staleTime: 60_000 });
+  const units = useQuery({ queryKey: ["overview", "units"], queryFn: listUnitOptions, staleTime: 60_000 });
+  const activity = useQuery({ queryKey: ["overview", "activity", effectiveStartAt, periodRange.endAt], queryFn: () => fetchRecentActivity(effectiveStartAt, periodRange.endAt), staleTime: 30_000, enabled: resetInfo.isSuccess });
+  const daily = useQuery({ queryKey: ["overview", "daily", effectiveStartAt, periodRange.endAt], queryFn: () => fetchDailySummary(effectiveStartAt, periodRange.endAt), staleTime: 60_000, enabled: resetInfo.isSuccess });
 
-  const isFetching = counts.isFetching || states.isFetching || activity.isFetching || daily.isFetching;
-  const isError = counts.isError || states.isError || activity.isError || daily.isError;
+  const isFetching = resetInfo.isFetching || counts.isFetching || states.isFetching || units.isFetching || activity.isFetching || daily.isFetching;
+  const isError = resetInfo.isError || counts.isError || states.isError || units.isError || activity.isError || daily.isError;
 
   const lastUpdated = useMemo(() => {
-    const ts = [counts.dataUpdatedAt, states.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt].filter(
+    const ts = [resetInfo.dataUpdatedAt, counts.dataUpdatedAt, states.dataUpdatedAt, units.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt].filter(
       Boolean,
     );
     return ts.length ? new Date(Math.max(...ts)).toISOString() : null;
-  }, [counts.dataUpdatedAt, states.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt]);
+  }, [resetInfo.dataUpdatedAt, counts.dataUpdatedAt, states.dataUpdatedAt, units.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["overview"] });
 
@@ -543,17 +549,8 @@ export function OverviewPage() {
   const total = states.data?.total ?? 0;
   const rows = states.data?.rows ?? [];
   const unitOptions = useMemo(
-    () => {
-      const options = new Map<string, UnitOption>();
-      for (const row of rows) {
-        const label = row.unit_label ?? row.unit_name;
-        if (!label) continue;
-        const value = row.unit_id ?? `unit:${label}`;
-        options.set(value, { value, label });
-      }
-      return Array.from(options.values()).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
-    },
-    [rows],
+    () => (units.data ?? []).map((unit) => ({ value: unit.id, label: unitLabel(unit) })),
+    [units.data],
   );
   const filteredRows = useMemo(
     () =>

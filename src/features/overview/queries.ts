@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { unitLabel } from "@/lib/unit-label";
 
 /* ========================================================================== *
  * Visão Geral — agregações da operação (dados reais do Supabase).
@@ -136,7 +137,9 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
     unit_name: r.operators?.units?.name ?? null,
     unit_city: r.operators?.units?.city ?? null,
     unit_state: r.operators?.units?.state ?? null,
-    unit_label: formatUnitLabel(r.operators?.units?.name ?? null, r.operators?.units?.city ?? null, r.operators?.units?.state ?? null),
+    unit_label: r.operators?.units?.name
+      ? unitLabel({ name: r.operators.units.name, city: r.operators.units.city, state: r.operators.units.state })
+      : null,
     effective_at: r.effective_at ?? null,
     status_repetitions_today: 0,
   }));
@@ -153,12 +156,6 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   }));
 
   return { groups, rows, total: rows.length };
-}
-
-export function formatUnitLabel(name: string | null, city: string | null, state: string | null): string | null {
-  if (!name) return null;
-  const location = [city, state].filter(Boolean).join("/");
-  return location ? `${name} - ${location}` : name;
 }
 
 async function fetchStatusRepetitions(operatorIds: string[]): Promise<Map<string, number>> {
@@ -274,8 +271,9 @@ export type OverviewCounts = {
   pendingPlaylists: number | null; // null = estrutura de aprovação indisponível
 };
 
-export async function fetchOverviewCounts(): Promise<OverviewCounts> {
+export async function fetchOverviewCounts(statisticsSince?: string): Promise<OverviewCounts> {
   const today = startOfTodayISO();
+  const endedSince = statisticsSince && statisticsSince > today ? statisticsSince : today;
   const [operators, online, active, endedToday, feedback, playlists] = await Promise.all([
     supabase.from("operators").select("id", { count: "exact", head: true }).eq("active", true),
     supabase.from("operator_states").select("operator_id", { count: "exact", head: true }).eq("status", "active"),
@@ -284,7 +282,7 @@ export async function fetchOverviewCounts(): Promise<OverviewCounts> {
       .from("operator_sessions")
       .select("id", { count: "exact", head: true })
       .eq("status", "ended")
-      .gte("ended_at", today),
+      .gte("ended_at", endedSince),
     supabase.from("feedback").select("id", { count: "exact", head: true }).eq("status", "new"),
     supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "pending"),
   ]);

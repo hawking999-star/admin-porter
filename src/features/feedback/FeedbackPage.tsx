@@ -10,6 +10,7 @@ import {
   Inbox,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { unitLabel } from "@/lib/unit-label";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -48,8 +49,7 @@ import {
 
 function unitText(f: Feedback) {
   if (!f.unit_name) return "-";
-  const loc = [f.unit_city, f.unit_state].filter(Boolean).join("/");
-  return loc ? `${f.unit_name} - ${loc}` : f.unit_name;
+  return unitLabel({ name: f.unit_name, city: f.unit_city, state: f.unit_state });
 }
 
 function fmtDate(iso: string) {
