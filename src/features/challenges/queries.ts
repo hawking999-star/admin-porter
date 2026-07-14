@@ -56,10 +56,13 @@ export function challengeStatusBadge(status: string): {
 
 export type Challenge = {
   id: string;
+  unit_id: string | null;
   title: string;
   prompt: string;
   kind: string;
   status: string;
+  alternatives: [string, string, string, string];
+  correct: string;
   revision: number;
   created_at: string;
   updated_at: string | null;
@@ -104,6 +107,9 @@ export type ChallengeRules = {
   response_seconds: number;
   abandon_block_seconds: number;
   error_block_seconds: number[];
+  active_window_start: string;
+  active_window_end: string;
+  timezone: string;
 };
 
 export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
@@ -112,6 +118,9 @@ export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
   response_seconds: 60,
   abandon_block_seconds: 300,
   error_block_seconds: [300, 900, 3600],
+  active_window_start: "00:00",
+  active_window_end: "00:00",
+  timezone: "America/Sao_Paulo",
 };
 
 export async function getChallengeRules(unitId: string | null): Promise<ChallengeRules> {
@@ -171,7 +180,7 @@ export async function listChallenges(filters: ChallengeFilters): Promise<Paginat
   let query = supabase
     .from("challenges")
     .select(
-      "id, title, prompt, kind, status, revision, created_at, updated_at, units(name, city, state)",
+      "id, unit_id, title, prompt, kind, status, answer_definition, revision, created_at, updated_at, units(name, city, state)",
       { count: "exact" },
     )
     .order("created_at", { ascending: false });
@@ -190,10 +199,13 @@ export async function listChallenges(filters: ChallengeFilters): Promise<Paginat
 
   const rows = (data ?? []).map((c: any) => ({
     id: c.id,
+    unit_id: c.unit_id ?? null,
     title: c.title,
     prompt: c.prompt,
     kind: c.kind,
     status: c.status,
+    alternatives: [0, 1, 2, 3].map((index) => String(c.answer_definition?.alternatives?.[index] ?? "")) as [string, string, string, string],
+    correct: String(c.answer_definition?.correct ?? "A").toUpperCase(),
     revision: c.revision ?? 0,
     created_at: c.created_at,
     updated_at: c.updated_at ?? null,

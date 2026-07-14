@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, FileSpreadsheet, FileUp, Layers, ListChecks, Puzzle, Settings2, Upload, X } from "lucide-react";
+import { Download, FileSpreadsheet, FileUp, Layers, ListChecks, Pencil, Puzzle, Settings2, Upload, X } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -12,7 +12,7 @@ import { EmptyState, ErrorState, FilterBar, PaginationFooter, RetryButton, Searc
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDebounce } from "@/hooks/useDebounce";
 import { listUnitOptions, unitLabel } from "@/features/usuarios/queries";
-import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type ChallengeInput, type ChallengeRules, challengeCsvTemplate, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
+import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type Challenge, type ChallengeInput, type ChallengeRules, challengeCsvTemplate, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
 
 const PAGE_SIZE = 12;
 type UnitOption = { id: string; name: string; city: string | null; state: string | null; code: string | null };
@@ -25,9 +25,27 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
+const EMPTY_CHALLENGE: ChallengeInput = { unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", status: "draft" };
+
+function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; challenge?: Challenge | null; onSaved: () => void }) {
   const [unitId, setUnitId] = useState(""); const [file, setFile] = useState<File | null>(null); const inputRef = useRef<HTMLInputElement>(null); const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<ChallengeInput>({ unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", status: "draft" });
+  const [form, setForm] = useState<ChallengeInput>(EMPTY_CHALLENGE);
+  const editing = Boolean(challenge);
+
+  useEffect(() => {
+    if (!open) return;
+    setFile(null);
+    setUnitId(challenge ? (challenge.unit_id ?? "global") : "");
+    setForm(challenge ? {
+      id: challenge.id,
+      unit_id: challenge.unit_id,
+      title: challenge.title,
+      prompt: challenge.prompt,
+      alternatives: [...challenge.alternatives] as ChallengeInput["alternatives"],
+      correct: challenge.correct,
+      status: challenge.status,
+    } : { ...EMPTY_CHALLENGE, alternatives: [...EMPTY_CHALLENGE.alternatives] });
+  }, [challenge, open]);
   async function submit() {
     if (!unitId) return toast.error("Escolha o condomínio.");
     const selectedUnitId = unitId === "global" ? null : unitId;
@@ -41,7 +59,7 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
         toast.success(`${rows.length} desafio(s) importado(s) como rascunho.`);
       } else {
         if (!form.title.trim() || !form.prompt.trim() || form.alternatives.some((value) => !value.trim()) || !/^[ABCD]$/.test(form.correct)) throw new Error("Preencha título, enunciado, quatro alternativas e a correta (A-D).");
-        await upsertChallenge({ ...form, unit_id: selectedUnitId }); toast.success("Desafio salvo como rascunho.");
+        await upsertChallenge({ ...form, unit_id: selectedUnitId }); toast.success(editing ? "Desafio atualizado." : "Desafio salvo como rascunho.");
       }
       onSaved(); onOpenChange(false); setFile(null); setUnitId("");
     } catch (error) { toast.error(errorMessage(error, "Não foi possível salvar.")); } finally { setSaving(false); }
@@ -50,9 +68,9 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Novo desafio</DialogTitle>
+          <DialogTitle>{editing ? "Editar desafio" : "Novo desafio"}</DialogTitle>
           <DialogDescription>
-            Cadastre o conteúdo do desafio manualmente ou importe uma planilha CSV. Os tempos de exibição, resposta e punição são definidos em Regras.
+            {editing ? "Altere o conteúdo e o condomínio deste desafio." : "Cadastre o conteúdo do desafio manualmente ou importe uma planilha CSV."} Os horários, tempos de resposta e punições são definidos em Regras.
           </DialogDescription>
         </DialogHeader>
 
@@ -72,7 +90,7 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
             Este cadastro contém somente pergunta, alternativas e resposta correta. Desafios gerais podem aparecer para Operadores de qualquer condomínio; os tempos e bloqueios seguem as regras aplicáveis a cada condomínio.
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          {!editing && <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="outline" onClick={downloadCsvTemplate}>
               <Download className="h-4 w-4" /> Baixar modelo atualizado
             </Button>
@@ -87,7 +105,7 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
                 <FileSpreadsheet className="h-4 w-4" /> Importar planilha CSV
               </Button>
             )}
-          </div>
+          </div>}
 
           {!file && (
             <div className="space-y-3 rounded-lg border p-3">
@@ -111,7 +129,7 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button disabled={saving} onClick={submit}><Upload className="h-4 w-4" /> Salvar desafio</Button>
+          <Button disabled={saving} onClick={submit}>{editing ? <Pencil className="h-4 w-4" /> : <Upload className="h-4 w-4" />} {editing ? "Salvar alterações" : "Salvar desafio"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -158,17 +176,31 @@ function RuleField({
   );
 }
 
+function TimeField({ label, description, value, onChange }: { label: string; description: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="space-y-1.5">
+      <span className="block text-sm font-semibold text-foreground">{label}</span>
+      <span className="block min-h-8 text-xs leading-relaxed text-muted-foreground">{description}</span>
+      <Input type="time" step="60" value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
 function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
   const [scope, setScope] = useState("global");
   const unitId = scope === "global" ? null : scope;
   const rules = useQuery({ queryKey: ["challenge-rules", unitId], queryFn: () => getChallengeRules(unitId), enabled: open });
   const [draft, setDraft] = useState<ChallengeRules | null>(null);
   const value = draft ?? rules.data ?? DEFAULT_CHALLENGE_RULES;
-  const update = (key: Exclude<keyof ChallengeRules, "error_block_seconds">, next: number) => setDraft({ ...value, [key]: next });
+  const updateNumber = (key: "min_interval_seconds" | "max_interval_seconds" | "response_seconds" | "abandon_block_seconds", next: number) => setDraft((current) => ({ ...(current ?? rules.data ?? DEFAULT_CHALLENGE_RULES), [key]: next }));
+  const updateTime = (key: "active_window_start" | "active_window_end", next: string) => setDraft((current) => ({ ...(current ?? rules.data ?? DEFAULT_CHALLENGE_RULES), [key]: next }));
   const updateErrorBlock = (index: number, next: number) => {
-    const errorBlocks = [...value.error_block_seconds];
-    errorBlocks[index] = next;
-    setDraft({ ...value, error_block_seconds: errorBlocks });
+    setDraft((current) => {
+      const base = current ?? rules.data ?? DEFAULT_CHALLENGE_RULES;
+      const errorBlocks = [...base.error_block_seconds];
+      errorBlocks[index] = next;
+      return { ...base, error_block_seconds: errorBlocks };
+    });
   };
   async function save() { try { await saveChallengeRules(unitId, value); toast.success("Regras salvas."); onSaved(); onOpenChange(false); } catch (error) { toast.error(error instanceof Error ? error.message : "Não foi possível salvar regras."); } }
   return (
@@ -198,14 +230,32 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
 
           <section className="space-y-3 rounded-xl border border-border p-4">
             <div>
+              <h3 className="text-sm font-semibold">Horário permitido para desafios</h3>
+              <p className="text-xs text-muted-foreground">
+                Fora desta faixa, o servidor não entrega desafios e agenda o próximo para a abertura seguinte. O fuso usado é o horário de Brasília.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <TimeField label="Começa às" description="Primeiro horário do dia em que um desafio pode aparecer." value={value.active_window_start} onChange={(next) => updateTime("active_window_start", next)} />
+              <TimeField label="Termina às" description="A partir deste horário, nenhum novo desafio é apresentado." value={value.active_window_end} onChange={(next) => updateTime("active_window_end", next)} />
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              {value.active_window_start === value.active_window_end
+                ? "Horários iguais significam funcionamento durante 24 horas."
+                : <>Os desafios podem aparecer diariamente entre <strong>{value.active_window_start}</strong> e <strong>{value.active_window_end}</strong>. Se o início for maior que o fim, a faixa atravessa a madrugada.</>}
+            </div>
+          </section>
+
+          <section className="space-y-3 rounded-xl border border-border p-4">
+            <div>
               <h3 className="text-sm font-semibold">Janela para o próximo desafio</h3>
               <p className="text-xs text-muted-foreground">
                 O servidor sorteia um momento entre o mínimo e o máximo. Exemplo: 180–300 segundos significa que o desafio aparecerá aleatoriamente entre 3 e 5 minutos.
               </p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
-              <RuleField label="Tempo mínimo" description="O desafio nunca aparece antes deste tempo após o início do ciclo." value={value.min_interval_seconds} onChange={(next) => update("min_interval_seconds", next)} />
-              <RuleField label="Tempo máximo" description="Limite para o servidor apresentar o desafio dentro da janela sorteada." value={value.max_interval_seconds} onChange={(next) => update("max_interval_seconds", next)} />
+              <RuleField label="Tempo mínimo" description="O desafio nunca aparece antes deste tempo após o início do ciclo." value={value.min_interval_seconds} onChange={(next) => updateNumber("min_interval_seconds", next)} />
+              <RuleField label="Tempo máximo" description="Limite para o servidor apresentar o desafio dentro da janela sorteada." value={value.max_interval_seconds} onChange={(next) => updateNumber("max_interval_seconds", next)} />
             </div>
             <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
               Com os valores atuais, cada desafio aparece entre <strong>{timeLabel(value.min_interval_seconds)}</strong> e <strong>{timeLabel(value.max_interval_seconds)}</strong>.
@@ -213,8 +263,8 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
           </section>
 
           <section className="grid gap-4 rounded-xl border border-border p-4 sm:grid-cols-2">
-            <RuleField label="Tempo para responder" description="Contagem iniciada quando o desafio aparece. Se acabar sem resposta, o Operador entra na tela de ociosidade." value={value.response_seconds} onChange={(next) => update("response_seconds", next)} />
-            <RuleField label="Punição por fechar o App" description="Bloqueio aplicado no próximo login quando o App é fechado durante um desafio aberto." value={value.abandon_block_seconds} onChange={(next) => update("abandon_block_seconds", next)} />
+            <RuleField label="Tempo para responder" description="Contagem iniciada quando o desafio aparece. Se acabar sem resposta, o Operador entra na tela de ociosidade." value={value.response_seconds} onChange={(next) => updateNumber("response_seconds", next)} />
+            <RuleField label="Punição por fechar o App" description="Bloqueio aplicado no próximo login quando o App é fechado durante um desafio aberto." value={value.abandon_block_seconds} onChange={(next) => updateNumber("abandon_block_seconds", next)} />
           </section>
 
           <section className="space-y-3 rounded-xl border border-border p-4">
@@ -252,6 +302,7 @@ export function ChallengesPage() {
   const [unit, setUnit] = useState("all");
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editingChallenge, setEditingChallenge] = useState<Challenge | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const queryClient = useQueryClient();
   const debouncedSearch = useDebounce(search, 300);
@@ -321,6 +372,7 @@ export function ChallengesPage() {
                 <p className="line-clamp-2 text-sm text-muted-foreground">{challenge.prompt}</p>
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span>Tempo definido nas regras</span><span>{challenge.unit_name ?? "Global"}</span></div>
                 <div className="flex gap-2 border-t pt-3">
+                  <Button size="sm" variant="outline" onClick={() => setEditingChallenge(challenge)}><Pencil className="h-4 w-4" /> Editar</Button>
                   <Button size="sm" variant="outline" onClick={() => changeStatus(challenge.id, challenge.status === "active" ? "inactive" : "active")}>{challenge.status === "active" ? "Inativar" : "Ativar"}</Button>
                   {challenge.status !== "archived" && <Button size="sm" variant="ghost" onClick={() => changeStatus(challenge.id, "archived")}>Arquivar</Button>}
                 </div>
@@ -332,6 +384,7 @@ export function ChallengesPage() {
 
       {total > 0 && <PaginationFooter page={page} pageSize={PAGE_SIZE} total={total} isLoading={list.isFetching} onPageChange={setPage} />}
       <ChallengeDialog open={createOpen} onOpenChange={setCreateOpen} units={units.data ?? []} onSaved={refresh} />
+      <ChallengeDialog open={Boolean(editingChallenge)} onOpenChange={(open) => { if (!open) setEditingChallenge(null); }} units={units.data ?? []} challenge={editingChallenge} onSaved={refresh} />
       <RulesDialog open={rulesOpen} onOpenChange={setRulesOpen} units={units.data ?? []} onSaved={refresh} />
     </div>
   );
