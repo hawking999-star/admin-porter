@@ -47,6 +47,68 @@ Use `next_screen` retornado:
 - `blocked`: mostre o bloqueio até `blocked_until`.
 - `idle`: mostre a tela de ociosidade sem acesso ao player.
 
+## Despertador enquanto o player está aberto
+
+Receber `next_screen: "player"` não encerra o fluxo. Enquanto existir uma sessão ativa e não houver ligação, bloqueio, desafio ou ociosidade, o App deve continuar reconciliando desafios sem exigir logout/login.
+
+Quando o snapshot tiver `next_challenge_at`:
+
+1. calcule somente o atraso até a próxima consulta usando a diferença entre `next_challenge_at` e `server_now`;
+2. agende uma chamada única de `operator_challenge_state` para esse atraso, acrescentando no máximo 250 ms de tolerância;
+3. quando o despertador disparar, consulte o servidor e renderize o novo `next_screen`;
+4. nunca abra o desafio apenas porque o horário local chegou: a nova RPC é obrigatória e o servidor continua decidindo o estado.
+
+Além do despertador exato, mantenha uma reconciliação de segurança a cada 10 segundos enquanto `next_screen === "player"`. Ela cobre suspensão do Windows, atraso de timer do Electron e perda momentânea de conexão.
+
+Regras de concorrência:
+
+- tenha no máximo uma chamada de `operator_challenge_state` em andamento;
+- cancele o despertador anterior ao receber qualquer snapshot novo;
+- cancele despertador e polling em logout, sessão encerrada, `call_started`, `blocked`, `idle` ou `challenge`;
+- ao receber `call_finished`, use primeiro a resposta oficial da ligação e depois reagende conforme o `next_challenge_at` devolvido pelo fluxo normal;
+- em `online`, retorno do Windows e retorno ao foreground, consulte imediatamente e reprograme o despertador;
+- limpe todos os timers ao desmontar ou trocar a sessão.
+
+Exemplo de lógica, adaptando aos módulos existentes do App:
+
+```ts
+let wakeTimer: ReturnType<typeof setTimeout> | null = null
+let safetyTimer: ReturnType<typeof setInterval> | null = null
+let stateRequestInFlight = false
+
+function scheduleChallengeCheck(snapshot: ChallengeSnapshot) {
+  clearChallengeTimers()
+  if (snapshot.next_screen !== "player") return
+
+  if (snapshot.next_challenge_at) {
+    const delay = Math.max(
+      0,
+      Date.parse(snapshot.next_challenge_at) - Date.parse(snapshot.server_now),
+    )
+    wakeTimer = setTimeout(() => void refreshChallengeState("scheduled_due"), delay + 250)
+  }
+
+  safetyTimer = setInterval(
+    () => void refreshChallengeState("player_safety_poll"),
+    10_000,
+  )
+}
+
+async function refreshChallengeState(reason: string) {
+  if (stateRequestInFlight || !activeSessionId) return
+  stateRequestInFlight = true
+  try {
+    const snapshot = await getOfficialChallengeState(activeSessionId)
+    renderOfficialSnapshot(snapshot)
+    scheduleChallengeCheck(snapshot)
+  } finally {
+    stateRequestInFlight = false
+  }
+}
+```
+
+Não crie `setInterval` duplicado a cada renderização. O agendador precisa pertencer ao controlador da sessão, e não a uma renderização isolada da tela do player.
+
 ## Exibição e contador
 
 Ao receber `next_screen: "challenge"`, monte a tela e chame uma única vez por `log_id`:
@@ -122,3 +184,11 @@ Mantenha a integração existente com `operator_operational_event` usando apenas
 - Trate `desafio_indisponivel` chamando `operator_challenge_state` e renderizando o estado devolvido.
 - Sempre finalize `loading`/`aria-busy` em `finally`.
 - Nunca envie `operator_id`, condomínio, resultado, tempo restante, resposta correta ou duração de bloqueio.
+
+## Testes obrigatórios do agendador
+
+- Com o App já aberto no player, receba um snapshot com `next_challenge_at` entre 60 e 120 segundos no futuro e confirme nova chamada de `operator_challenge_state` sem relogar.
+- Confirme que o desafio aparece quando a RPC muda para `next_screen: "challenge"`.
+- Simule suspensão/atraso do timer e confirme que o polling de segurança recupera o desafio em até 10 segundos.
+- Confirme que duas renderizações do player não criam dois pollings nem duas chamadas simultâneas.
+- Entregue o log com motivo `scheduled_due` ou `player_safety_poll`, horário da chamada e `next_screen` recebido.
