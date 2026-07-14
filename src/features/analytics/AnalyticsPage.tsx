@@ -133,6 +133,32 @@ function downloadCsv(data: AnalyticsDashboard) {
       formatDateTime(row.last_challenge_at),
     ].map(csvCell).join(","));
   }
+  lines.push("");
+
+  lines.push("Pontos de atencao - ociosidade");
+  lines.push(["Operador", "Condominio", "Tempo ocioso", "Entradas em ociosidade", "Ultima ociosidade"].map(csvCell).join(","));
+  for (const row of data.attention_ranking.idle) {
+    lines.push([
+      row.operator_name,
+      unitLabel({ name: row.unit_name, city: row.unit_city, state: row.unit_state, code: row.unit_code }),
+      formatSeconds(row.idle_seconds),
+      row.idle_events,
+      formatDateTime(row.last_idle_at),
+    ].map(csvCell).join(","));
+  }
+  lines.push("");
+
+  lines.push("Pontos de atencao - bloqueios");
+  lines.push(["Operador", "Condominio", "Bloqueios", "Tempo bloqueado", "Ultimo bloqueio"].map(csvCell).join(","));
+  for (const row of data.attention_ranking.blocked) {
+    lines.push([
+      row.operator_name,
+      unitLabel({ name: row.unit_name, city: row.unit_city, state: row.unit_state, code: row.unit_code }),
+      row.block_count,
+      formatSeconds(row.blocked_seconds),
+      formatDateTime(row.last_block_at),
+    ].map(csvCell).join(","));
+  }
 
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -251,6 +277,7 @@ export function AnalyticsPage() {
   const [unitId, setUnitId] = useState("all");
   const [operatorId, setOperatorId] = useState("all");
   const [shift, setShift] = useState<ShiftFilter>("all");
+  const [attentionMode, setAttentionMode] = useState<"idle" | "blocked">("idle");
 
   const resetMutation = useMutation({
     mutationFn: resetStatistics,
@@ -338,6 +365,7 @@ export function AnalyticsPage() {
     unitId === "all"
       ? "Top 5 por aproveitamento nos desafios; em empate, vence quem respondeu mais."
       : `Top 5 de ${selectedUnitName ?? "condomínio selecionado"} por aproveitamento nos desafios.`;
+  const attentionRows = data?.attention_ranking[attentionMode] ?? [];
 
   return (
     <>
@@ -616,6 +644,68 @@ export function AnalyticsPage() {
                         <td className="py-3 pr-4">{row.challenges_correct}</td>
                         <td className="py-3 pr-4">{formatPercent(row.challenge_accuracy_rate)}</td>
                         <td className="py-3 pr-4">{formatDateTime(row.last_challenge_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          <Card className="mt-5 p-5 shadow-sm">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="font-display text-lg font-semibold text-foreground">Top 5 — Pontos de atenção</h2>
+                <p className="text-sm text-muted-foreground">
+                  {attentionMode === "idle"
+                    ? "Operadores com mais tempo total em ociosidade dentro dos filtros."
+                    : "Operadores que mais receberam bloqueios dentro dos filtros."}
+                </p>
+              </div>
+              <div className="flex gap-2" aria-label="Alternar ranking de atenção">
+                <Button
+                  size="sm"
+                  variant={attentionMode === "idle" ? "default" : "outline"}
+                  onClick={() => setAttentionMode("idle")}
+                >
+                  Mais ociosos
+                </Button>
+                <Button
+                  size="sm"
+                  variant={attentionMode === "blocked" ? "default" : "outline"}
+                  onClick={() => setAttentionMode("blocked")}
+                >
+                  Mais bloqueados
+                </Button>
+              </div>
+            </div>
+            {query.isLoading ? (
+              <TableSkeleton columns={5} />
+            ) : attentionRows.length === 0 ? (
+              <EmptyState
+                title={attentionMode === "idle" ? "Nenhuma ociosidade no período." : "Nenhum bloqueio no período."}
+                description="Não há ocorrências reais dentro dos filtros aplicados."
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr className="border-b">
+                      <th className="py-3 pr-4">Operador</th>
+                      <th className="py-3 pr-4">Condomínio</th>
+                      <th className="py-3 pr-4">{attentionMode === "idle" ? "Tempo ocioso" : "Bloqueios"}</th>
+                      <th className="py-3 pr-4">{attentionMode === "idle" ? "Ocorrências" : "Tempo bloqueado"}</th>
+                      <th className="py-3 pr-4">Última ocorrência</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attentionRows.map((row) => (
+                      <tr key={row.operator_id} className="border-b last:border-0">
+                        <td className="py-3 pr-4 font-medium">{row.operator_name}</td>
+                        <td className="py-3 pr-4">{unitLabel({ name: row.unit_name, city: row.unit_city, state: row.unit_state, code: row.unit_code })}</td>
+                        <td className="py-3 pr-4">{attentionMode === "idle" ? formatSeconds(row.idle_seconds) : row.block_count}</td>
+                        <td className="py-3 pr-4">{attentionMode === "idle" ? row.idle_events : formatSeconds(row.blocked_seconds)}</td>
+                        <td className="py-3 pr-4">{formatDateTime(attentionMode === "idle" ? row.last_idle_at : row.last_block_at)}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -526,12 +526,13 @@ export function OverviewPage() {
   const periodRange = useMemo(() => buildPeriodRange(period, customFrom, customTo), [period, customFrom, customTo]);
   const resetInfo = useQuery({ queryKey: ["overview", "statistics-reset"], queryFn: fetchStatisticsResetInfo, staleTime: 30_000 });
   const effectiveStartAt = effectiveStatisticsStart(periodRange.startAt, periodRange.endAt, resetInfo.data?.reset_at);
+  const scopedUnitId = unitFilter === "all" ? undefined : unitFilter;
 
-  const counts = useQuery({ queryKey: ["overview", "counts", resetInfo.data?.reset_at], queryFn: () => fetchOverviewCounts(resetInfo.data?.reset_at ?? undefined), staleTime: 30_000, enabled: resetInfo.isSuccess });
+  const counts = useQuery({ queryKey: ["overview", "counts", resetInfo.data?.reset_at, scopedUnitId], queryFn: () => fetchOverviewCounts(resetInfo.data?.reset_at ?? undefined, scopedUnitId), staleTime: 30_000, enabled: resetInfo.isSuccess });
   const states = useQuery({ queryKey: ["overview", "states"], queryFn: fetchOperatorStates, staleTime: 15_000 });
   const units = useQuery({ queryKey: ["overview", "units"], queryFn: listUnitOptions, staleTime: 60_000 });
-  const activity = useQuery({ queryKey: ["overview", "activity", effectiveStartAt, periodRange.endAt], queryFn: () => fetchRecentActivity(effectiveStartAt, periodRange.endAt), staleTime: 30_000, enabled: resetInfo.isSuccess });
-  const daily = useQuery({ queryKey: ["overview", "daily", effectiveStartAt, periodRange.endAt], queryFn: () => fetchDailySummary(effectiveStartAt, periodRange.endAt), staleTime: 60_000, enabled: resetInfo.isSuccess });
+  const activity = useQuery({ queryKey: ["overview", "activity", effectiveStartAt, periodRange.endAt, scopedUnitId], queryFn: () => fetchRecentActivity(effectiveStartAt, periodRange.endAt, scopedUnitId), staleTime: 30_000, enabled: resetInfo.isSuccess });
+  const daily = useQuery({ queryKey: ["overview", "daily", effectiveStartAt, periodRange.endAt, scopedUnitId], queryFn: () => fetchDailySummary(effectiveStartAt, periodRange.endAt, scopedUnitId), staleTime: 60_000, enabled: resetInfo.isSuccess });
 
   const isFetching = resetInfo.isFetching || counts.isFetching || states.isFetching || units.isFetching || activity.isFetching || daily.isFetching;
   const isError = resetInfo.isError || counts.isError || states.isError || units.isError || activity.isError || daily.isError;

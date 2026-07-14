@@ -82,6 +82,22 @@ export type OperatorRankingRow = {
   last_challenge_at: string | null;
 };
 
+export type OperatorAttentionRow = {
+  operator_id: string;
+  operator_name: string;
+  unit_id: string;
+  unit_name: string | null;
+  unit_city: string | null;
+  unit_state: string | null;
+  unit_code: string | null;
+  idle_events: number;
+  idle_seconds: number;
+  last_idle_at: string | null;
+  block_count: number;
+  blocked_seconds: number;
+  last_block_at: string | null;
+};
+
 export type StatusBreakdownRow = {
   status: "active" | "in_call" | "idle" | "offline" | string;
   label: string;
@@ -111,6 +127,10 @@ export type AnalyticsDashboard = {
     page: number;
     page_size: number;
   };
+  attention_ranking: {
+    idle: OperatorAttentionRow[];
+    blocked: OperatorAttentionRow[];
+  };
   status_breakdown: StatusBreakdownRow[];
   sources: AnalyticsSource[];
   statistics_reset_at?: string | null;
@@ -128,21 +148,24 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
     ranking_page: filters.rankingPage,
     ranking_page_size: filters.rankingPageSize,
   };
-  const [dashboardResult, callsResult, leaderboardResult, unitsResult] = await Promise.all([
+  const [dashboardResult, callsResult, leaderboardResult, attentionResult, unitsResult] = await Promise.all([
     supabase.rpc("admin_analytics_dashboard", { p_request: request }),
     supabase.rpc("admin_analytics_answered_calls", { p_request: request }),
     supabase.rpc("admin_challenge_leaderboard", { p_request: request }),
+    supabase.rpc("admin_operator_attention_leaderboard", { p_request: request }),
     supabase.from("units").select("id, name, city, state, code").eq("active", true).order("name").limit(500),
   ]);
 
   if (dashboardResult.error) throw dashboardResult.error;
   if (callsResult.error) throw callsResult.error;
   if (leaderboardResult.error) throw leaderboardResult.error;
+  if (attentionResult.error) throw attentionResult.error;
   if (unitsResult.error) throw unitsResult.error;
 
   const dashboard = dashboardResult.data as AnalyticsDashboard;
   const calls = (callsResult.data ?? {}) as { answered_calls?: unknown };
   const leaderboard = (leaderboardResult.data ?? {}) as AnalyticsDashboard["ranking"];
+  const attentionRanking = (attentionResult.data ?? { idle: [], blocked: [] }) as AnalyticsDashboard["attention_ranking"];
   const unitRows = (unitsResult.data ?? []) as Array<{
     id: string;
     name: string;
@@ -175,6 +198,7 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
     },
     condominiums: decoratedCondominiums,
     ranking: leaderboard,
+    attention_ranking: attentionRanking,
     metrics: {
       ...dashboard.metrics,
       answered_calls: Number(calls.answered_calls ?? 0),

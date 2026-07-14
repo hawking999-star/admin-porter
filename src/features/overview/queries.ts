@@ -271,20 +271,40 @@ export type OverviewCounts = {
   pendingPlaylists: number | null; // null = estrutura de aprovação indisponível
 };
 
-export async function fetchOverviewCounts(statisticsSince?: string): Promise<OverviewCounts> {
+export async function fetchOverviewCounts(statisticsSince?: string, unitId?: string): Promise<OverviewCounts> {
   const today = startOfTodayISO();
   const endedSince = statisticsSince && statisticsSince > today ? statisticsSince : today;
+
+  let operatorsQuery = supabase.from("operators").select("id", { count: "exact", head: true }).eq("active", true);
+  let onlineQuery = supabase
+    .from("operator_states")
+    .select("operator_id, operators!inner(unit_id)", { count: "exact", head: true })
+    .eq("status", "active");
+  let activeQuery = supabase.from("operator_sessions").select("id", { count: "exact", head: true }).eq("status", "active");
+  let endedQuery = supabase
+    .from("operator_sessions")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "ended")
+    .gte("ended_at", endedSince);
+  let feedbackQuery = supabase.from("feedback").select("id", { count: "exact", head: true }).eq("status", "new");
+  let playlistsQuery = supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "pending");
+
+  if (unitId) {
+    operatorsQuery = operatorsQuery.eq("unit_id", unitId);
+    onlineQuery = onlineQuery.eq("operators.unit_id", unitId);
+    activeQuery = activeQuery.eq("unit_id", unitId);
+    endedQuery = endedQuery.eq("unit_id", unitId);
+    feedbackQuery = feedbackQuery.eq("unit_id", unitId);
+    playlistsQuery = playlistsQuery.eq("unit_id", unitId);
+  }
+
   const [operators, online, active, endedToday, feedback, playlists] = await Promise.all([
-    supabase.from("operators").select("id", { count: "exact", head: true }).eq("active", true),
-    supabase.from("operator_states").select("operator_id", { count: "exact", head: true }).eq("status", "active"),
-    supabase.from("operator_sessions").select("id", { count: "exact", head: true }).eq("status", "active"),
-    supabase
-      .from("operator_sessions")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "ended")
-      .gte("ended_at", endedSince),
-    supabase.from("feedback").select("id", { count: "exact", head: true }).eq("status", "new"),
-    supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "pending"),
+    operatorsQuery,
+    onlineQuery,
+    activeQuery,
+    endedQuery,
+    feedbackQuery,
+    playlistsQuery,
   ]);
 
   return {
@@ -363,37 +383,50 @@ const PLAYLIST_TYPE_PT: Record<string, string> = {
   secondary: "Playlist secundária",
 };
 
-export async function fetchRecentActivity(sinceAt: string, untilAt: string): Promise<RecentActivity[]> {
+export async function fetchRecentActivity(sinceAt: string, untilAt: string, unitId?: string): Promise<RecentActivity[]> {
+  const auditsQuery = unitId
+    ? Promise.resolve({ data: [] as any[], error: null })
+    : supabase
+        .from("admin_audit_logs")
+        .select("id, action, entity_type, occurred_at, admin_users(display_name)")
+        .gte("occurred_at", sinceAt)
+        .lte("occurred_at", untilAt)
+        .order("occurred_at", { ascending: false })
+        .limit(8);
+  let sessionsQuery = supabase
+    .from("operator_sessions")
+    .select("id, status, started_at, ended_at, operators!inner(display_name, unit_id)")
+    .gte("started_at", sinceAt)
+    .lte("started_at", untilAt)
+    .order("started_at", { ascending: false })
+    .limit(8);
+  let feedbackQuery = supabase
+    .from("feedback")
+    .select("id, type, created_at, operators(display_name)")
+    .gte("created_at", sinceAt)
+    .lte("created_at", untilAt)
+    .order("created_at", { ascending: false })
+    .limit(6);
+  let playlistsQuery = supabase
+    .from("playlists")
+    .select("id, name, type, approval_status, submitted_at, reviewed_at, operators(display_name)")
+    .not("submitted_at", "is", null)
+    .gte("submitted_at", sinceAt)
+    .lte("submitted_at", untilAt)
+    .order("submitted_at", { ascending: false })
+    .limit(6);
+
+  if (unitId) {
+    sessionsQuery = sessionsQuery.eq("operators.unit_id", unitId);
+    feedbackQuery = feedbackQuery.eq("unit_id", unitId);
+    playlistsQuery = playlistsQuery.eq("unit_id", unitId);
+  }
+
   const [audits, sessions, feedback, playlists] = await Promise.all([
-    supabase
-      .from("admin_audit_logs")
-      .select("id, action, entity_type, occurred_at, admin_users(display_name)")
-      .gte("occurred_at", sinceAt)
-      .lte("occurred_at", untilAt)
-      .order("occurred_at", { ascending: false })
-      .limit(8),
-    supabase
-      .from("operator_sessions")
-      .select("id, status, started_at, ended_at, operators(display_name)")
-      .gte("started_at", sinceAt)
-      .lte("started_at", untilAt)
-      .order("started_at", { ascending: false })
-      .limit(8),
-    supabase
-      .from("feedback")
-      .select("id, type, created_at, operators(display_name)")
-      .gte("created_at", sinceAt)
-      .lte("created_at", untilAt)
-      .order("created_at", { ascending: false })
-      .limit(6),
-    supabase
-      .from("playlists")
-      .select("id, name, type, approval_status, submitted_at, reviewed_at, operators(display_name)")
-      .not("submitted_at", "is", null)
-      .gte("submitted_at", sinceAt)
-      .lte("submitted_at", untilAt)
-      .order("submitted_at", { ascending: false })
-      .limit(6),
+    auditsQuery,
+    sessionsQuery,
+    feedbackQuery,
+    playlistsQuery,
   ]);
 
   const items: RecentActivity[] = [];
@@ -473,9 +506,10 @@ async function countSince(
   since: string,
   until: string,
   extra?: (q: any) => any,
+  selectColumns = "id",
 ): Promise<number | null> {
   try {
-    let q = supabase.from(table).select("id", { count: "exact", head: true }).gte(column, since).lte(column, until);
+    let q = supabase.from(table).select(selectColumns, { count: "exact", head: true }).gte(column, since).lte(column, until);
     if (extra) q = extra(q);
     const { count, error } = await q;
     if (error) return null;
@@ -485,21 +519,24 @@ async function countSince(
   }
 }
 
-export async function fetchDailySummary(sinceAt: string, untilAt: string): Promise<DailyMetric[]> {
+export async function fetchDailySummary(sinceAt: string, untilAt: string, unitId?: string): Promise<DailyMetric[]> {
+  const directUnit = (q: any) => (unitId ? q.eq("unit_id", unitId) : q);
+  const operatorUnit = (q: any) => (unitId ? q.eq("operators.unit_id", unitId) : q);
+  const playlistUnit = (q: any) => (unitId ? q.eq("playlists.unit_id", unitId) : q);
   const [started, ended, feedbackToday, idleToday, challengesToday, failures] = await Promise.all([
-    countSince("operator_sessions", "started_at", sinceAt, untilAt),
-    countSince("operator_sessions", "ended_at", sinceAt, untilAt, (q) => q.eq("status", "ended")),
-    countSince("feedback", "created_at", sinceAt, untilAt),
-    countSince("operator_status_history", "occurred_at", sinceAt, untilAt, (q) => q.eq("to_status", "idle")),
-    countSince("challenge_logs", "answered_at", sinceAt, untilAt),
-    countSince("download_jobs", "last_error_at", sinceAt, untilAt, (q) => q.eq("status", "error")),
+    countSince("operator_sessions", "started_at", sinceAt, untilAt, directUnit),
+    countSince("operator_sessions", "ended_at", sinceAt, untilAt, (q) => directUnit(q.eq("status", "ended"))),
+    countSince("feedback", "created_at", sinceAt, untilAt, directUnit),
+    countSince("operator_status_history", "occurred_at", sinceAt, untilAt, (q) => operatorUnit(q.eq("to_status", "idle")), "id, operators!inner(unit_id)"),
+    countSince("challenge_logs", "answered_at", sinceAt, untilAt, operatorUnit, "id, operators!inner(unit_id)"),
+    countSince("download_jobs", "last_error_at", sinceAt, untilAt, (q) => playlistUnit(q.eq("status", "error")), "id, playlists!inner(unit_id)"),
   ]);
 
   return [
     { label: "Sessões iniciadas", value: started },
     { label: "Sessões encerradas", value: ended },
     { label: "Feedbacks recebidos", value: feedbackToday },
-    { label: "Operadores ficaram ociosos", value: idleToday },
+    { label: "Entradas em ociosidade", value: idleToday },
     { label: "Desafios respondidos", value: challengesToday },
     { label: "Falhas de importação", value: failures },
   ];
