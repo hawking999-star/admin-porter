@@ -53,7 +53,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useDebounce } from "@/hooks/useDebounce";
-import { useAuth } from "@/features/auth/AuthProvider";
 import {
   listOperators,
   listAdminUsers,
@@ -72,7 +71,6 @@ import { AdminUserEditDialog } from "./AdminUserEditDialog";
 import { GrantPanelAccessDialog } from "./GrantPanelAccessDialog";
 import { GrantAppAccessDialog } from "./GrantAppAccessDialog";
 import { DisplayNameModerationTab } from "./DisplayNameModerationTab";
-import { RegisteredNameCorrectionDialog } from "./RegisteredNameCorrectionDialog";
 
 export function UsuariosPage() {
   return (
@@ -109,8 +107,6 @@ export function UsuariosPage() {
 
 function OperadoresTab() {
   const qc = useQueryClient();
-  const { adminUser } = useAuth();
-  const isSuperadmin = adminUser?.role === "superadmin";
   const [searchParams] = useSearchParams();
   const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
@@ -120,7 +116,6 @@ function OperadoresTab() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Operator | null>(null);
-  const [correctingRegisteredName, setCorrectingRegisteredName] = useState<Operator | null>(null);
   const [confirmToggle, setConfirmToggle] = useState<Operator | null>(null);
   const debouncedSearch = useDebounce(search, 350);
 
@@ -307,11 +302,6 @@ function OperadoresTab() {
                       <DropdownMenuItem onClick={() => openEdit(op)}>
                         <Pencil className="h-4 w-4" /> Editar
                       </DropdownMenuItem>
-                      {isSuperadmin && (
-                        <DropdownMenuItem onClick={() => setCorrectingRegisteredName(op)}>
-                          <Pencil className="h-4 w-4" /> Corrigir nome cadastral
-                        </DropdownMenuItem>
-                      )}
                       <DropdownMenuSeparator />
                       {op.active ? (
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmToggle(op)}>
@@ -349,14 +339,6 @@ function OperadoresTab() {
       )}
 
       <OperatorFormDialog open={dialogOpen} onOpenChange={setDialogOpen} operator={editing} />
-      <RegisteredNameCorrectionDialog
-        open={Boolean(correctingRegisteredName)}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setCorrectingRegisteredName(null);
-        }}
-        operator={correctingRegisteredName}
-      />
-
       <AlertDialog open={Boolean(confirmToggle)} onOpenChange={(o) => !o && setConfirmToggle(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

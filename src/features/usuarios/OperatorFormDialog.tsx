@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/features/auth/AuthProvider";
 import {
   Select,
   SelectContent,
@@ -21,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  correctOperatorRegisteredName,
   provisionOperator,
   updateOperator,
   setOperatorShift,
@@ -42,7 +45,9 @@ export function OperatorFormDialog({
   operator: Operator | null;
 }) {
   const qc = useQueryClient();
+  const { adminUser } = useAuth();
   const isEdit = Boolean(operator);
+  const isSuperadmin = adminUser?.role === "superadmin";
 
   const { data: units = [] } = useQuery({
     queryKey: ["unit-options"],
@@ -59,6 +64,7 @@ export function OperatorFormDialog({
   });
 
   const [registeredName, setRegisteredName] = useState("");
+  const [registeredNameReason, setRegisteredNameReason] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -73,6 +79,7 @@ export function OperatorFormDialog({
   useEffect(() => {
     if (open) {
       setRegisteredName(operator?.registered_name ?? operator?.display_name ?? "");
+      setRegisteredNameReason("");
       setUsername(operator?.username ?? "");
       setEmail("");
       setPassword("");
@@ -98,6 +105,13 @@ export function OperatorFormDialog({
           session_policy: sessionPolicy,
           active,
         });
+        if (registeredName.trim() !== operator.registered_name) {
+          await correctOperatorRegisteredName(
+            operator.id,
+            registeredName.trim(),
+            registeredNameReason.trim(),
+          );
+        }
       } else {
         operatorId = await provisionOperator({
           display_name: registeredName.trim(),
@@ -130,6 +144,14 @@ export function OperatorFormDialog({
     e.preventDefault();
     if (!unitId) {
       toast.error("Escolha um condomínio");
+      return;
+    }
+    if (
+      operator
+      && registeredName.trim() !== operator.registered_name
+      && registeredNameReason.trim().length < 3
+    ) {
+      toast.error("Informe a justificativa da correção cadastral");
       return;
     }
     if (!isEdit) {
@@ -166,16 +188,36 @@ export function OperatorFormDialog({
                 value={registeredName}
                 onChange={(e) => setRegisteredName(e.target.value)}
                 placeholder="Ex.: João da Silva"
-                readOnly={isEdit}
-                disabled={isEdit}
+                readOnly={isEdit && !isSuperadmin}
+                disabled={isEdit && !isSuperadmin}
                 required
               />
               <p className="text-xs text-muted-foreground">
                 {isEdit
-                  ? "Para corrigir este dado, use a ação exclusiva de Super admin na lista de Operadores."
+                  ? isSuperadmin
+                    ? "Como Super admin, você pode corrigir este nome. A alteração exige justificativa e será auditada."
+                    : "Somente Super admin pode corrigir este nome cadastral."
                   : "Este será o nome cadastral e o nome de exibição inicial do Operador."}
               </p>
             </div>
+
+            {isEdit && isSuperadmin && registeredName.trim() !== operator?.registered_name && (
+              <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
+                <Label htmlFor="registered_name_reason">Justificativa da correção</Label>
+                <Textarea
+                  id="registered_name_reason"
+                  value={registeredNameReason}
+                  onChange={(event) => setRegisteredNameReason(event.target.value)}
+                  placeholder="Explique por que o nome cadastral precisa ser corrigido."
+                  maxLength={300}
+                  rows={3}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Obrigatória, entre 3 e 300 caracteres. O nome de exibição no App não será alterado.
+                </p>
+              </div>
+            )}
 
             {isEdit && operator && (
               <div className="space-y-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
