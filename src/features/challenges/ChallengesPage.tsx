@@ -226,6 +226,11 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
             <p className="text-xs text-muted-foreground">
               Ao escolher um condomínio, os valores salvos substituem o padrão global somente para os Operadores daquela unidade.
             </p>
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-relaxed text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-100">
+              {scope === "global"
+                ? "Você está editando o padrão global. Condomínios que possuem regra própria continuarão usando os valores da regra própria. Para testar um condomínio específico, selecione-o acima."
+                : "Você está editando uma regra própria. Estes valores têm prioridade sobre o padrão global para os Operadores deste condomínio."}
+            </div>
           </div>
 
           <section className="space-y-3 rounded-xl border border-border p-4">
