@@ -11,6 +11,7 @@ Não precisa mexer no código para operar. Tudo é controlado por variáveis de 
 
 import hashlib
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -57,6 +58,8 @@ STALE_JOB_SECONDS = int(env("STALE_JOB_SECONDS", "1800"))
 STALE_JOB_CHECK_SECONDS = int(env("STALE_JOB_CHECK_SECONDS", "60"))
 GLOBAL_FAILURE_ABORT_THRESHOLD = int(env("GLOBAL_FAILURE_ABORT_THRESHOLD", "3"))
 STORAGE_AUDIT_INTERVAL_SECONDS = int(env("STORAGE_AUDIT_INTERVAL_SECONDS", "3600"))
+DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS = int(env("DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS", "120"))
+YTDLP_NETWORK_TIMEOUT_SECONDS = int(env("YTDLP_NETWORK_TIMEOUT_SECONDS", "30"))
 YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
 YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
 # Ordem dos "player clients" do YouTube que o yt-dlp tenta ao baixar. Alguns
@@ -238,6 +241,24 @@ def error_details(exc_or_message, **context) -> dict:
         stack = traceback.format_exception(type(exc_or_message), exc_or_message, exc_or_message.__traceback__)
         details["stack"] = "".join(stack)[-4000:]
     return details
+
+
+def run_ytdlp_command(command: list[str]) -> str:
+    """Executa yt-dlp isoladamente para um job nunca ficar travado."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        output, _ = process.communicate(timeout=DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
+        raise TimeoutError(f"IMPORT_TIMEOUT: yt-dlp excedeu {DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS}s. {output[-1000:]}")
+    if process.returncode != 0:
+        raise RuntimeError(f"yt-dlp terminou com código {process.returncode}: {output[-2000:]}")
+    return output
 
 
 # --------------------------------------------------------------------------- #
@@ -438,8 +459,22 @@ def download_one(entry: dict, workdir: str) -> str:
                 except OSError:
                     pass
         try:
-            with YoutubeDL(build_opts(client, use_cookie)) as ydl:
-                ydl.download([f"https://www.youtube.com/watch?v={vid}"])
+            command = [
+                sys.executable, "-m", "yt_dlp", "--no-warnings", "--no-playlist",
+                "--format", "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
+                "--output", out_tmpl, "--max-filesize", str(MAX_FILE_BYTES * 4),
+                "--extract-audio", "--audio-format", "mp3", "--audio-quality", str(kbps),
+                "--socket-timeout", str(YTDLP_NETWORK_TIMEOUT_SECONDS),
+                "--retries", "2", "--fragment-retries", "2",
+            ]
+            if client and client.lower() != "default":
+                command.extend(["--extractor-args", f"youtube:player_client={client}"])
+            if POT_PROVIDER_BASE_URL:
+                command.extend(["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_PROVIDER_BASE_URL}"])
+            if use_cookie and YOUTUBE_COOKIEFILE:
+                command.extend(["--cookies", YOUTUBE_COOKIEFILE])
+            command.append(f"https://www.youtube.com/watch?v={vid}")
+            run_ytdlp_command(command)
             mp3 = os.path.join(workdir, f"{vid}.mp3")
             if not os.path.exists(mp3):
                 last_exc = FileNotFoundError(f"yt-dlp não gerou o mp3 para {vid} (client={client})")
