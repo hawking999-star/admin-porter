@@ -19,26 +19,32 @@ type UnitOption = { id: string; name: string; city: string | null; state: string
 
 function downloadCsvTemplate() { const blob = new Blob([challengeCsvTemplate()], { type: "text/csv;charset=utf-8;" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "modelo-desafio-multipla-escolha.csv"; link.click(); URL.revokeObjectURL(url); }
 function csvColumns(row: string) { return [...row.matchAll(/(?:^|,)(?:"([^"]*)"|([^,]*))/g)].map((m) => (m[1] ?? m[2] ?? "").trim()); }
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
+  return fallback;
+}
 
 function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
   const [unitId, setUnitId] = useState(""); const [file, setFile] = useState<File | null>(null); const inputRef = useRef<HTMLInputElement>(null); const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ChallengeInput>({ unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", status: "draft" });
   async function submit() {
     if (!unitId) return toast.error("Escolha o condomínio.");
+    const selectedUnitId = unitId === "global" ? null : unitId;
     setSaving(true);
     try {
       if (file) {
         if (!file.name.toLowerCase().endsWith(".csv")) throw new Error("PDF ainda não é importado. Use CSV ou cadastro manual.");
         const rows = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean).slice(1);
         if (!rows.length) throw new Error("A planilha não possui linhas de desafio.");
-        for (const row of rows) { const c = csvColumns(row); if (c.length < 7 || !/^[ABCD]$/i.test(c[6] ?? "")) throw new Error(`Linha inválida: ${row}`); await upsertChallenge({ unit_id: unitId, title: c[0], prompt: c[1], alternatives: [c[2], c[3], c[4], c[5]], correct: c[6].toUpperCase(), status: "draft" }); }
+        for (const row of rows) { const c = csvColumns(row); if (c.length < 7 || !/^[ABCD]$/i.test(c[6] ?? "")) throw new Error(`Linha inválida: ${row}`); await upsertChallenge({ unit_id: selectedUnitId, title: c[0], prompt: c[1], alternatives: [c[2], c[3], c[4], c[5]], correct: c[6].toUpperCase(), status: "draft" }); }
         toast.success(`${rows.length} desafio(s) importado(s) como rascunho.`);
       } else {
         if (!form.title.trim() || !form.prompt.trim() || form.alternatives.some((value) => !value.trim()) || !/^[ABCD]$/.test(form.correct)) throw new Error("Preencha título, enunciado, quatro alternativas e a correta (A-D).");
-        await upsertChallenge({ ...form, unit_id: unitId }); toast.success("Desafio salvo como rascunho.");
+        await upsertChallenge({ ...form, unit_id: selectedUnitId }); toast.success("Desafio salvo como rascunho.");
       }
       onSaved(); onOpenChange(false); setFile(null); setUnitId("");
-    } catch (error) { toast.error(error instanceof Error ? error.message : "Não foi possível salvar."); } finally { setSaving(false); }
+    } catch (error) { toast.error(errorMessage(error, "Não foi possível salvar.")); } finally { setSaving(false); }
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -55,12 +61,15 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
             <label className="text-sm font-semibold">Condomínio</label>
             <Select value={unitId} onValueChange={setUnitId}>
               <SelectTrigger><SelectValue placeholder="Selecione o condomínio" /></SelectTrigger>
-              <SelectContent>{units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}</SelectContent>
+              <SelectContent>
+                <SelectItem value="global">Todos os condomínios (desafio geral)</SelectItem>
+                {units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}
+              </SelectContent>
             </Select>
           </div>
 
           <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-100">
-            Este cadastro contém somente pergunta, alternativas e resposta correta. A janela para aparecer, o prazo para responder e os bloqueios são aplicados pelas regras do condomínio.
+            Este cadastro contém somente pergunta, alternativas e resposta correta. Desafios gerais podem aparecer para Operadores de qualquer condomínio; os tempos e bloqueios seguem as regras aplicáveis a cada condomínio.
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -262,7 +271,7 @@ export function ChallengesPage() {
       toast.success("Status atualizado.");
       refresh();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar o status.");
+      toast.error(errorMessage(error, "Não foi possível atualizar o status."));
     }
   };
 
