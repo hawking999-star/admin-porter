@@ -147,6 +147,16 @@ O botão **Voltar** chama:
 supabase.rpc("operator_challenge_resume_idle", { p_session_id: session_id })
 ```
 
+Essa RPC deve ser chamada **somente por um clique humano no botão Voltar**. Não a chame em renderização, `setInterval`, polling, reconexão, retorno ao foreground ou como efeito automático de `next_screen: "idle"`.
+
+- ao entrar em `idle`, cancele imediatamente o despertador e o polling de desafios;
+- desabilite o botão Voltar enquanto a única chamada estiver em andamento;
+- aceite no máximo uma chamada de `operator_challenge_resume_idle` por clique;
+- chamadas repetidas não podem iniciar um loop de `idle -> active -> idle`;
+- depois do primeiro sucesso, substitua a tela pelo snapshot devolvido antes de reabilitar qualquer agendador.
+
+Ao trocar de sessão ou fazer logout, invalide também toda Promise antiga. Uma resposta iniciada pela sessão anterior não pode renderizar, confirmar exibição, responder ou retomar um desafio na sessão nova. O backend rejeita sessão encerrada com `sessao_invalida`; trate isso descartando a resposta antiga, sem tentar novamente.
+
 Depois do sucesso, faça as duas atualizações com a mesma resposta, sem depender de sincronização de playlist ou de uma segunda reconciliação:
 
 1. renderize `next_screen`;

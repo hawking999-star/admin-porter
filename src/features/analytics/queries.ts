@@ -133,7 +133,9 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
 
 export function formatSeconds(value: number | null | undefined): string {
   if (value == null) return "-";
-  const totalMinutes = Math.round(value / 60);
+  const totalSeconds = Math.max(0, Math.round(value));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
   if (totalMinutes < 60) return `${totalMinutes} min`;
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;

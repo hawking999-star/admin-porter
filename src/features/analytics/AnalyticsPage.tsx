@@ -244,21 +244,22 @@ export function AnalyticsPage() {
   const [operatorId, setOperatorId] = useState("all");
   const [shift, setShift] = useState<ShiftFilter>("all");
 
-  const range = useMemo(() => buildPeriodRange(period, customFrom, customTo), [period, customFrom, customTo]);
-
   const query = useQuery({
-    queryKey: ["analytics-dashboard", range.startAt, range.endAt, unitId, operatorId, shift],
-    queryFn: () =>
-      fetchAnalyticsDashboard({
-        startAt: range.startAt,
-        endAt: range.endAt,
+    queryKey: ["analytics-dashboard", period, customFrom, customTo, unitId, operatorId, shift],
+    queryFn: () => {
+      const currentRange = buildPeriodRange(period, customFrom, customTo);
+      return fetchAnalyticsDashboard({
+        startAt: currentRange.startAt,
+        endAt: currentRange.endAt,
         unitId,
         operatorId,
         shift,
         rankingPage: 1,
         rankingPageSize: TOP_LIST_LIMIT,
-      }),
+      });
+    },
     staleTime: 30_000,
+    refetchInterval: 15_000,
     placeholderData: keepPreviousData,
   });
 
