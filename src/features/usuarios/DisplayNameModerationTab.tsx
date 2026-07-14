@@ -154,7 +154,7 @@ function DisplayNameHistory() {
     <>
       <div className="mb-4 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-muted-foreground">
         <p className="font-medium text-foreground">Trocas controladas pelo servidor</p>
-        <p className="mt-1">O Operador pode alterar o nome de exibição uma vez a cada 15 dias. O nome cadastral permanece separado e os bloqueios podem ser revisados aqui.</p>
+        <p className="mt-1">O Operador pode alterar o nome de exibição uma vez a cada 15 dias. O nome cadastral permanece separado. Solicitações bloqueadas podem ser revisadas aqui; um Super admin também pode corrigir um nome já aplicado no formulário do Operador, sempre com justificativa e auditoria.</p>
       </div>
 
       <FilterBar className="items-end">

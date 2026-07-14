@@ -302,6 +302,27 @@ export async function correctOperatorRegisteredName(
   }
 }
 
+export async function updateOperatorDisplayName(
+  id: string,
+  displayName: string,
+  reason: string,
+): Promise<void> {
+  const { data, error } = await supabase.rpc("admin_update_operator_display_name", {
+    p_operator: id,
+    p_display_name: displayName,
+    p_reason: reason,
+  });
+  if (error) throw error;
+
+  const response = data as {
+    success?: boolean;
+    error?: { message?: string } | null;
+  } | null;
+  if (response?.success === false) {
+    throw new Error(response.error?.message ?? "Não foi possível atualizar o nome de exibição.");
+  }
+}
+
 /**
  * Ativa/desativa um operador reaproveitando o RPC de edição.
  * Mantém todos os demais campos e apenas troca o `active`.

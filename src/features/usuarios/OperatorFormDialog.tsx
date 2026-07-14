@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import {
   correctOperatorRegisteredName,
+  updateOperatorDisplayName,
   provisionOperator,
   updateOperator,
   setOperatorShift,
@@ -65,6 +66,8 @@ export function OperatorFormDialog({
 
   const [registeredName, setRegisteredName] = useState("");
   const [registeredNameReason, setRegisteredNameReason] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [displayNameReason, setDisplayNameReason] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -80,6 +83,8 @@ export function OperatorFormDialog({
     if (open) {
       setRegisteredName(operator?.registered_name ?? operator?.display_name ?? "");
       setRegisteredNameReason("");
+      setDisplayName(operator?.display_name ?? "");
+      setDisplayNameReason("");
       setUsername(operator?.username ?? "");
       setEmail("");
       setPassword("");
@@ -110,6 +115,13 @@ export function OperatorFormDialog({
             operator.id,
             registeredName.trim(),
             registeredNameReason.trim(),
+          );
+        }
+        if (displayName.trim() !== operator.display_name) {
+          await updateOperatorDisplayName(
+            operator.id,
+            displayName.trim(),
+            displayNameReason.trim(),
           );
         }
       } else {
@@ -154,6 +166,14 @@ export function OperatorFormDialog({
       toast.error("Informe a justificativa da correção cadastral");
       return;
     }
+    if (
+      operator
+      && displayName.trim() !== operator.display_name
+      && displayNameReason.trim().length < 3
+    ) {
+      toast.error("Informe a justificativa da alteração de exibição");
+      return;
+    }
     if (!isEdit) {
       if (!email.trim()) {
         toast.error("Informe o e-mail de login");
@@ -169,7 +189,7 @@ export function OperatorFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto">
         <form onSubmit={onSubmit}>
           <DialogHeader>
             <DialogTitle>{isEdit ? "Editar operador" : "Novo operador"}</DialogTitle>
@@ -221,10 +241,37 @@ export function OperatorFormDialog({
 
             {isEdit && operator && (
               <div className="space-y-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
-                <Label htmlFor="current_display_name">Nome de exibição atual</Label>
-                <Input id="current_display_name" value={operator.display_name} readOnly disabled />
+                <Label htmlFor="current_display_name">Nome de exibição</Label>
+                <Input
+                  id="current_display_name"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  readOnly={!isSuperadmin}
+                  disabled={!isSuperadmin}
+                  maxLength={50}
+                />
                 <p className="text-xs text-muted-foreground">
-                  Este é o nome mostrado no App. As trocas e aprovações ficam na aba Nomes de exibição.
+                  {isSuperadmin
+                    ? "Como Super admin, você pode ajustar este nome. A alteração exige justificativa e será auditada."
+                    : "As trocas do Operador e as revisões ficam na aba Nomes de exibição."}
+                </p>
+              </div>
+            )}
+
+            {isEdit && isSuperadmin && displayName.trim() !== operator?.display_name && (
+              <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
+                <Label htmlFor="display_name_reason">Justificativa da alteração de exibição</Label>
+                <Textarea
+                  id="display_name_reason"
+                  value={displayNameReason}
+                  onChange={(event) => setDisplayNameReason(event.target.value)}
+                  placeholder="Explique por que o nome de exibição precisa ser alterado."
+                  maxLength={300}
+                  rows={3}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Obrigatória, entre 3 e 300 caracteres. O nome cadastral não será alterado.
                 </p>
               </div>
             )}

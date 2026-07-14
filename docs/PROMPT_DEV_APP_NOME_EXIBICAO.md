@@ -1,24 +1,29 @@
-# Prompt para o Dev do App — Nome de exibição moderado
+# Prompt para o Dev do App — Nome de exibição, prazo e transparência
 
-## Backend publicado e validado
+## Contexto publicado
 
-- Migrations aplicadas no Supabase de produção: `20260714175906_operator_display_name_moderation` e `20260714181051_operator_display_name_contract_hardening`.
-- A causa original SQLSTATE `42883` foi corrigida; não há mais chamadas inválidas a `pg_catalog.coalesce/nullif`.
-- A RPC abaixo foi validada com teste SQL transacional e rollback.
-- `anon` não pode executar a RPC. `authenticated` pode executá-la, e o Operador é resolvido exclusivamente por `auth.uid()`.
-- As tabelas de termos e solicitações não têm acesso direto para `anon` ou `authenticated`; toda operação passa pelas RPCs oficiais.
+O Admin e o Supabase já estão em produção. O App continua usando a RPC existente para pedir a troca e agora possui uma RPC de consulta do próprio Operador para mostrar o prazo de 15 dias e o resultado da análise administrativa.
 
-O App não precisa de migration, tabela, Realtime ou configuração adicional no Supabase. A única alteração necessária no App é tratar os envelopes reais documentados abaixo.
+Migrations relevantes já aplicadas:
 
-O backend oficial continua usando a RPC já integrada:
+- `20260714175906_operator_display_name_moderation`
+- `20260714181051_operator_display_name_contract_hardening`
+- `20260714185815_admin_display_name_override`
+- `20260714190743_operator_display_name_status`
+
+Não criar tabelas, não acessar tabelas diretamente, não usar Realtime nem polling para este recurso. O servidor identifica o Operador exclusivamente por `auth.uid()`.
+
+## RPCs oficiais
+
+### Solicitar alteração
 
 ```text
 update_my_operator_display_name(p_display_name text)
 ```
 
-Não envie `operator_id`, `auth_user_id`, unidade, resultado de moderação ou identidade de Admin. O servidor identifica o Operador exclusivamente por `auth.uid()`.
+Não enviar `operator_id`, `auth_user_id`, condomínio, resultado de moderação ou qualquer identidade de Admin.
 
-## Resposta de sucesso
+No sucesso, usar somente `data.display_name` para atualizar o cabeçalho e o estado local:
 
 ```json
 {
@@ -34,92 +39,84 @@ Não envie `operator_id`, `auth_user_id`, unidade, resultado de moderação ou i
 }
 ```
 
-Quando o nome enviado for equivalente ao atual sem considerar caixa, acentos ou pontuação simples, `changed` será `false`, nenhuma nova auditoria será criada e `next_change_at` poderá ser `null`.
+Quando `changed` for `false`, não mostrar erro: o nome informado já é equivalente ao atual.
 
-Após sucesso com `changed: true`, atualize imediatamente o nome no cabeçalho e no estado local usando somente `data.display_name`.
+### Consultar prazo e decisão administrativa
 
-## Erros conhecidos
+```text
+get_my_operator_display_name_status()
+```
 
-### Nome não permitido
+Chamar esta RPC:
+
+1. Ao abrir a tela/modal de alteração de nome.
+2. Ao App voltar para primeiro plano, se a tela de nome estiver aberta.
+3. Logo após `update_my_operator_display_name`, tanto no sucesso quanto em erro conhecido.
+
+Não fazer polling. Esta consulta devolve apenas o estado do próprio Operador autenticado:
 
 ```json
 {
-  "success": false,
-  "server_now": "ISO-8601",
-  "data": null,
-  "error": {
-    "code": "DISPLAY_NAME_NOT_ALLOWED",
-    "message": "Esse nome de exibicao nao pode ser utilizado.",
-    "retryable": false
-  }
+  "success": true,
+  "server_now": "2026-07-14T15:00:00.000Z",
+  "data": {
+    "display_name": "Kadu",
+    "next_change_at": "2026-07-29T15:00:00.000Z",
+    "can_change_now": false,
+    "review": {
+      "request_id": "uuid",
+      "requested_name": "Nome solicitado pelo Operador",
+      "status": "pending | approved | rejected",
+      "reviewed_at": "ISO-8601 ou null",
+      "message": "Mensagem oficial do servidor",
+      "reason": "Justificativa do Admin ou null"
+    }
+  },
+  "error": null
 }
 ```
 
-Mostre a mensagem sem revelar ou tentar descobrir qual termo foi detectado. A lista de moderação nunca deve existir no App.
+`review` pode ser `null`. O servidor nunca retorna o termo de moderação que disparou o bloqueio.
 
-### Prazo de 15 dias
+## Interface esperada
 
-```json
-{
-  "success": false,
-  "server_now": "ISO-8601",
-  "data": null,
-  "error": {
-    "code": "DISPLAY_NAME_CHANGE_COOLDOWN",
-    "message": "O nome de exibicao so pode ser alterado uma vez a cada 15 dias.",
-    "retryable": true,
-    "retry_at": "ISO-8601"
-  }
-}
-```
+Na tela de nome de exibição, montar uma área clara e discreta com:
 
-Use `server_now` e `retry_at`; não calcule o prazo com o relógio local.
+- Nome atual.
+- Campo de novo nome, desabilitado quando `can_change_now` for `false`.
+- Prazo: “Nova alteração disponível em DD/MM às HH:mm”.
+- Opcionalmente, uma contagem regressiva visual baseada na diferença inicial entre `server_now` e `next_change_at`; o relógio local não é fonte de verdade. Ao retornar ao App, consultar o servidor novamente.
+- Um cartão de status da solicitação, quando houver `review`:
+  - `pending`: “Sua solicitação está em análise.” Não mostrar motivo ou termo bloqueado.
+  - `rejected`: “Sua solicitação de nome foi negada.” Mostrar `review.reason` quando vier preenchido. Não inventar nem inferir motivo.
+  - `approved`: informar que a solicitação foi aprovada e usar `data.display_name` como nome atual.
 
-### Excesso de tentativas
+O cartão de rejeição deve continuar visível ao voltar à tela de nome, não apenas no instante em que a RPC falha. Isso dá transparência quando o Admin negar uma solicitação depois.
 
-```json
-{
-  "success": false,
-  "server_now": "ISO-8601",
-  "data": null,
-  "error": {
-    "code": "DISPLAY_NAME_RATE_LIMITED",
-    "message": "Muitas tentativas. Aguarde alguns minutos para tentar novamente.",
-    "retryable": true,
-    "retry_at": "ISO-8601"
-  }
-}
-```
+## Erros oficiais da solicitação
 
-O limite é de cinco tentativas diferentes em dez minutos.
+| Código | Comportamento no App |
+| --- | --- |
+| `DISPLAY_NAME_NOT_ALLOWED` | Mostrar que o nome não pode ser usado e chamar o snapshot. Se a solicitação estiver pendente, mostrar “em análise”; nunca revelar o termo bloqueado. |
+| `DISPLAY_NAME_CHANGE_COOLDOWN` | Mostrar `retry_at` devolvido pelo servidor e atualizar o snapshot. |
+| `DISPLAY_NAME_RATE_LIMITED` | Mostrar `retry_at` devolvido pelo servidor, sem retentar automaticamente. |
+| `DISPLAY_NAME_REQUIRED`, `DISPLAY_NAME_TOO_SHORT`, `DISPLAY_NAME_TOO_LONG` | Mostrar a validação correspondente no campo. |
+| `NOT_AUTHENTICATED`, `OPERATOR_NOT_FOUND` | Tratar como falha de sessão, sem inventar estado de moderação. |
 
-## Validações preservadas
+## Regras de segurança e consistência
 
-- `DISPLAY_NAME_REQUIRED`
-- `DISPLAY_NAME_TOO_SHORT`
-- `DISPLAY_NAME_TOO_LONG`
-- `NOT_AUTHENTICATED`
-- `OPERATOR_NOT_FOUND`
+- Não calcular 15 dias a partir da hora do dispositivo.
+- Não salvar uma lista de palavras bloqueadas no App.
+- Não mostrar `moderation_reason` interno ou tentar deduzir o termo bloqueado.
+- Não enviar identificadores de Operador ou dados administrativos.
+- Não alterar o nome cadastral: o App trabalha somente com nome de exibição.
 
-O nome deve ter de 3 a 50 caracteres. Espaços no começo e no fim são removidos e espaços repetidos são reduzidos para um.
+## Testes solicitados
 
-## Regras que pertencem somente ao backend
-
-- Uma troca aplicada a cada 15 dias.
-- Moderação sem diferença entre maiúsculas, minúsculas e acentos.
-- Detecção por palavra, nome exato ou tentativa ofuscada.
-- Registro de tentativas permitidas, bloqueadas e limitadas.
-- Aprovação administrativa como exceção única.
-- Nome cadastral separado e impossível de alterar pelo App.
-
-Não criar polling, heartbeat, acesso direto às tabelas ou lógica paralela de moderação.
-
-## Testes solicitados ao App
-
-1. Salvar um nome permitido e atualizar o cabeçalho imediatamente.
-2. Salvar o mesmo nome e aceitar `changed: false`.
-3. Exibir corretamente cada validação conhecida.
-4. Exibir o bloqueio de moderação sem erro genérico.
-5. Exibir a data de nova troca usando `retry_at`.
-6. Tratar o limite de tentativas sem repetir chamadas automaticamente.
-7. Confirmar que nenhum identificador de Operador é enviado à RPC.
+1. Troca permitida atualiza o cabeçalho e mostra o prazo retornado pelo servidor.
+2. Durante os 15 dias, o campo fica bloqueado e exibe a data/hora de liberação.
+3. Nome bloqueado mostra a mensagem segura e o status “em análise”.
+4. Após o Admin rejeitar uma solicitação com justificativa, reabrir a tela de nome mostra “negada” e a justificativa retornada pelo servidor.
+5. Após aprovação, a tela mostra o nome aplicado pelo servidor.
+6. O App em primeiro plano atualiza o prazo/decisão ao consultar o snapshot, sem polling.
+7. Nenhuma chamada envia `operator_id` ou acessa tabelas de moderação diretamente.
