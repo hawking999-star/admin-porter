@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, Search, Users, ShieldCheck, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff, UserPlus, Smartphone } from "lucide-react";
+import { Plus, Search, Users, ShieldCheck, ShieldAlert, UserCheck, UserX, KeyRound, MoreHorizontal, Pencil, Power, PowerOff, UserPlus, Smartphone } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -53,6 +53,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useAuth } from "@/features/auth/AuthProvider";
 import {
   listOperators,
   listAdminUsers,
@@ -70,6 +71,8 @@ import { OperatorFormDialog } from "./OperatorFormDialog";
 import { AdminUserEditDialog } from "./AdminUserEditDialog";
 import { GrantPanelAccessDialog } from "./GrantPanelAccessDialog";
 import { GrantAppAccessDialog } from "./GrantAppAccessDialog";
+import { DisplayNameModerationTab } from "./DisplayNameModerationTab";
+import { RegisteredNameCorrectionDialog } from "./RegisteredNameCorrectionDialog";
 
 export function UsuariosPage() {
   return (
@@ -86,12 +89,18 @@ export function UsuariosPage() {
           <TabsTrigger value="acessos">
             <ShieldCheck className="mr-1.5 h-4 w-4" /> Acessos ao painel
           </TabsTrigger>
+          <TabsTrigger value="display-names">
+            <ShieldAlert className="mr-1.5 h-4 w-4" /> Nomes de exibição
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="operadores">
           <OperadoresTab />
         </TabsContent>
         <TabsContent value="acessos">
           <AcessosTab />
+        </TabsContent>
+        <TabsContent value="display-names">
+          <DisplayNameModerationTab />
         </TabsContent>
       </Tabs>
     </>
@@ -100,6 +109,8 @@ export function UsuariosPage() {
 
 function OperadoresTab() {
   const qc = useQueryClient();
+  const { adminUser } = useAuth();
+  const isSuperadmin = adminUser?.role === "superadmin";
   const [searchParams] = useSearchParams();
   const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
@@ -109,6 +120,7 @@ function OperadoresTab() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Operator | null>(null);
+  const [correctingRegisteredName, setCorrectingRegisteredName] = useState<Operator | null>(null);
   const [confirmToggle, setConfirmToggle] = useState<Operator | null>(null);
   const debouncedSearch = useDebounce(search, 350);
 
@@ -272,7 +284,10 @@ function OperadoresTab() {
 
             {!isLoading && rows.map((op) => (
               <TableRow key={op.id} className="cursor-pointer" onClick={() => openEdit(op)}>
-                <TableCell className="font-medium">{op.display_name}</TableCell>
+                <TableCell>
+                  <p className="font-medium">{op.registered_name}</p>
+                  <p className="max-w-[240px] truncate text-xs text-muted-foreground">Exibição: {op.display_name}</p>
+                </TableCell>
                 <TableCell className="text-muted-foreground">{op.username ?? "—"}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {op.unit_name ? unitLabel({ name: op.unit_name, city: op.unit_city, state: op.unit_state }) : "—"}
@@ -292,6 +307,11 @@ function OperadoresTab() {
                       <DropdownMenuItem onClick={() => openEdit(op)}>
                         <Pencil className="h-4 w-4" /> Editar
                       </DropdownMenuItem>
+                      {isSuperadmin && (
+                        <DropdownMenuItem onClick={() => setCorrectingRegisteredName(op)}>
+                          <Pencil className="h-4 w-4" /> Corrigir nome cadastral
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       {op.active ? (
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmToggle(op)}>
@@ -329,6 +349,13 @@ function OperadoresTab() {
       )}
 
       <OperatorFormDialog open={dialogOpen} onOpenChange={setDialogOpen} operator={editing} />
+      <RegisteredNameCorrectionDialog
+        open={Boolean(correctingRegisteredName)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setCorrectingRegisteredName(null);
+        }}
+        operator={correctingRegisteredName}
+      />
 
       <AlertDialog open={Boolean(confirmToggle)} onOpenChange={(o) => !o && setConfirmToggle(null)}>
         <AlertDialogContent>
@@ -336,8 +363,8 @@ function OperadoresTab() {
             <AlertDialogTitle>{confirmToggle?.active ? "Desativar operador?" : "Ativar operador?"}</AlertDialogTitle>
             <AlertDialogDescription>
               {confirmToggle?.active
-                ? `${confirmToggle?.display_name} deixará de acessar o app até ser reativado.`
-                : `${confirmToggle?.display_name} voltará a ter acesso ao app.`}
+                ? `${confirmToggle?.registered_name} deixará de acessar o app até ser reativado.`
+                : `${confirmToggle?.registered_name} voltará a ter acesso ao app.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

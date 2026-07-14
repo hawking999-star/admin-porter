@@ -99,6 +99,7 @@ export function shiftLabel(kind: ShiftKind | null, start: string | null, end: st
 
 export type Operator = {
   id: string;
+  registered_name: string;
   display_name: string;
   username: string | null;
   unit_id: string;
@@ -128,7 +129,7 @@ export type OperatorProvisionInput = {
 
 /** Editar o perfil do operador (não mexe no login). */
 export type OperatorUpdateInput = {
-  display_name: string;
+  registered_name: string;
   username: string | null;
   unit_id: string;
   role: string;
@@ -162,7 +163,7 @@ export async function listOperators(filters: OperatorFilters): Promise<Paginated
   let query = supabase
     .from("operators")
     .select(
-      "id, display_name, username, unit_id, role, session_policy, active, auth_user_id, units(name, city, state), shifts(name, starts_at, ends_at)",
+      "id, registered_name, display_name, username, unit_id, role, session_policy, active, auth_user_id, units(name, city, state), shifts(name, starts_at, ends_at)",
       { count: "exact" },
     )
     .order("display_name");
@@ -171,7 +172,7 @@ export async function listOperators(filters: OperatorFilters): Promise<Paginated
     const clean = term.replace(/[%,()]/g, "");
     if (clean) {
       const pattern = `%${clean}%`;
-      query = query.or(`display_name.ilike.${pattern},username.ilike.${pattern}`);
+      query = query.or(`registered_name.ilike.${pattern},display_name.ilike.${pattern},username.ilike.${pattern}`);
     }
   }
   if (filters.unitId && filters.unitId !== "all") query = query.eq("unit_id", filters.unitId);
@@ -184,6 +185,7 @@ export async function listOperators(filters: OperatorFilters): Promise<Paginated
 
   const rows = (data ?? []).map((o: any) => ({
     id: o.id,
+    registered_name: o.registered_name ?? o.display_name,
     display_name: o.display_name,
     username: o.username ?? null,
     unit_id: o.unit_id,
@@ -267,9 +269,9 @@ export async function provisionOperator(input: OperatorProvisionInput): Promise<
 }
 
 export async function updateOperator(id: string, input: OperatorUpdateInput): Promise<void> {
-  const { error } = await supabase.rpc("admin_update_operator", {
+  const { error } = await supabase.rpc("admin_update_operator_profile_v2", {
     p_operator: id,
-    p_display_name: input.display_name,
+    p_registered_name: input.registered_name,
     p_username: input.username,
     p_unit_id: input.unit_id,
     p_role: input.role,
@@ -279,19 +281,168 @@ export async function updateOperator(id: string, input: OperatorUpdateInput): Pr
   if (error) throw error;
 }
 
+export async function correctOperatorRegisteredName(
+  id: string,
+  registeredName: string,
+  reason: string,
+): Promise<void> {
+  const { data, error } = await supabase.rpc("admin_correct_operator_registered_name", {
+    p_operator: id,
+    p_registered_name: registeredName,
+    p_reason: reason,
+  });
+  if (error) throw error;
+
+  const response = data as {
+    success?: boolean;
+    error?: { message?: string } | null;
+  } | null;
+  if (response?.success === false) {
+    throw new Error(response.error?.message ?? "Não foi possível corrigir o nome cadastral.");
+  }
+}
+
 /**
  * Ativa/desativa um operador reaproveitando o RPC de edição.
  * Mantém todos os demais campos e apenas troca o `active`.
  */
 export async function setOperatorActive(op: Operator, active: boolean): Promise<void> {
   await updateOperator(op.id, {
-    display_name: op.display_name,
+    registered_name: op.registered_name,
     username: op.username,
     unit_id: op.unit_id,
     role: op.role,
     session_policy: op.session_policy,
     active,
   });
+}
+
+/* --------------------- Nomes de exibiÃ§Ã£o e moderaÃ§Ã£o -------------------- */
+
+export type DisplayNameResult = "allowed" | "blocked" | "approved" | "rejected" | "rate_limited";
+
+export type DisplayNameRequest = {
+  id: string;
+  operator_id: string;
+  operator_name: string;
+  current_display_name: string;
+  unit_id: string;
+  unit_name: string;
+  unit_city: string | null;
+  unit_state: string | null;
+  unit_code: string | null;
+  previous_name: string;
+  requested_name: string;
+  applied_name: string | null;
+  moderation_result: "allowed" | "blocked" | "rate_limited";
+  moderation_reason: string | null;
+  review_status: "not_required" | "pending" | "approved" | "rejected";
+  review_reason: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  source: "operator_app" | "admin_panel" | "admin_approval" | "system";
+  occurred_at: string;
+  applied_at: string | null;
+};
+
+export type DisplayNameRequestFilters = PageParams & {
+  search?: string;
+  unitId?: string;
+  result?: "all" | DisplayNameResult;
+  startAt?: string;
+  endAt?: string;
+};
+
+export type DisplayNameModerationTerm = {
+  id: string;
+  term: string;
+  match_type: "exact_name" | "whole_word" | "obfuscated";
+  active: boolean;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+  updated_by: string | null;
+};
+
+export type DisplayNameTermInput = {
+  id?: string;
+  term: string;
+  match_type: DisplayNameModerationTerm["match_type"];
+  active: boolean;
+  reason: string;
+};
+
+type RpcEnvelope<T> = {
+  success: boolean;
+  data: T | null;
+  error: { code?: string; message?: string } | null;
+};
+
+function assertRpcSuccess<T>(payload: unknown): T {
+  const envelope = payload as RpcEnvelope<T> | null;
+  if (!envelope?.success || envelope.data == null) {
+    throw new Error(envelope?.error?.message ?? "NÃ£o foi possÃ­vel concluir a operaÃ§Ã£o.");
+  }
+  return envelope.data;
+}
+
+export async function listDisplayNameRequests(
+  filters: DisplayNameRequestFilters,
+): Promise<PaginatedResult<DisplayNameRequest>> {
+  const { data, error } = await supabase.rpc("admin_list_operator_display_name_requests", {
+    p_request: {
+      page: filters.page,
+      page_size: filters.pageSize,
+      search: filters.search?.trim() || null,
+      unit_id: filters.unitId && filters.unitId !== "all" ? filters.unitId : null,
+      result: filters.result && filters.result !== "all" ? filters.result : null,
+      start_at: filters.startAt || null,
+      end_at: filters.endAt || null,
+    },
+  });
+  if (error) throw error;
+  const payload = data as { rows?: DisplayNameRequest[]; total?: number } | null;
+  return { rows: payload?.rows ?? [], total: payload?.total ?? 0 };
+}
+
+export async function reviewDisplayNameRequest(
+  requestId: string,
+  decision: "approve" | "reject",
+  reason: string,
+): Promise<void> {
+  const { data, error } = await supabase.rpc("admin_review_operator_display_name_request", {
+    p_request: { request_id: requestId, decision, reason },
+  });
+  if (error) throw error;
+  assertRpcSuccess(data);
+}
+
+export async function listDisplayNameTerms(filters: {
+  page: number;
+  pageSize: number;
+  search?: string;
+  active?: "all" | "active" | "inactive";
+}): Promise<PaginatedResult<DisplayNameModerationTerm>> {
+  const { data, error } = await supabase.rpc("admin_list_operator_display_name_terms", {
+    p_request: {
+      page: filters.page,
+      page_size: filters.pageSize,
+      search: filters.search?.trim() || null,
+      active: filters.active ?? "all",
+    },
+  });
+  if (error) throw error;
+  const payload = data as { rows?: DisplayNameModerationTerm[]; total?: number } | null;
+  return { rows: payload?.rows ?? [], total: payload?.total ?? 0 };
+}
+
+export async function upsertDisplayNameTerm(input: DisplayNameTermInput): Promise<void> {
+  const { data, error } = await supabase.rpc("admin_upsert_operator_display_name_term", {
+    p_request: input,
+  });
+  if (error) throw error;
+  assertRpcSuccess(data);
 }
 
 /* --------------------------- Acessos (admin_users) ----------------------- */

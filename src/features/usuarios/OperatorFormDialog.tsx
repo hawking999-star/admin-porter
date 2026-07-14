@@ -58,7 +58,7 @@ export function OperatorFormDialog({
     staleTime: 60_000,
   });
 
-  const [displayName, setDisplayName] = useState("");
+  const [registeredName, setRegisteredName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -72,7 +72,7 @@ export function OperatorFormDialog({
 
   useEffect(() => {
     if (open) {
-      setDisplayName(operator?.display_name ?? "");
+      setRegisteredName(operator?.registered_name ?? operator?.display_name ?? "");
       setUsername(operator?.username ?? "");
       setEmail("");
       setPassword("");
@@ -91,7 +91,7 @@ export function OperatorFormDialog({
       let operatorId = operator?.id ?? null;
       if (operator) {
         await updateOperator(operator.id, {
-          display_name: displayName.trim(),
+          registered_name: operator.registered_name,
           username: username.trim() || null,
           unit_id: unitId,
           role,
@@ -100,7 +100,7 @@ export function OperatorFormDialog({
         });
       } else {
         operatorId = await provisionOperator({
-          display_name: displayName.trim(),
+          display_name: registeredName.trim(),
           username: username.trim(),
           email: email.trim(),
           password,
@@ -160,15 +160,32 @@ export function OperatorFormDialog({
 
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="display_name">Nome</Label>
+              <Label htmlFor="registered_name">Nome cadastral</Label>
               <Input
-                id="display_name"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                id="registered_name"
+                value={registeredName}
+                onChange={(e) => setRegisteredName(e.target.value)}
                 placeholder="Ex.: João da Silva"
+                readOnly={isEdit}
+                disabled={isEdit}
                 required
               />
+              <p className="text-xs text-muted-foreground">
+                {isEdit
+                  ? "Para corrigir este dado, use a ação exclusiva de Super admin na lista de Operadores."
+                  : "Este será o nome cadastral e o nome de exibição inicial do Operador."}
+              </p>
             </div>
+
+            {isEdit && operator && (
+              <div className="space-y-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
+                <Label htmlFor="current_display_name">Nome de exibição atual</Label>
+                <Input id="current_display_name" value={operator.display_name} readOnly disabled />
+                <p className="text-xs text-muted-foreground">
+                  Este é o nome mostrado no App. As trocas e aprovações ficam na aba Nomes de exibição.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="username">Usuário</Label>
