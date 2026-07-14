@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Clock, Download, FileSpreadsheet, FileUp, Layers, ListChecks, Puzzle, Settings2, Upload, X } from "lucide-react";
+import { Download, FileSpreadsheet, FileUp, Layers, ListChecks, Puzzle, Settings2, Upload, X } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -18,12 +18,11 @@ const PAGE_SIZE = 12;
 type UnitOption = { id: string; name: string; city: string | null; state: string | null; code: string | null };
 
 function downloadCsvTemplate() { const blob = new Blob([challengeCsvTemplate()], { type: "text/csv;charset=utf-8;" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "modelo-desafio-multipla-escolha.csv"; link.click(); URL.revokeObjectURL(url); }
-function seconds(value: number) { return value < 60 ? `${value}s` : `${Math.floor(value / 60)} min`; }
 function csvColumns(row: string) { return [...row.matchAll(/(?:^|,)(?:"([^"]*)"|([^,]*))/g)].map((m) => (m[1] ?? m[2] ?? "").trim()); }
 
 function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
   const [unitId, setUnitId] = useState(""); const [file, setFile] = useState<File | null>(null); const inputRef = useRef<HTMLInputElement>(null); const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<ChallengeInput>({ unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", duration_seconds: 60, status: "draft" });
+  const [form, setForm] = useState<ChallengeInput>({ unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", status: "draft" });
   async function submit() {
     if (!unitId) return toast.error("Escolha o condomínio.");
     setSaving(true);
@@ -32,7 +31,7 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
         if (!file.name.toLowerCase().endsWith(".csv")) throw new Error("PDF ainda não é importado. Use CSV ou cadastro manual.");
         const rows = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean).slice(1);
         if (!rows.length) throw new Error("A planilha não possui linhas de desafio.");
-        for (const row of rows) { const c = csvColumns(row); if (c.length < 8 || !/^[ABCD]$/i.test(c[6] ?? "")) throw new Error(`Linha inválida: ${row}`); await upsertChallenge({ unit_id: unitId, title: c[0], prompt: c[1], alternatives: [c[2], c[3], c[4], c[5]], correct: c[6].toUpperCase(), duration_seconds: Number(c[7]) || 60, status: "draft" }); }
+        for (const row of rows) { const c = csvColumns(row); if (c.length < 7 || !/^[ABCD]$/i.test(c[6] ?? "")) throw new Error(`Linha inválida: ${row}`); await upsertChallenge({ unit_id: unitId, title: c[0], prompt: c[1], alternatives: [c[2], c[3], c[4], c[5]], correct: c[6].toUpperCase(), status: "draft" }); }
         toast.success(`${rows.length} desafio(s) importado(s) como rascunho.`);
       } else {
         if (!form.title.trim() || !form.prompt.trim() || form.alternatives.some((value) => !value.trim()) || !/^[ABCD]$/.test(form.correct)) throw new Error("Preencha título, enunciado, quatro alternativas e a correta (A-D).");
@@ -41,7 +40,73 @@ function ChallengeDialog({ open, onOpenChange, units, onSaved }: { open: boolean
       onSaved(); onOpenChange(false); setFile(null); setUnitId("");
     } catch (error) { toast.error(error instanceof Error ? error.message : "Não foi possível salvar."); } finally { setSaving(false); }
   }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto"><DialogHeader><DialogTitle>Novo desafio</DialogTitle><DialogDescription>Crie manualmente ou importe um CSV. O PDF permanece fora desta primeira entrega.</DialogDescription></DialogHeader><div className="space-y-3"><Select value={unitId} onValueChange={setUnitId}><SelectTrigger><SelectValue placeholder="Condomínio" /></SelectTrigger><SelectContent>{units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2"><Button size="sm" variant="outline" onClick={downloadCsvTemplate}><Download className="h-4 w-4" /> Modelo CSV</Button><input ref={inputRef} className="hidden" type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />{file ? <span className="inline-flex items-center gap-1 text-sm"><FileUp className="h-4 w-4" />{file.name}<button onClick={() => setFile(null)}><X className="h-4 w-4" /></button></span> : <Button size="sm" variant="outline" onClick={() => inputRef.current?.click()}><FileSpreadsheet className="h-4 w-4" /> Importar CSV</Button>}</div>{!file && <div className="space-y-2 rounded-lg border p-3"><Input placeholder="Título" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /><Textarea placeholder="Enunciado" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />{form.alternatives.map((value, index) => <Input key={index} placeholder={`Alternativa ${"ABCD"[index]}`} value={value} onChange={(event) => { const alternatives = [...form.alternatives] as ChallengeInput["alternatives"]; alternatives[index] = event.target.value; setForm({ ...form, alternatives }); }} />)}<div className="grid grid-cols-2 gap-2"><Input maxLength={1} placeholder="Correta (A-D)" value={form.correct} onChange={(event) => setForm({ ...form, correct: event.target.value.toUpperCase() })} /><Input type="number" min="15" value={form.duration_seconds} onChange={(event) => setForm({ ...form, duration_seconds: Number(event.target.value) })} /></div></div>}</div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button><Button disabled={saving} onClick={submit}><Upload className="h-4 w-4" /> Salvar</Button></DialogFooter></DialogContent></Dialog>;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Novo desafio</DialogTitle>
+          <DialogDescription>
+            Cadastre o conteúdo do desafio manualmente ou importe uma planilha CSV. Os tempos de exibição, resposta e punição são definidos em Regras.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-sm font-semibold">Condomínio</label>
+            <Select value={unitId} onValueChange={setUnitId}>
+              <SelectTrigger><SelectValue placeholder="Selecione o condomínio" /></SelectTrigger>
+              <SelectContent>{units.map((unit) => <SelectItem key={unit.id} value={unit.id}>{unitLabel(unit)}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-100">
+            Este cadastro contém somente pergunta, alternativas e resposta correta. A janela para aparecer, o prazo para responder e os bloqueios são aplicados pelas regras do condomínio.
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" onClick={downloadCsvTemplate}>
+              <Download className="h-4 w-4" /> Baixar modelo atualizado
+            </Button>
+            <input ref={inputRef} className="hidden" type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+            {file ? (
+              <span className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm">
+                <FileUp className="h-4 w-4" />{file.name}
+                <button type="button" onClick={() => setFile(null)} aria-label="Remover arquivo"><X className="h-4 w-4" /></button>
+              </span>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => inputRef.current?.click()}>
+                <FileSpreadsheet className="h-4 w-4" /> Importar planilha CSV
+              </Button>
+            )}
+          </div>
+
+          {!file && (
+            <div className="space-y-3 rounded-lg border p-3">
+              <Input placeholder="Título do desafio" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+              <Textarea placeholder="Pergunta ou enunciado" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />
+              <div className="grid gap-2 sm:grid-cols-2">
+                {form.alternatives.map((value, index) => (
+                  <Input key={index} placeholder={`Alternativa ${"ABCD"[index]}`} value={value} onChange={(event) => { const alternatives = [...form.alternatives] as ChallengeInput["alternatives"]; alternatives[index] = event.target.value; setForm({ ...form, alternatives }); }} />
+                ))}
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold">Alternativa correta</label>
+                <Select value={form.correct} onValueChange={(correct) => setForm({ ...form, correct })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{["A", "B", "C", "D"].map((letter) => <SelectItem key={letter} value={letter}>Alternativa {letter}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button disabled={saving} onClick={submit}><Upload className="h-4 w-4" /> Salvar desafio</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function timeLabel(totalSeconds: number) {
@@ -172,10 +237,93 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
 }
 
 export function ChallengesPage() {
-  const [search, setSearch] = useState(""); const [status, setStatus] = useState("all"); const [kind, setKind] = useState("all"); const [unit, setUnit] = useState("all"); const [page, setPage] = useState(1); const [createOpen, setCreateOpen] = useState(false); const [rulesOpen, setRulesOpen] = useState(false); const queryClient = useQueryClient(); const debouncedSearch = useDebounce(search, 300);
-  const units = useQuery({ queryKey: ["challenges", "units"], queryFn: listUnitOptions, staleTime: 60_000 }); const stats = useQuery({ queryKey: ["challenges", "stats"], queryFn: countChallengeStats, staleTime: 30_000 });
-  const filters = useMemo(() => ({ page, pageSize: PAGE_SIZE, search: debouncedSearch, status, kind, unit }), [page, debouncedSearch, status, kind, unit]); const list = useQuery({ queryKey: ["challenges", "list", filters], queryFn: () => listChallenges(filters), placeholderData: keepPreviousData }); const rows = list.data?.rows ?? []; const total = list.data?.total ?? 0;
-  const refresh = () => { void queryClient.invalidateQueries({ queryKey: ["challenges"] }); void queryClient.invalidateQueries({ queryKey: ["challenge-rules"] }); };
-  const changeStatus = async (id: string, next: "draft" | "active" | "inactive" | "archived") => { try { await setChallengeStatus(id, next); toast.success("Status atualizado."); refresh(); } catch (error) { toast.error(error instanceof Error ? error.message : "Não foi possível atualizar o status."); } };
-  return <div><PageHeader eyebrow="Engajamento" title="Desafios" description="Cadastre desafios e defina as janelas, punições e bloqueios que o servidor aplicará aos Operadores." action={<div className="flex gap-2"><Button variant="outline" onClick={() => setRulesOpen(true)}><Settings2 className="h-4 w-4" /> Regras</Button><Button onClick={() => setCreateOpen(true)}><Upload className="h-4 w-4" /> Novo desafio</Button></div>} /><div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4"><StatCard icon={<Layers className="h-5 w-5" />} label="Total" value={stats.data?.total ?? 0} loading={stats.isLoading} /><StatCard icon={<Puzzle className="h-5 w-5" />} label="Ativos" value={stats.data?.active ?? 0} loading={stats.isLoading} /><StatCard icon={<FileSpreadsheet className="h-5 w-5" />} label="Rascunhos" value={stats.data?.draft ?? 0} loading={stats.isLoading} /><StatCard icon={<ListChecks className="h-5 w-5" />} label="Aplicações" value={stats.data?.applications ?? 0} hint="Registros reais" loading={stats.isLoading} /></div><FilterBar resultText={list.isLoading ? "Carregando…" : `${total} desafio(s)`}><SearchInput value={search} onChange={(value) => { setSearch(value); setPage(1); }} placeholder="Buscar por título ou enunciado" /><Select value={unit} onValueChange={(value) => { setUnit(value); setPage(1); }}><SelectTrigger className="w-[190px]"><SelectValue placeholder="Condomínio" /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="global">Globais</SelectItem>{(units.data ?? []).map((item) => <SelectItem key={item.id} value={item.id}>{unitLabel(item)}</SelectItem>)}</SelectContent></Select><Select value={status} onValueChange={(value) => { setStatus(value); setPage(1); }}><SelectTrigger className="w-[145px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos status</SelectItem>{CHALLENGE_STATUSES.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select><Select value={kind} onValueChange={(value) => { setKind(value); setPage(1); }}><SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos tipos</SelectItem>{CHALLENGE_KINDS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></FilterBar>{list.isError ? <Card><ErrorState title="Não foi possível carregar os desafios." description={(list.error as Error).message} action={<RetryButton onClick={() => list.refetch()} />} /></Card> : rows.length === 0 && !list.isLoading ? <Card><EmptyState icon={<Puzzle className="h-6 w-6" />} title="Ainda não há desafios." description="Crie um desafio ou importe um CSV para começar." action={<Button onClick={() => setCreateOpen(true)}>Novo desafio</Button>} /></Card> : <div className="grid gap-3 md:grid-cols-2">{rows.map((challenge) => { const badge = challengeStatusBadge(challenge.status); return <Card key={challenge.id} className="space-y-3 p-5"><div className="flex items-center justify-between gap-3"><h3 className="font-semibold">{challenge.title}</h3><StatusBadge label={badge.label} tone={badge.tone} /></div><p className="line-clamp-2 text-sm text-muted-foreground">{challenge.prompt}</p><div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span className="inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5" />{seconds(challenge.duration_seconds ?? 60)}</span><span>{challenge.unit_name ?? "Global"}</span></div></Card>; })}</div>}{total > 0 && <PaginationFooter page={page} pageSize={PAGE_SIZE} total={total} isLoading={list.isFetching} onPageChange={setPage} />}<ChallengeDialog open={createOpen} onOpenChange={setCreateOpen} units={units.data ?? []} onSaved={refresh} /><RulesDialog open={rulesOpen} onOpenChange={setRulesOpen} units={units.data ?? []} onSaved={refresh} /></div>;
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("all");
+  const [kind, setKind] = useState("all");
+  const [unit, setUnit] = useState("all");
+  const [page, setPage] = useState(1);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const debouncedSearch = useDebounce(search, 300);
+  const units = useQuery({ queryKey: ["challenges", "units"], queryFn: listUnitOptions, staleTime: 60_000 });
+  const stats = useQuery({ queryKey: ["challenges", "stats"], queryFn: countChallengeStats, staleTime: 30_000 });
+  const filters = useMemo(() => ({ page, pageSize: PAGE_SIZE, search: debouncedSearch, status, kind, unit }), [page, debouncedSearch, status, kind, unit]);
+  const list = useQuery({ queryKey: ["challenges", "list", filters], queryFn: () => listChallenges(filters), placeholderData: keepPreviousData });
+  const rows = list.data?.rows ?? [];
+  const total = list.data?.total ?? 0;
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["challenges"] });
+    void queryClient.invalidateQueries({ queryKey: ["challenge-rules"] });
+  };
+  const changeStatus = async (id: string, next: "draft" | "active" | "inactive" | "archived") => {
+    try {
+      await setChallengeStatus(id, next);
+      toast.success("Status atualizado.");
+      refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar o status.");
+    }
+  };
+
+  return (
+    <div>
+      <PageHeader
+        eyebrow="Engajamento"
+        title="Desafios"
+        description="Cadastre desafios e defina as janelas, punições e bloqueios que o servidor aplicará aos Operadores."
+        action={<div className="flex gap-2"><Button variant="outline" onClick={() => setRulesOpen(true)}><Settings2 className="h-4 w-4" /> Regras</Button><Button onClick={() => setCreateOpen(true)}><Upload className="h-4 w-4" /> Novo desafio</Button></div>}
+      />
+
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard icon={<Layers className="h-5 w-5" />} label="Total" value={stats.data?.total ?? 0} loading={stats.isLoading} />
+        <StatCard icon={<Puzzle className="h-5 w-5" />} label="Ativos" value={stats.data?.active ?? 0} loading={stats.isLoading} />
+        <StatCard icon={<FileSpreadsheet className="h-5 w-5" />} label="Rascunhos" value={stats.data?.draft ?? 0} loading={stats.isLoading} />
+        <StatCard icon={<ListChecks className="h-5 w-5" />} label="Aplicações" value={stats.data?.applications ?? 0} hint="Registros reais" loading={stats.isLoading} />
+      </div>
+
+      <FilterBar resultText={list.isLoading ? "Carregando…" : `${total} desafio(s)`}>
+        <SearchInput value={search} onChange={(value) => { setSearch(value); setPage(1); }} placeholder="Buscar por título ou enunciado" />
+        <Select value={unit} onValueChange={(value) => { setUnit(value); setPage(1); }}>
+          <SelectTrigger className="w-[190px]"><SelectValue placeholder="Condomínio" /></SelectTrigger>
+          <SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="global">Globais</SelectItem>{(units.data ?? []).map((item) => <SelectItem key={item.id} value={item.id}>{unitLabel(item)}</SelectItem>)}</SelectContent>
+        </Select>
+        <Select value={status} onValueChange={(value) => { setStatus(value); setPage(1); }}>
+          <SelectTrigger className="w-[145px]"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="all">Todos status</SelectItem>{CHALLENGE_STATUSES.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+        <Select value={kind} onValueChange={(value) => { setKind(value); setPage(1); }}>
+          <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="all">Todos tipos</SelectItem>{CHALLENGE_KINDS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </FilterBar>
+
+      {list.isError ? (
+        <Card><ErrorState title="Não foi possível carregar os desafios." description={(list.error as Error).message} action={<RetryButton onClick={() => list.refetch()} />} /></Card>
+      ) : rows.length === 0 && !list.isLoading ? (
+        <Card><EmptyState icon={<Puzzle className="h-6 w-6" />} title="Ainda não há desafios." description="Crie um desafio ou importe um CSV para começar." action={<Button onClick={() => setCreateOpen(true)}>Novo desafio</Button>} /></Card>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {rows.map((challenge) => {
+            const badge = challengeStatusBadge(challenge.status);
+            return (
+              <Card key={challenge.id} className="space-y-3 p-5">
+                <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">{challenge.title}</h3><StatusBadge label={badge.label} tone={badge.tone} /></div>
+                <p className="line-clamp-2 text-sm text-muted-foreground">{challenge.prompt}</p>
+                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span>Tempo definido nas regras</span><span>{challenge.unit_name ?? "Global"}</span></div>
+                <div className="flex gap-2 border-t pt-3">
+                  <Button size="sm" variant="outline" onClick={() => changeStatus(challenge.id, challenge.status === "active" ? "inactive" : "active")}>{challenge.status === "active" ? "Inativar" : "Ativar"}</Button>
+                  {challenge.status !== "archived" && <Button size="sm" variant="ghost" onClick={() => changeStatus(challenge.id, "archived")}>Arquivar</Button>}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {total > 0 && <PaginationFooter page={page} pageSize={PAGE_SIZE} total={total} isLoading={list.isFetching} onPageChange={setPage} />}
+      <ChallengeDialog open={createOpen} onOpenChange={setCreateOpen} units={units.data ?? []} onSaved={refresh} />
+      <RulesDialog open={rulesOpen} onOpenChange={setRulesOpen} units={units.data ?? []} onSaved={refresh} />
+    </div>
+  );
 }

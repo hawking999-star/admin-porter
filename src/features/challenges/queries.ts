@@ -60,8 +60,6 @@ export type Challenge = {
   prompt: string;
   kind: string;
   status: string;
-  duration_seconds: number | null;
-  block_seconds: number | null;
   revision: number;
   created_at: string;
   updated_at: string | null;
@@ -80,16 +78,15 @@ export type ChallengeFilters = PageParams & {
 /**
  * Modelo de planilha (CSV) para envio de desafios de MÚLTIPLA ESCOLHA.
  * `correta` = letra da alternativa correta (A, B, C ou D).
- * `duracao_segundos` padrão 60; `bloqueio_segundos` é opcional.
+ * Os tempos de exibição, resposta e punição são definidos nas regras, não em cada desafio.
  * O prefixo BOM (U+FEFF) garante acentos corretos ao abrir no Excel.
  */
 export function challengeCsvTemplate(): string {
-  const header =
-    "titulo,enunciado,alternativa_a,alternativa_b,alternativa_c,alternativa_d,correta,duracao_segundos,bloqueio_segundos";
+  const header = "titulo,enunciado,alternativa_a,alternativa_b,alternativa_c,alternativa_d,correta";
   const rows = [
-    '"Coleta seletiva","Em que dia passa a coleta de recicláveis no condomínio?","Segunda","Quarta","Sexta","Domingo","B","60","120"',
-    '"Portaria","Qual o ramal da portaria?","2010","2020","2030","2040","A","45",""',
-    '"Regras da piscina","Até que horário a piscina fica aberta em dias úteis?","20h","21h","22h","23h","C","60","180"',
+    '"Coleta seletiva","Em que dia passa a coleta de recicláveis no condomínio?","Segunda","Quarta","Sexta","Domingo","B"',
+    '"Portaria","Qual o ramal da portaria?","2010","2020","2030","2040","A"',
+    '"Regras da piscina","Até que horário a piscina fica aberta em dias úteis?","20h","21h","22h","23h","C"',
   ];
   return String.fromCharCode(0xfeff) + [header, ...rows].join("\r\n") + "\r\n";
 }
@@ -144,7 +141,6 @@ export type ChallengeInput = {
   prompt: string;
   alternatives: [string, string, string, string];
   correct: string;
-  duration_seconds: number;
   status: string;
 };
 
@@ -175,7 +171,7 @@ export async function listChallenges(filters: ChallengeFilters): Promise<Paginat
   let query = supabase
     .from("challenges")
     .select(
-      "id, title, prompt, kind, status, duration_seconds, block_seconds, revision, created_at, updated_at, units(name, city, state)",
+      "id, title, prompt, kind, status, revision, created_at, updated_at, units(name, city, state)",
       { count: "exact" },
     )
     .order("created_at", { ascending: false });
@@ -198,8 +194,6 @@ export async function listChallenges(filters: ChallengeFilters): Promise<Paginat
     prompt: c.prompt,
     kind: c.kind,
     status: c.status,
-    duration_seconds: c.duration_seconds ?? null,
-    block_seconds: c.block_seconds ?? null,
     revision: c.revision ?? 0,
     created_at: c.created_at,
     updated_at: c.updated_at ?? null,
