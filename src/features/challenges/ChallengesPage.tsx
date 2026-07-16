@@ -187,6 +187,7 @@ function TimeField({ label, description, value, onChange }: { label: string; des
 }
 
 function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
+  const queryClient = useQueryClient();
   const [scope, setScope] = useState("global");
   const unitId = scope === "global" ? null : scope;
   const rules = useQuery({ queryKey: ["challenge-rules", unitId], queryFn: () => getChallengeRules(unitId), enabled: open });
@@ -202,7 +203,23 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
       return { ...base, error_block_seconds: errorBlocks };
     });
   };
-  async function save() { try { await saveChallengeRules(unitId, value); toast.success("Regras salvas."); onSaved(); onOpenChange(false); } catch (error) { toast.error(error instanceof Error ? error.message : "Não foi possível salvar regras."); } }
+  async function save() {
+    try {
+      await saveChallengeRules(unitId, value);
+      toast.success("Regras salvas e agendamentos atualizados.");
+      onSaved();
+      onOpenChange(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível salvar regras.";
+      if (message.includes("challenge_rules_conflict")) {
+        setDraft(null);
+        await queryClient.invalidateQueries({ queryKey: ["challenge-rules", unitId] });
+        toast.error("Outro admin alterou estas regras. Os valores mais recentes foram recarregados; revise antes de salvar novamente.");
+        return;
+      }
+      toast.error(message);
+    }
+  }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">

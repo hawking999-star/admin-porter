@@ -102,6 +102,7 @@ export type ChallengeStats = {
 };
 
 export type ChallengeRules = {
+  revision: number;
   min_interval_seconds: number;
   max_interval_seconds: number;
   response_seconds: number;
@@ -113,6 +114,7 @@ export type ChallengeRules = {
 };
 
 export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
+  revision: 0,
   min_interval_seconds: 180,
   max_interval_seconds: 300,
   response_seconds: 60,
@@ -126,7 +128,7 @@ export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
 export async function getChallengeRules(unitId: string | null): Promise<ChallengeRules> {
   let query = supabase
     .from("system_settings")
-    .select("value")
+    .select("value, revision")
     .eq("key", "challenge_rules")
     .eq("active", true)
     .eq("scope_type", unitId ? "unit" : "global")
@@ -135,7 +137,11 @@ export async function getChallengeRules(unitId: string | null): Promise<Challeng
   query = unitId ? query.eq("scope_id", unitId) : query.is("scope_id", null);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
-  return { ...DEFAULT_CHALLENGE_RULES, ...((data?.value as Partial<ChallengeRules> | null) ?? {}) };
+  return {
+    ...DEFAULT_CHALLENGE_RULES,
+    ...((data?.value as Partial<ChallengeRules> | null) ?? {}),
+    revision: Number(data?.revision ?? 0),
+  };
 }
 
 export async function saveChallengeRules(unitId: string | null, rules: ChallengeRules): Promise<void> {
