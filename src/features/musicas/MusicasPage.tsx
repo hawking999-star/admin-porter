@@ -1249,9 +1249,9 @@ export function MusicasPage() {
                   A playlist de {confirmPlaylist?.operator_name ?? "—"} ficará ativa para o operador no app.
                 </DialogDescription>
               </DialogHeader>
-              <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
-                <p className="mb-1 font-medium">{confirmPlaylist ? playlistTypeLabel(confirmPlaylist.type) : ""} · {unitText(confirmPlaylist ?? ({} as Playlist))}</p>
-                <p className="truncate text-muted-foreground">{confirmPlaylist?.source_url ?? "sem link"}</p>
+              <div className="min-w-0 max-w-full rounded-lg border border-border bg-muted/40 p-3 text-sm">
+                <p className="mb-1 truncate font-medium">{confirmPlaylist ? playlistTypeLabel(confirmPlaylist.type) : ""} · {unitText(confirmPlaylist ?? ({} as Playlist))}</p>
+                <p className="min-w-0 truncate text-muted-foreground" title={confirmPlaylist?.source_url ?? undefined}>{confirmPlaylist?.source_url ?? "sem link"}</p>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setConfirmState(null)}>
