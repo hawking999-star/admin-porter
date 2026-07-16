@@ -144,6 +144,57 @@ function timeLabel(totalSeconds: number) {
   return secondsLeft ? `${minutes} min e ${secondsLeft}s` : `${minutes} minuto(s)`;
 }
 
+function activeWindowSeconds(start: string, end: string): number {
+  const toMinutes = (value: string) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+  const startMinutes = toMinutes(start);
+  const endMinutes = toMinutes(end);
+  if (startMinutes === endMinutes) return 86_400;
+  const durationMinutes = endMinutes > startMinutes
+    ? endMinutes - startMinutes
+    : 1_440 - startMinutes + endMinutes;
+  return durationMinutes * 60;
+}
+
+function validateChallengeRules(rules: ChallengeRules): string | null {
+  if (!Number.isFinite(rules.min_interval_seconds) || rules.min_interval_seconds < 1) {
+    return "O tempo mínimo precisa ser maior que zero.";
+  }
+  if (!Number.isFinite(rules.max_interval_seconds) || rules.max_interval_seconds < rules.min_interval_seconds) {
+    return "O tempo máximo precisa ser igual ou maior que o tempo mínimo.";
+  }
+  if (!Number.isFinite(rules.response_seconds) || rules.response_seconds < 1) {
+    return "O tempo para responder precisa ser maior que zero.";
+  }
+  if (!Number.isFinite(rules.abandon_block_seconds) || rules.abandon_block_seconds < 0) {
+    return "A punição por fechar o App não pode ser negativa.";
+  }
+  if (rules.error_block_seconds.some((seconds) => !Number.isFinite(seconds) || seconds < 0)) {
+    return "Os tempos de bloqueio por resposta errada não podem ser negativos.";
+  }
+
+  const windowSeconds = activeWindowSeconds(rules.active_window_start, rules.active_window_end);
+  const unrestricted = rules.active_window_start === rules.active_window_end;
+  if (!unrestricted && rules.max_interval_seconds >= windowSeconds) {
+    return `O tempo máximo precisa ser menor que a faixa permitida de ${timeLabel(windowSeconds)}. Aumente o horário final ou reduza o tempo máximo.`;
+  }
+  return null;
+}
+
+const CHALLENGE_RULE_ERROR_MESSAGES: Record<string, string> = {
+  janela_intervalo_invalida: "O tempo máximo precisa ser igual ou maior que o tempo mínimo.",
+  tempo_resposta_invalido: "O tempo para responder precisa ser maior que zero.",
+  tempo_abandono_invalido: "A punição por fechar o App não pode ser negativa.",
+  janela_horario_invalida: "O horário permitido informado é inválido.",
+  fuso_horario_invalido: "O fuso horário configurado é inválido.",
+  intervalo_maior_que_janela_horaria: "O tempo máximo precisa ser menor que a faixa de horário permitida.",
+  acesso_negado: "Seu acesso de Admin não está ativo.",
+  permissao_insuficiente: "Seu perfil não tem permissão para alterar regras de desafios.",
+  fora_do_escopo_da_unidade: "Seu perfil não pode alterar regras deste condomínio.",
+};
+
 function RuleField({
   label,
   description,
@@ -189,6 +240,7 @@ function TimeField({ label, description, value, onChange }: { label: string; des
 function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; onSaved: () => void }) {
   const queryClient = useQueryClient();
   const [scope, setScope] = useState("global");
+  const [saving, setSaving] = useState(false);
   const unitId = scope === "global" ? null : scope;
   const rules = useQuery({ queryKey: ["challenge-rules", unitId], queryFn: () => getChallengeRules(unitId), enabled: open });
   const [draft, setDraft] = useState<ChallengeRules | null>(null);
@@ -204,20 +256,28 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
     });
   };
   async function save() {
+    const validationMessage = validateChallengeRules(value);
+    if (validationMessage) {
+      toast.error(validationMessage);
+      return;
+    }
+    setSaving(true);
     try {
       await saveChallengeRules(unitId, value);
       toast.success("Regras salvas e agendamentos atualizados.");
       onSaved();
       onOpenChange(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Não foi possível salvar regras.";
+      const message = errorMessage(error, "Não foi possível salvar regras.");
       if (message.includes("challenge_rules_conflict")) {
         setDraft(null);
         await queryClient.invalidateQueries({ queryKey: ["challenge-rules", unitId] });
         toast.error("Outro admin alterou estas regras. Os valores mais recentes foram recarregados; revise antes de salvar novamente.");
         return;
       }
-      toast.error(message);
+      toast.error(CHALLENGE_RULE_ERROR_MESSAGES[message] ?? message);
+    } finally {
+      setSaving(false);
     }
   }
   return (
@@ -310,7 +370,7 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={save}>Salvar regras</Button>
+          <Button disabled={saving || rules.isLoading} onClick={save}>{saving ? "Salvando..." : "Salvar regras"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
