@@ -6,8 +6,6 @@ import {
   AreaChart,
   Cell,
   CartesianGrid,
-  Line,
-  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -212,59 +210,55 @@ function CardsSkeleton() {
   );
 }
 
-function metricCards(metrics: AnalyticsMetrics, averageByCondominium = false) {
-  const scopeHint = averageByCondominium ? "Média por condomínio" : undefined;
-  const formatCount = (value: number) =>
-    averageByCondominium ? value.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : value;
-
+function metricCards(metrics: AnalyticsMetrics) {
   return [
     {
       icon: <Users className="h-5 w-5" />,
-      label: averageByCondominium ? "Média de Operadores ativos" : "Operadores ativos",
-      value: formatCount(metrics.active_operators),
-      hint: scopeHint ?? "Com sessão no período",
+      label: "Operadores ativos",
+      value: metrics.active_operators,
+      hint: "Total no período filtrado",
     },
     {
       icon: <Activity className="h-5 w-5" />,
-      label: averageByCondominium ? "Média de sessões" : "Total de sessões",
-      value: formatCount(metrics.total_sessions),
-      hint: scopeHint ?? "Sessões sobrepostas ao filtro",
+      label: "Total de sessões",
+      value: metrics.total_sessions,
+      hint: "Total no período filtrado",
     },
     {
       icon: <Clock3 className="h-5 w-5" />,
       label: "Tempo total online",
       value: formatSeconds(metrics.online_seconds),
-      hint: scopeHint ?? "Derivado de operator_sessions",
+      hint: "Total no período filtrado",
     },
     {
       icon: <AlertCircle className="h-5 w-5" />,
       label: "Tempo ocioso",
       value: formatSeconds(metrics.idle_seconds),
-      hint: scopeHint ?? "Derivado de operator_status_history",
+      hint: "Total no período filtrado",
     },
     {
       icon: <Phone className="h-5 w-5" />,
       label: "Tempo em atendimento",
       value: formatSeconds(metrics.call_seconds),
-      hint: scopeHint ?? "Em atendimento no histórico operacional",
+      hint: "Total no período filtrado",
     },
     {
       icon: <PhoneIncoming className="h-5 w-5" />,
-      label: averageByCondominium ? "Média de ligações atendidas" : "Ligações atendidas",
-      value: formatCount(metrics.answered_calls),
-      hint: scopeHint ?? "Entradas em atendimento no período",
+      label: "Ligações atendidas",
+      value: metrics.answered_calls,
+      hint: "Total no período filtrado",
     },
     {
       icon: <ShieldCheck className="h-5 w-5" />,
       label: "Desafios respondidos",
       value: formatPercent(metrics.challenge_response_rate),
-      hint: averageByCondominium ? "Taxa consolidada do período" : metrics.challenges_received ? `${metrics.challenges_answered}/${metrics.challenges_received} respondidos` : "Sem desafios no período",
+      hint: metrics.challenges_received ? `${metrics.challenges_answered}/${metrics.challenges_received} respondidos` : "Sem desafios no período",
     },
     {
       icon: <Trophy className="h-5 w-5" />,
       label: "Aproveitamento",
       value: formatPercent(metrics.challenge_accuracy_rate),
-      hint: averageByCondominium ? "Taxa consolidada do período" : metrics.challenges_answered ? "Sobre desafios respondidos" : "Sem respostas no período",
+      hint: metrics.challenges_answered ? "Sobre desafios respondidos" : "Sem respostas no período",
     },
   ];
 }
@@ -311,27 +305,9 @@ export function AnalyticsPage() {
   });
 
   const data = query.data;
-  const showCondominiumAverage = unitId === "all" && operatorId === "all";
-  const metricsForCards = useMemo(() => {
-    if (!data || !showCondominiumAverage || data.condominiums.length === 0) return data?.metrics;
-
-    const condominiumCount = data.condominiums.length;
-    return {
-      ...data.metrics,
-      active_operators: data.metrics.active_operators / condominiumCount,
-      total_sessions: data.metrics.total_sessions / condominiumCount,
-      online_seconds: data.metrics.online_seconds / condominiumCount,
-      idle_seconds: data.metrics.idle_seconds / condominiumCount,
-      call_seconds: data.metrics.call_seconds / condominiumCount,
-      answered_calls: data.metrics.answered_calls / condominiumCount,
-    };
-  }, [data, showCondominiumAverage]);
   const chartData = (data?.timeseries ?? []).map((point) => ({
     label: formatBucket(point.bucket_start),
-    sessions: point.sessions,
-    online: Number((point.online_seconds / 3600).toFixed(2)),
     idle: Number((point.idle_seconds / 3600).toFixed(2)),
-    call: Number((point.call_seconds / 3600).toFixed(2)),
   }));
   const statusData = data?.status_breakdown ?? [];
   const totalVisibleOperators = statusData.reduce((total, item) => total + item.count, 0);
@@ -480,10 +456,10 @@ export function AnalyticsPage() {
           )}
 
           <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {query.isLoading || !metricsForCards ? (
+            {query.isLoading || !data ? (
               <CardsSkeleton />
             ) : (
-              metricCards(metricsForCards, showCondominiumAverage).map((card) => (
+              metricCards(data.metrics).map((card) => (
                 <MetricCard
                   key={card.label}
                   icon={card.icon}
@@ -529,29 +505,34 @@ export function AnalyticsPage() {
             <Card className="p-5 shadow-sm">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="font-display text-lg font-semibold text-foreground">Evolução operacional</h2>
-                  <p className="text-sm text-muted-foreground">Sessões e horas por bucket do período filtrado.</p>
+                  <h2 className="font-display text-lg font-semibold text-foreground">Ociosidade operacional</h2>
+                  <p className="text-sm text-muted-foreground">Tempo ocioso por intervalo do período filtrado.</p>
                 </div>
-                <Select defaultValue="8">
-                  <SelectTrigger className="h-10 w-[138px]"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="8">Últimas 8 horas</SelectItem><SelectItem value="24">Últimas 24 horas</SelectItem></SelectContent>
-                </Select>
               </div>
               {query.isLoading ? (
                 <Skeleton className="h-[320px] w-full" />
               ) : chartData.length === 0 ? (
-                <EmptyState title="Sem série temporal." description="Não há sessões reais para montar o gráfico neste período." />
+                <EmptyState title="Sem ociosidade registrada." description="Não há histórico operacional real para montar o gráfico neste período." />
               ) : (
                 <div className="h-[320px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={chartData} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                      <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
-                      <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Area yAxisId="left" type="monotone" dataKey="online" name="Horas" stroke="var(--chart-success)" fill="var(--chart-success)" fillOpacity={0.16} dot={{ r: 4 }} />
-                      <Line yAxisId="right" type="monotone" dataKey="sessions" name="Sessões" stroke="var(--chart-challenges)" strokeWidth={2} dot={{ r: 5 }} />
+                      <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `${value}h`} />
+                      <Tooltip
+                        formatter={(value) => [formatSeconds(Number(value) * 3600), "Tempo ocioso"]}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="idle"
+                        name="Tempo ocioso"
+                        stroke="var(--chart-warning)"
+                        fill="var(--chart-warning)"
+                        fillOpacity={0.18}
+                        strokeWidth={2}
+                        dot={{ r: 4 }}
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
