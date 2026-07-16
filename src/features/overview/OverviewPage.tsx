@@ -54,7 +54,6 @@ import {
   fetchOperatorStates,
   fetchOverviewCounts,
   fetchRecentActivity,
-  fmtDuration,
   fmtRelative,
   statusLabel,
   type ActivityKind,
@@ -264,10 +263,15 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
     <Card className="porter-contour-panel overflow-hidden border-sidebar-border bg-sidebar text-white shadow-sm shadow-secondary/20">
       <CardHeader className="border-b border-white/10 pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-            <AlertTriangle className="h-4 w-4 text-warning" />
-            Operadores em atenção
-          </CardTitle>
+          <div>
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <AlertTriangle className="h-4 w-4 text-warning" />
+              Operadores em atenção
+            </CardTitle>
+            <p className="mt-1 text-xs text-white/55">
+              Atendimento acima de 10 min, ociosidade acima de 1 h ou 5+ bloqueios hoje.
+            </p>
+          </div>
           {!loading && attention.length > 0 && (
             <span className="inline-flex min-w-[2rem] items-center justify-center rounded-full bg-warning px-2 py-0.5 font-mono text-xs font-semibold text-warning-foreground">
               {attention.length}
@@ -275,13 +279,13 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
           )}
         </div>
       </CardHeader>
-      <CardContent className="space-y-1.5">
+      <CardContent className="max-h-[300px] space-y-1.5 overflow-y-auto">
         {loading ? (
           Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full bg-white/10" />)
         ) : attention.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
             <CheckCircle2 className="h-8 w-8 text-success" />
-            <p className="text-sm text-white/70">Nenhuma ocorrência crítica no momento.</p>
+            <p className="text-sm text-white/70">Nenhum Operador ultrapassou os limites de atenção.</p>
           </div>
         ) : (
           attention.map((a) => (
@@ -291,17 +295,16 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
               className="flex items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 transition-colors hover:border-white/15 hover:bg-white/8"
             >
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary font-display text-xs font-bold text-primary-foreground shadow-[0_0_0_1px_rgba(255,255,255,.16)]">
-                {initials(a.display_name)}
+                {initials(a.registered_name)}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">{a.display_name}</div>
+                <div className="truncate text-sm font-medium">{a.registered_name}</div>
                 <div className="truncate text-xs text-white/55">
-                  {attentionReasonLabel(a)}
+                  {a.username ? `@${a.username}` : "Sem usuário"}
                   {a.unit_label ? ` · ${a.unit_label}` : ""}
-                  {` · ${a.repetitions}x hoje`}
                 </div>
+                <div className="truncate text-xs font-medium text-warning">{attentionReasonLabel(a)}</div>
               </div>
-              <span className="shrink-0 text-xs tabular-nums text-white/65">{fmtDuration(a.since)}</span>
               <ChevronRight className="h-4 w-4 shrink-0 text-white/45" />
             </Link>
           ))
@@ -529,7 +532,12 @@ export function OverviewPage() {
   const scopedUnitId = unitFilter === "all" ? undefined : unitFilter;
 
   const counts = useQuery({ queryKey: ["overview", "counts", resetInfo.data?.reset_at, scopedUnitId], queryFn: () => fetchOverviewCounts(resetInfo.data?.reset_at ?? undefined, scopedUnitId), staleTime: 30_000, enabled: resetInfo.isSuccess });
-  const states = useQuery({ queryKey: ["overview", "states"], queryFn: fetchOperatorStates, staleTime: 15_000 });
+  const states = useQuery({
+    queryKey: ["overview", "states"],
+    queryFn: fetchOperatorStates,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
   const units = useQuery({ queryKey: ["overview", "units"], queryFn: listUnitOptions, staleTime: 60_000 });
   const activity = useQuery({ queryKey: ["overview", "activity", effectiveStartAt, periodRange.endAt, scopedUnitId], queryFn: () => fetchRecentActivity(effectiveStartAt, periodRange.endAt, scopedUnitId), staleTime: 30_000, enabled: resetInfo.isSuccess });
   const daily = useQuery({ queryKey: ["overview", "daily", effectiveStartAt, periodRange.endAt, scopedUnitId], queryFn: () => fetchDailySummary(effectiveStartAt, periodRange.endAt, scopedUnitId), staleTime: 60_000, enabled: resetInfo.isSuccess });

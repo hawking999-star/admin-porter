@@ -103,14 +103,16 @@ export const STATUS_BAR: Record<string, string> = {
 export type OperatorStatusRow = {
   operator_id: string;
   status: string;
-  display_name: string;
+  registered_name: string;
+  username: string | null;
   unit_id: string | null;
   unit_name: string | null;
   unit_city: string | null;
   unit_state: string | null;
   unit_label: string | null;
   effective_at: string | null;
-  status_repetitions_today: number;
+  call_started_at: string | null;
+  block_count_today: number;
 };
 
 export type StatusGroup = { status: string; label: string; count: number };
@@ -124,7 +126,7 @@ export type OperatorStatesResult = {
 export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   const { data, error } = await supabase
     .from("operator_states")
-    .select("operator_id, status, effective_at, operators(display_name, unit_id, units(id, name, city, state))")
+    .select("operator_id, status, effective_at, updated_at, call_started_at, operators(registered_name, username, unit_id, units(id, name, city, state))")
     .order("effective_at", { ascending: false, nullsFirst: false })
     .limit(100);
   if (error) throw error;
@@ -132,7 +134,8 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   const rows: OperatorStatusRow[] = (data ?? []).map((r: any) => ({
     operator_id: r.operator_id,
     status: r.status,
-    display_name: r.operators?.display_name ?? "—",
+    registered_name: r.operators?.registered_name ?? "Operador",
+    username: r.operators?.username ?? null,
     unit_id: r.operators?.unit_id ?? r.operators?.units?.id ?? null,
     unit_name: r.operators?.units?.name ?? null,
     unit_city: r.operators?.units?.city ?? null,
@@ -140,13 +143,15 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
     unit_label: r.operators?.units?.name
       ? unitLabel({ name: r.operators.units.name, city: r.operators.units.city, state: r.operators.units.state })
       : null,
-    effective_at: r.effective_at ?? null,
-    status_repetitions_today: 0,
+    effective_at: r.effective_at ?? r.updated_at ?? null,
+    call_started_at: r.call_started_at ?? null,
+    block_count_today: 0,
   }));
 
-  const repetitions = await fetchStatusRepetitions(rows.map((row) => row.operator_id));
+  const blockActivity = await fetchBlockActivity(rows.map((row) => row.operator_id));
   for (const row of rows) {
-    row.status_repetitions_today = repetitions.get(`${row.operator_id}:${row.status}`) ?? 0;
+    const activity = blockActivity.get(row.operator_id);
+    row.block_count_today = activity?.count ?? 0;
   }
 
   const groups: StatusGroup[] = STATUS_ORDER.map((s) => ({
@@ -158,106 +163,110 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   return { groups, rows, total: rows.length };
 }
 
-async function fetchStatusRepetitions(operatorIds: string[]): Promise<Map<string, number>> {
-  const counts = new Map<string, number>();
-  if (operatorIds.length === 0) return counts;
+type BlockActivity = {
+  count: number;
+};
+
+async function fetchBlockActivity(operatorIds: string[]): Promise<Map<string, BlockActivity>> {
+  const activity = new Map<string, BlockActivity>();
+  if (operatorIds.length === 0) return activity;
 
   const { data, error } = await supabase
-    .from("operator_status_history")
-    .select("operator_id, to_status")
+    .from("operator_blocks")
+    .select("operator_id, started_at")
     .in("operator_id", operatorIds)
-    .in("to_status", ["idle", "in_call", "blocked", "offline"])
-    .gte("occurred_at", startOfTodayISO())
-    .limit(1000);
+    .gte("started_at", startOfTodayISO())
+    .order("started_at", { ascending: false })
+    .limit(5000);
 
-  if (error) return counts;
+  if (error) throw error;
 
   for (const row of data ?? []) {
     const operatorId = (row as any).operator_id;
-    const status = (row as any).to_status;
-    if (!operatorId || !status) continue;
-    const key = `${operatorId}:${status}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!operatorId) continue;
+    const current = activity.get(operatorId);
+    activity.set(operatorId, {
+      count: (current?.count ?? 0) + 1,
+    });
   }
 
-  return counts;
+  return activity;
 }
 
 /* --------------------------- Operadores em atenção ----------------------- */
 
 export type AttentionReason =
-  | "blocked"
-  | "idle"
   | "long_call"
-  | "offline";
+  | "idle"
+  | "repeated_blocks";
 
 export type AttentionOperator = {
   operator_id: string;
-  display_name: string;
+  registered_name: string;
+  username: string | null;
   unit_name: string | null;
   unit_label: string | null;
   status: string;
-  reason: AttentionReason;
+  reasons: AttentionReason[];
   since: string | null;
-  repetitions: number;
+  block_count_today: number;
   severity: number; // menor = mais urgente
 };
 
 /** Minutos em atendimento a partir dos quais consideramos "longo". */
-const LONG_CALL_MIN = 30;
-const IDLE_ATTENTION_MIN = 10;
-const MIN_ATTENTION_REPETITIONS = 3;
+const LONG_CALL_MIN = 10;
+const IDLE_ATTENTION_MIN = 60;
+const BLOCK_ATTENTION_COUNT = 5;
 
 /** Deriva a lista de operadores que precisam de atenção a partir dos estados. */
 export function deriveAttention(rows: OperatorStatusRow[]): AttentionOperator[] {
   const out: AttentionOperator[] = [];
   for (const r of rows) {
-    if (r.status_repetitions_today < MIN_ATTENTION_REPETITIONS) continue;
+    const statusStartedAt = r.status === "in_call" ? r.call_started_at ?? r.effective_at : r.effective_at;
+    const elapsedMinutes = minutesSince(statusStartedAt) ?? 0;
+    const reasons: AttentionReason[] = [];
 
-    let reason: AttentionReason | null = null;
-    let severity = 9;
-    if (r.status === "blocked") {
-      reason = "blocked";
-      severity = 1;
-    } else if (r.status === "in_call" && (minutesSince(r.effective_at) ?? 0) >= LONG_CALL_MIN) {
-      reason = "long_call";
-      severity = 2;
-    } else if (r.status === "idle" && (minutesSince(r.effective_at) ?? 0) >= IDLE_ATTENTION_MIN) {
-      reason = "idle";
-      severity = 3;
-    } else if (r.status === "offline") {
-      reason = "offline";
-      severity = 4;
-    }
-    if (!reason) continue;
+    if (r.status === "in_call" && elapsedMinutes >= LONG_CALL_MIN) reasons.push("long_call");
+    if (r.status === "idle" && elapsedMinutes >= IDLE_ATTENTION_MIN) reasons.push("idle");
+    if (r.block_count_today >= BLOCK_ATTENTION_COUNT) reasons.push("repeated_blocks");
+    if (reasons.length === 0) continue;
+
+    const severity = reasons.includes("long_call") ? 1 : reasons.includes("idle") ? 2 : 3;
     out.push({
       operator_id: r.operator_id,
-      display_name: r.display_name,
+      registered_name: r.registered_name,
+      username: r.username,
       unit_name: r.unit_name,
       unit_label: r.unit_label,
       status: r.status,
-      reason,
-      since: r.effective_at,
-      repetitions: r.status_repetitions_today,
+      reasons,
+      since: reasons.includes("long_call") || reasons.includes("idle") ? statusStartedAt : null,
+      block_count_today: r.block_count_today,
       severity,
     });
   }
   return out
-    .sort((a, b) => a.severity - b.severity || (minutesSince(b.since) ?? 0) - (minutesSince(a.since) ?? 0))
-    .slice(0, 6);
+    .sort(
+      (a, b) =>
+        a.severity - b.severity ||
+        (minutesSince(b.since) ?? 0) - (minutesSince(a.since) ?? 0) ||
+        b.block_count_today - a.block_count_today,
+    );
 }
 
 export function attentionReasonLabel(a: AttentionOperator): string {
-  switch (a.reason) {
-    case "blocked":
-      return "Bloqueado";
-    case "long_call":
-      return "Em atendimento prolongado";
-    case "idle":
-      return "Ocioso";
-    case "offline":
-      return "Offline";
-  }
+  return a.reasons
+    .map((reason) => {
+      switch (reason) {
+        case "long_call":
+          return `Em atendimento há ${fmtDuration(a.since)}`;
+        case "idle":
+          return `Ocioso há ${fmtDuration(a.since)}`;
+        case "repeated_blocks":
+          return `${a.block_count_today} bloqueios hoje`;
+      }
+    })
+    .join(" · ");
 }
 
 /* ------------------------------- Contagens ------------------------------- */

@@ -410,7 +410,8 @@ export function AnalyticsPage() {
                 <SelectItem value="all">Todos os Operadores</SelectItem>
                 {operators.map((operator) => (
                   <SelectItem key={operator.id} value={operator.id}>
-                    {operator.display_name}
+                    {operator.registered_name ?? "Operador sem nome cadastral"}
+                    {operator.username ? ` · @${operator.username}` : ""}
                   </SelectItem>
                 ))}
               </SelectContent>

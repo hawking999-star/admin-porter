@@ -19,7 +19,9 @@ export type AnalyticsFilters = {
 export type FilterOption = {
   id: string;
   name?: string;
+  registered_name?: string;
   display_name?: string;
+  username?: string | null;
   unit_id?: string;
   city?: string | null;
   state?: string | null;
@@ -166,6 +168,25 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
   const calls = (callsResult.data ?? {}) as { answered_calls?: unknown };
   const leaderboard = (leaderboardResult.data ?? {}) as AnalyticsDashboard["ranking"];
   const attentionRanking = (attentionResult.data ?? { idle: [], blocked: [] }) as AnalyticsDashboard["attention_ranking"];
+  const visibleOperatorIds = dashboard.filter_options.operators.map((operator) => operator.id);
+  const operatorIdentitiesResult = visibleOperatorIds.length
+    ? await supabase
+        .from("operators")
+        .select("id, registered_name, username, unit_id")
+        .in("id", visibleOperatorIds)
+        .eq("active", true)
+        .order("registered_name")
+        .limit(500)
+    : { data: [], error: null };
+
+  if (operatorIdentitiesResult.error) throw operatorIdentitiesResult.error;
+
+  const operatorIdentities = (operatorIdentitiesResult.data ?? []) as Array<{
+    id: string;
+    registered_name: string;
+    username: string | null;
+    unit_id: string;
+  }>;
   const unitRows = (unitsResult.data ?? []) as Array<{
     id: string;
     name: string;
@@ -195,6 +216,7 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
     filter_options: {
       ...dashboard.filter_options,
       units: unitRows.map((unit) => ({ ...unit, name: unitLabel(unit) })),
+      operators: operatorIdentities,
     },
     condominiums: decoratedCondominiums,
     ranking: leaderboard,
