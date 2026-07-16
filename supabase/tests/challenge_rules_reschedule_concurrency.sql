@@ -29,6 +29,7 @@ begin
 
   insert into public.operators(
     auth_user_id,
+    registered_name,
     display_name,
     username,
     unit_id,
@@ -36,6 +37,7 @@ begin
   )
   values (
     v_operator_auth_id,
+    'Operador teste de regras',
     'Operador teste de regras',
     'test_rules_' || substring(gen_random_uuid()::text, 1, 8),
     v_unit.id,
