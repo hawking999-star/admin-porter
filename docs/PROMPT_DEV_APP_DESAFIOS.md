@@ -47,6 +47,24 @@ Use `next_screen` retornado:
 - `blocked`: mostre o bloqueio até `blocked_until`.
 - `idle`: mostre a tela de ociosidade sem acesso ao player.
 
+## Correção obrigatória: `P0001 / sessao_invalida`
+
+O App só pode chamar `operator_challenge_state` com o `session_id` devolvido pela **sessão operacional ativa** em `start_operator_session`. Nunca reutilize um id persistido de um login anterior, nem o id da sessão de autenticação do Supabase.
+
+Antes da primeira reconciliação de um novo login, salve o id devolvido por `start_operator_session` como `activeSessionId` e associe todos os timers a uma geração/epoch dessa sessão. Uma Promise, timer ou polling da geração anterior não pode usar o id novo nem renderizar depois da troca.
+
+Ao iniciar logout, clicar em **Sair**, encerrar a sessão ou desmontar o App, siga esta ordem:
+
+1. invalide a geração da sessão;
+2. cancele despertador, polling e requisições futuras de desafios;
+3. limpe `activeSessionId` do controlador local;
+4. chame `end_operator_session` uma única vez para o id que estava ativo;
+5. não faça nenhuma nova chamada de `operator_challenge_state` para esse id.
+
+Se `operator_challenge_state` responder HTTP 400 com `code: "P0001"` e `message: "sessao_invalida"`, não faça retry automático e não mostre a tela genérica “Não foi possível verificar”. Cancele os timers, descarte o estado de desafio e volte o App ao fluxo de login/sessão encerrada. Se isso ocorrer durante o login, confira se a primeira consulta recebeu o id recém-devolvido por `start_operator_session` antes de ser chamada.
+
+Esse erro é uma proteção do servidor: a sessão já foi encerrada, revogada, expirou ou pertence a outro Operador. O App não deve tentar adivinhar nem recriar localmente uma sessão.
+
 ## Despertador enquanto o player está aberto
 
 Receber `next_screen: "player"` não encerra o fluxo. Enquanto existir uma sessão ativa e não houver ligação, bloqueio, desafio ou ociosidade, o App deve continuar reconciliando desafios sem exigir logout/login.

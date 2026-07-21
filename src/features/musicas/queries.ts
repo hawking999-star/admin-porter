@@ -129,8 +129,12 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
     query = query.eq("approval_status", filters.status);
   }
   if (filters.type && filters.type !== "all") query = query.eq("type", filters.type);
-  if (filters.platform === "spotify") query = query.ilike("source_url", "%spotify%");
-  if (filters.platform === "youtube") query = query.or("source_url.ilike.%youtube%,source_url.ilike.%youtu.be%");
+  if (filters.platform === "spotify") query = query.ilike("source_url", "%://open.spotify.com/%");
+  if (filters.platform === "youtube") {
+    query = query.or(
+      "source_url.ilike.%://youtube.com/%,source_url.ilike.%://www.youtube.com/%,source_url.ilike.%://music.youtube.com/%,source_url.ilike.%://youtu.be/%",
+    );
+  }
   if (filters.startAt) query = query.gte("submitted_at", filters.startAt);
   if (filters.endAt) query = query.lte("submitted_at", filters.endAt);
   if (term) {
@@ -255,6 +259,101 @@ export async function reviewPlaylist(
 export async function retryPlaylistImport(id: string): Promise<void> {
   const { error } = await supabase.rpc("admin_retry_playlist_import", {
     p_playlist: id,
+  });
+  if (error) throw error;
+}
+
+export type PlaylistRequestItemStatus =
+  | "pending"
+  | "resolving"
+  | "resolved"
+  | "review_recommended"
+  | "processing"
+  | "completed"
+  | "not_found"
+  | "failed"
+  | "skipped"
+  | "duplicate"
+  | "duration_exceeded"
+  | "playlist_limit_exceeded";
+
+export type PlaylistRequestDetailItem = {
+  id: string;
+  position: number;
+  status: PlaylistRequestItemStatus;
+  spotify_track_id: string | null;
+  spotify_url: string | null;
+  title: string | null;
+  artists: string[];
+  album: string | null;
+  duration_ms: number | null;
+  youtube_url: string | null;
+  youtube_video_id: string | null;
+  youtube_title: string | null;
+  youtube_artist: string | null;
+  youtube_channel: string | null;
+  youtube_duration_ms: number | null;
+  duration_difference_ms: number | null;
+  match_confidence: number | null;
+  review_reason: string | null;
+  operator_message: string | null;
+  error_message: string | null;
+};
+
+export type PlaylistRequestDetail = {
+  request: {
+    id: string;
+    status: string;
+    general_status:
+      | "pending"
+      | "analyzing"
+      | "waiting_review"
+      | "approved"
+      | "processing"
+      | "partially_completed"
+      | "completed"
+      | "rejected"
+      | "failed"
+      | null;
+    original_url: string | null;
+    normalized_url: string | null;
+    source_type: "youtube" | "spotify" | null;
+    source_resource_type: "track" | "album" | "playlist" | "video" | null;
+    source_resource_id: string | null;
+    created_at: string | null;
+    rejection_reason: string | null;
+    operator_message: string | null;
+    operator_messages: string[];
+    technical_error: {
+      code: string | null;
+      summary: string | null;
+      details: Record<string, unknown> | null;
+    } | null;
+  };
+  playlist: { id: string; name: string; type: string; approval_status: string; import_status: string };
+  operator: { name: string | null };
+  unit: { name: string | null; city: string | null; state: string | null };
+  summary: Record<"total" | "resolved" | "review_recommended" | "not_found" | "duplicate" | "duration_exceeded" | "playlist_limit_exceeded" | "failed", number>;
+  items: PlaylistRequestDetailItem[];
+};
+
+export async function getPlaylistRequestDetail(playlistId: string): Promise<PlaylistRequestDetail | null> {
+  const { data, error } = await supabase.rpc("admin_playlist_request_detail", { p_playlist_id: playlistId });
+  if (error) throw error;
+  return (data as PlaylistRequestDetail | null) ?? null;
+}
+
+export async function managePlaylistRequestItem(
+  requestId: string,
+  action: "ignore" | "replace_youtube" | "retry",
+  itemId: string,
+  youtubeUrl?: string,
+): Promise<void> {
+  const { error } = await supabase.rpc("admin_manage_playlist_request_item", {
+    p_request_id: requestId,
+    p_action: action,
+    p_item_id: itemId,
+    p_youtube_url: youtubeUrl ?? null,
   });
   if (error) throw error;
 }

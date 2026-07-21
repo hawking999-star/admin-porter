@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:music-url": "node --experimental-strip-types --test tests/music-url.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

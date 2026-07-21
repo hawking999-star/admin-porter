@@ -62,9 +62,11 @@ import {
   dismissSkippedTrack,
   enqueueTrackReplacement,
   getMusicStorageOverview,
+  getPlaylistRequestDetail,
   listOrphanedMusicTracks,
   listOperatorMusicLibraryPage,
   listPlaylists,
+  managePlaylistRequestItem,
   removePlaylistTrack,
   renameMusicPlaylist,
   queueOrphanedMusicDeletions,
@@ -79,6 +81,7 @@ import {
   type MusicStorageOverview,
   type OrphanedMusicTrack,
   type Playlist,
+  type PlaylistRequestDetailItem,
 } from "./queries";
 import { PaginationFooter, PeriodFilter, StatCard, ErrorState, RetryButton } from "@/components/shared";
 import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
@@ -91,6 +94,7 @@ import {
   detectPlatform,
   platformMeta,
   buildEmbed,
+  SpotifyIcon,
   type Platform,
 } from "./components";
 
@@ -132,6 +136,41 @@ function relOrDate(iso: string | null) {
   return fmtDate(iso);
 }
 
+function fmtDuration(ms: number | null) {
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function sourceResourceLabel(url: string | null) {
+  try {
+    const path = new URL(url ?? "").pathname.toLowerCase();
+    if (path.includes("/playlist")) return "Playlist";
+    if (path.includes("/album")) return "Álbum";
+    if (path.includes("/track")) return "Música";
+    if (path.includes("/watch") || path.includes("youtu.be")) return "Vídeo";
+  } catch {
+    // A fila também exibe links históricos que podem não obedecer ao parser novo.
+  }
+  return null;
+}
+
+function generalStatusLabel(status: string | null | undefined) {
+  return {
+    pending: "Pendente",
+    analyzing: "Analisando",
+    waiting_review: "Aguardando revisão",
+    approved: "Aprovada",
+    processing: "Processando",
+    partially_completed: "Parcialmente concluída",
+    completed: "Concluída",
+    rejected: "Rejeitada",
+    failed: "Falha geral",
+  }[status ?? ""] ?? status ?? "—";
+}
+
 function durationText(ms: number | null) {
   if (!ms || ms <= 0) return "—";
   const totalSeconds = Math.round(ms / 1000);
@@ -156,13 +195,9 @@ function trackStatusLabel(status: string | null | undefined) {
 }
 
 function playlistLibraryError(p: MusicLibraryPlaylist): string | null {
-  const jobMessage =
-    typeof p.latest_job?.error_message === "string"
-      ? p.latest_job.error_message
-      : typeof p.latest_job?.error === "string"
-        ? p.latest_job.error
-        : null;
-  return p.error_message?.trim() || jobMessage?.trim() || null;
+  const code = typeof p.latest_job?.error_code === "string" ? p.latest_job.error_code : null;
+  const jobMessage = typeof p.latest_job?.error_message === "string" ? p.latest_job.error_message : null;
+  return p.error_message?.trim() || friendlyImportMessage(code, jobMessage);
 }
 
 function operatorTotals(operator: OperatorMusicLibrary) {
@@ -174,12 +209,39 @@ function operatorTotals(operator: OperatorMusicLibrary) {
   return { principal, secondary, tracks, failed, processing };
 }
 
+const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
+  SPOTIFY_PLAYLIST_EMPTY: "A playlist do Spotify não possui músicas disponíveis.",
+  PLAYLIST_EMPTY: "A playlist não possui músicas disponíveis.",
+  SPOTIFY_LINK_UNAVAILABLE: "O link do Spotify não está mais disponível.",
+  SPOTIFY_MATCH_NOT_FOUND: "Não foi possível localizar esta música no YouTube.",
+  IMPORTED_WITH_UNAVAILABLE: "Não foi possível localizar algumas músicas no YouTube.",
+  REVIEW_RECOMMENDED: "Esta música parece ser uma versão diferente e precisa de revisão.",
+  TRACK_DURATION_LIMIT_EXCEEDED: "A música ultrapassa a duração máxima de 16 minutos.",
+  PLAYLIST_LIMIT_EXCEEDED: "A playlist ultrapassa o limite de 170 músicas.",
+  SPOTIFY_RESOLVER_UNAVAILABLE: "O serviço de importação está temporariamente indisponível.",
+  SPOTIFY_RESOLVE_TIMEOUT: "O serviço de importação está temporariamente indisponível.",
+  IMPORT_TIMEOUT: "O serviço de importação está temporariamente indisponível.",
+  REQUEST_TIMEOUT: "O serviço de importação está temporariamente indisponível.",
+  WORKER_STALE_TIMEOUT: "O serviço de importação está temporariamente indisponível.",
+  WORKER_ENV_MISSING: "O serviço de importação está temporariamente indisponível.",
+  SUPABASE_PERMISSION_DENIED: "O serviço de importação está temporariamente indisponível.",
+  SUPABASE_ERROR: "O serviço de importação está temporariamente indisponível.",
+  R2_ACCESS_DENIED: "O serviço de importação está temporariamente indisponível.",
+  R2_ERROR: "O serviço de importação está temporariamente indisponível.",
+  IMPORTER_ERROR: "O serviço de importação está temporariamente indisponível.",
+};
+
+function friendlyImportMessage(code?: string | null, fallback?: string | null): string | null {
+  if (code) {
+    return FRIENDLY_IMPORT_MESSAGES[code] ?? "O serviço de importação está temporariamente indisponível.";
+  }
+  return fallback?.trim() || null;
+}
+
 function playlistImportError(p: Playlist): string | null {
-  return (
-    p.error_message?.trim() ||
-    p.download?.error_message?.trim() ||
-    p.download?.error?.trim() ||
-    null
+  return friendlyImportMessage(
+    p.error_code || p.download?.error_code,
+    p.error_message || p.download?.error_message || null,
   );
 }
 
@@ -192,8 +254,10 @@ function isImportErrorAcknowledged(p: Playlist) {
 function technicalErrorText(p: Playlist): string | null {
   const code = p.error_code || p.download?.error_code;
   const details = p.error_details || p.download?.error_details;
+  const rawError = p.download?.error?.trim();
   const parts = [
     code ? `Código: ${code}` : null,
+    rawError ? `Resumo técnico: ${rawError}` : null,
     details ? `Detalhes: ${JSON.stringify(details)}` : null,
   ].filter(Boolean);
   return parts.length ? parts.join("\n") : null;
@@ -208,11 +272,11 @@ type SkippedTrack = {
 };
 
 function importReport(p: Playlist): {
-  summary?: { total?: number; completed?: number; failed?: number };
+  summary?: { total?: number; completed?: number; failed?: number; excluded_by_limit?: number };
   skipped: SkippedTrack[];
 } {
   const d = (p.error_details || p.download?.error_details) as
-    | { summary?: { total?: number; completed?: number; failed?: number }; skipped?: SkippedTrack[] }
+    | { summary?: { total?: number; completed?: number; failed?: number; excluded_by_limit?: number }; skipped?: SkippedTrack[] }
     | null
     | undefined;
   const skipped = Array.isArray(d?.skipped) ? (d!.skipped as SkippedTrack[]) : [];
@@ -234,6 +298,8 @@ const PERMANENT_SKIP_CODES = new Set([
   "TRACK_SIZE_LIMIT_EXCEEDED",
   "TRACK_DURATION_LIMIT_EXCEEDED",
   "TRACK_DURATION_UNKNOWN",
+  "SPOTIFY_MATCH_NOT_FOUND",
+  "PLAYLIST_LIMIT_EXCEEDED",
 ]);
 const isUnavailableCode = (code?: string) => !!code && PERMANENT_SKIP_CODES.has(code);
 
@@ -355,6 +421,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
       <p className={`mb-1.5 font-semibold ${hasErrors ? "text-destructive" : "text-warning-foreground"}`}>
         Relatório de importação
         {summary ? ` — ${summary.completed ?? 0} de ${summary.total ?? "?"} importadas` : ""}
+        {summary?.excluded_by_limit ? ` · ${summary.excluded_by_limit} fora do limite de 170` : ""}
         {unavailable.length ? ` · ${unavailable.length} indisponível(is)` : ""}
         {errors.length ? ` · ${errors.length} com falha` : ""}
       </p>
@@ -373,7 +440,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                 )}
                 <span className={permanent ? "text-muted-foreground" : "text-destructive"}>
                   {" "}
-                  — {t.reason || t.code || "motivo não informado"}
+                  — {friendlyImportMessage(t.code, t.reason) || "Motivo não informado."}
                 </span>
               </span>
               {permanent && (
@@ -902,6 +969,9 @@ export function MusicasPage() {
 
           <FilterChip active={platformFilter === "youtube"} onClick={() => toggle(platformFilter, "youtube", setPlatformFilter)} icon={<Music />}>
             YouTube
+          </FilterChip>
+          <FilterChip active={platformFilter === "spotify"} onClick={() => toggle(platformFilter, "spotify", setPlatformFilter)} icon={<SpotifyIcon />}>
+            Spotify
           </FilterChip>
 
           <span className="mx-1.5 h-5 w-px bg-border" />
@@ -2331,6 +2401,18 @@ function PlaylistCard({
             <Building2 className="h-3.5 w-3.5" />
             {unitText(p)}
           </span>
+          {platform !== "invalid" && (
+            <>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                Origem: {platformMeta(platform).label}
+              </span>
+              {sourceResourceLabel(p.source_url) && (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  Tipo: {sourceResourceLabel(p.source_url)}
+                </span>
+              )}
+            </>
+          )}
         </div>
 
         {/* destaque: o link */}
@@ -2520,6 +2602,164 @@ function ImportPill({ p }: { p: Playlist }) {
 
 /* ------------------------------- Drawer detalhe --------------------------- */
 
+function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => void }) {
+  const qc = useQueryClient();
+  const [reviewOnly, setReviewOnly] = useState(false);
+  const [replacement, setReplacement] = useState<PlaylistRequestDetailItem | null>(null);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const detailQuery = useQuery({
+    queryKey: ["playlist-request-detail", p.id],
+    queryFn: () => getPlaylistRequestDetail(p.id),
+    enabled: detectPlatform(p.source_url) === "spotify",
+    staleTime: 10_000,
+  });
+  const itemMutation = useMutation({
+    mutationFn: ({ action, item, url }: { action: "ignore" | "replace_youtube" | "retry"; item: PlaylistRequestDetailItem; url?: string }) =>
+      managePlaylistRequestItem(detailQuery.data!.request.id, action, item.id, url),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ["playlist-request-detail", p.id] });
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      if (variables.action === "replace_youtube") setReplacement(null);
+      toast.success(variables.action === "ignore" ? "Faixa ignorada" : "Faixa reenfileirada");
+    },
+    onError: (error: unknown) => toast.error("Não foi possível atualizar a faixa", { description: errorMessage(error) }),
+  });
+
+  if (detectPlatform(p.source_url) !== "spotify") return null;
+  if (detailQuery.isLoading) return <Skeleton className="mt-5 h-36 w-full" />;
+  if (detailQuery.isError || !detailQuery.data) {
+    return <p className="mt-5 text-sm text-muted-foreground">Não foi possível carregar os itens desta solicitação.</p>;
+  }
+
+  const detail = detailQuery.data;
+  const items = reviewOnly ? detail.items.filter((item) => item.status === "review_recommended") : detail.items;
+  const summary = detail.summary;
+  const metric = (label: string, value: number) => (
+    <div key={label} className="rounded-md border border-border bg-muted/30 px-2 py-1.5 text-center">
+      <p className="text-base font-semibold">{value}</p><p className="text-[10px] text-muted-foreground">{label}</p>
+    </div>
+  );
+
+  return (
+    <section className="mt-5 space-y-4 border-t border-border pt-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Solicitação Spotify</p>
+          <p className="text-sm font-medium">Origem: Spotify · Tipo: {detail.request.source_resource_type ?? "—"}</p>
+        </div>
+        {p.approval_status === "pending" && (
+          <Button size="sm" onClick={onApprove}>
+            <Check className="h-4 w-4" /> Aprovar todas as resolvidas
+          </Button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-sm">
+        <InfoRow label="Operador" value={detail.operator.name ?? p.operator_name ?? "—"} />
+        <InfoRow label="Condomínio" value={unitLabel(detail.unit)} />
+        <InfoRow label="Playlist de destino" value={detail.playlist.name} />
+        <InfoRow label="Status geral" value={generalStatusLabel(detail.request.general_status)} />
+      </div>
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Link original</p>
+        <p className="break-all text-xs text-muted-foreground">{detail.request.original_url ?? "—"}</p>
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        {metric("Total", summary.total)}
+        {metric("Resolvidas", summary.resolved)}
+        {metric("Revisar", summary.review_recommended)}
+        {metric("Não encontradas", summary.not_found)}
+        {metric("Duplicadas", summary.duplicate)}
+        {metric("> 16 min", summary.duration_exceeded)}
+        {metric("> 170", summary.playlist_limit_exceeded)}
+        {metric("Falhas", summary.failed)}
+      </div>
+
+      {(detail.request.operator_messages ?? []).length > 0 && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-warning-foreground">
+            Atenção
+          </p>
+          <ul className="space-y-1 text-sm text-warning-foreground">
+            {(detail.request.operator_messages ?? []).map((message) => <li key={message}>{message}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {detail.request.technical_error && (
+        <details className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+          <summary className="cursor-pointer font-semibold uppercase tracking-wide">
+            Diagnóstico técnico do Admin
+          </summary>
+          <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap">
+            {JSON.stringify(detail.request.technical_error, null, 2)}
+          </pre>
+        </details>
+      )}
+
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Faixas ({items.length})</p>
+        <Button size="sm" variant={reviewOnly ? "default" : "outline"} onClick={() => setReviewOnly((value) => !value)}>
+          <AlertTriangle className="h-4 w-4" /> Revisar sinalizadas
+        </Button>
+      </div>
+      <div className="space-y-2">
+        {items.map((item) => {
+          const review = item.status === "review_recommended";
+          const canRetry = Boolean(item.youtube_url) && !itemMutation.isPending;
+          return (
+            <div key={item.id} className={cn("rounded-lg border p-3", review ? "border-warning/40 bg-warning/5" : "border-border bg-muted/20")}>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-medium">{item.position}. {item.title ?? "Faixa sem título"}</p>
+                  <p className="text-xs text-muted-foreground">{item.artists.join(", ") || "Artista não informado"} · {fmtDuration(item.duration_ms)}</p>
+                </div>
+                <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", review ? "bg-warning/15 text-warning-foreground" : "bg-muted text-muted-foreground")}>
+                  {review ? "Revisão recomendada" : item.status}
+                </span>
+              </div>
+              <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                <p>Resultado no YouTube: <span className="text-foreground">{item.youtube_title ?? item.youtube_video_id ?? "não encontrado"}</span></p>
+                <p>Canal: {item.youtube_channel ?? "não informado"} · Diferença: {item.duration_difference_ms == null ? "—" : `${Math.round(item.duration_difference_ms / 1000)}s`}</p>
+                {item.operator_message && <p className="text-warning-foreground">{item.operator_message}</p>}
+                {item.review_reason && (
+                  <p className="text-muted-foreground">Detalhe da divergência: {item.review_reason}</p>
+                )}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {item.youtube_url && <Button size="sm" variant="outline" asChild><a href={item.youtube_url} target="_blank" rel="noreferrer noopener"><ExternalLink className="h-3.5 w-3.5" /> YouTube</a></Button>}
+                <Button size="sm" variant="outline" onClick={() => { setReplacement(item); setYoutubeUrl(item.youtube_url ?? ""); }} disabled={itemMutation.isPending}>
+                  <Pencil className="h-3.5 w-3.5" /> Substituir resultado
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => itemMutation.mutate({ action: "retry", item })} disabled={!canRetry}>
+                  <RefreshCw className="h-3.5 w-3.5" /> Tentar novamente
+                </Button>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => itemMutation.mutate({ action: "ignore", item })} disabled={itemMutation.isPending}>
+                  <X className="h-3.5 w-3.5" /> Ignorar faixa
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+        {items.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma faixa sinalizada para revisão.</p>}
+      </div>
+
+      <Dialog open={Boolean(replacement)} onOpenChange={(open) => !open && setReplacement(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Substituir resultado do YouTube</DialogTitle><DialogDescription>Informe um link de vídeo do YouTube. A validação é feita no backend antes de reenfileirar a faixa.</DialogDescription></DialogHeader>
+          <Input value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} placeholder="https://www.youtube.com/watch?v=..." />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReplacement(null)}>Cancelar</Button>
+            <Button disabled={!replacement || !youtubeUrl.trim() || itemMutation.isPending} onClick={() => replacement && itemMutation.mutate({ action: "replace_youtube", item: replacement, url: youtubeUrl })}>
+              {itemMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />} Validar e reenfileirar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+  );
+}
+
 function DetailPanel({
   p,
   platform,
@@ -2609,6 +2849,8 @@ function DetailPanel({
           <p className="text-sm text-muted-foreground">O operador ainda não enviou um link.</p>
         )}
       </div>
+
+      <SpotifyRequestDetail p={p} onApprove={onApprove} />
 
       {(canAcknowledgeError || p.approval_status === "rejected") && (
         <div className="mt-5 rounded-lg border border-border bg-muted/30 p-3">

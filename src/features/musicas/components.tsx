@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Youtube, Link2, Music2, type LucideProps } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { parseMusicUrl } from "@/lib/music-url";
 
 /* ------------------------------------------------------------------ */
 /*  Avatar com iniciais do operador                                    */
@@ -42,14 +43,24 @@ export type Platform = "spotify" | "youtube" | "other" | "invalid" | "none";
 
 export function detectPlatform(url: string | null): Platform {
   if (!url) return "none";
-  let host: string;
+  const parsed = parseMusicUrl(url);
+  if (parsed) return parsed.source;
+
   try {
-    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    const candidate = new URL(url);
+    if (!["http:", "https:"].includes(candidate.protocol)) return "invalid";
+    if (
+      candidate.hostname === "open.spotify.com" ||
+      candidate.hostname === "youtube.com" ||
+      candidate.hostname === "www.youtube.com" ||
+      candidate.hostname === "music.youtube.com" ||
+      candidate.hostname === "youtu.be"
+    ) {
+      return "invalid";
+    }
   } catch {
     return "invalid";
   }
-  if (host.includes("spotify")) return "spotify";
-  if (host.includes("youtube") || host === "youtu.be") return "youtube";
   return "other";
 }
 
@@ -205,30 +216,14 @@ export function FilterChip({
 
 export function buildEmbed(url: string | null, platform: Platform): string | null {
   if (!url) return null;
-  try {
-    const u = new URL(url);
-    if (platform === "spotify") {
-      // open.spotify.com/<tipo>/<id> -> /embed/<tipo>/<id>
-      const m = u.pathname.match(/\/(track|playlist|album|artist|episode|show)\/([A-Za-z0-9]+)/);
-      if (m) return `https://open.spotify.com/embed/${m[1]}/${m[2]}`;
-      return null;
-    }
-    if (platform === "youtube") {
-      const host = u.hostname.replace(/^www\./, "");
-      if (host === "youtu.be") {
-        const id = u.pathname.slice(1);
-        return id ? `https://www.youtube.com/embed/${id}` : null;
-      }
-      const list = u.searchParams.get("list");
-      if (list) return `https://www.youtube.com/embed/videoseries?list=${list}`;
-      const v = u.searchParams.get("v");
-      if (v) return `https://www.youtube.com/embed/${v}`;
-      const em = u.pathname.match(/\/embed\/([A-Za-z0-9_-]+)/);
-      if (em) return `https://www.youtube.com/embed/${em[1]}`;
-      return null;
-    }
-    return null;
-  } catch {
-    return null;
+  const parsed = parseMusicUrl(url);
+  if (!parsed || parsed.source !== platform) return null;
+
+  if (parsed.source === "spotify") {
+    return `https://open.spotify.com/embed/${parsed.resourceType}/${parsed.resourceId}`;
   }
+  if (parsed.resourceType === "playlist") {
+    return `https://www.youtube.com/embed/videoseries?list=${parsed.resourceId}`;
+  }
+  return `https://www.youtube.com/embed/${parsed.resourceId}`;
 }
