@@ -30,18 +30,16 @@ import {
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -52,7 +50,7 @@ import {
 import { EmptyState, ErrorState, PeriodFilter, RetryButton } from "@/components/shared";
 import { todayInput, type PeriodPreset } from "@/lib/period";
 import { errorMessage } from "@/lib/errors";
-import { resetStatistics } from "@/lib/statistics";
+import { resetStatistics, type StatisticsResetCategory } from "@/lib/statistics";
 import { unitLabel } from "@/lib/unit-label";
 import {
   buildPeriodRange,
@@ -67,6 +65,12 @@ import {
 } from "./queries";
 
 const TOP_LIST_LIMIT = 5;
+const RESET_OPTIONS: Array<{ value: StatisticsResetCategory; label: string; description: string }> = [
+  { value: "sessions", label: "Sessões e tempos", description: "Sessões, tempo online, ocioso e em atendimento." },
+  { value: "calls", label: "Ligações atendidas", description: "Contagem de ligações atendidas pelos Operadores." },
+  { value: "challenges", label: "Desafios", description: "Recebidos, respondidos, aproveitamento e ranking." },
+  { value: "attention", label: "Atenção operacional", description: "Ocorrências de ociosidade e bloqueios." },
+];
 
 function csvCell(value: unknown) {
   const raw = value == null ? "" : String(value);
@@ -272,15 +276,20 @@ export function AnalyticsPage() {
   const [operatorId, setOperatorId] = useState("all");
   const [shift, setShift] = useState<ShiftFilter>("all");
   const [attentionMode, setAttentionMode] = useState<"idle" | "blocked">("idle");
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetCategories, setResetCategories] = useState<StatisticsResetCategory[]>(
+    RESET_OPTIONS.map((option) => option.value),
+  );
 
   const resetMutation = useMutation({
-    mutationFn: resetStatistics,
+    mutationFn: (categories: StatisticsResetCategory[]) => resetStatistics(categories),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["analytics-dashboard"] }),
         queryClient.invalidateQueries({ queryKey: ["overview"] }),
       ]);
-      toast.success("Estatísticas zeradas. Os registros anteriores foram preservados para auditoria.");
+      setResetOpen(false);
+      toast.success("Estatísticas selecionadas zeradas. O histórico foi preservado para auditoria.");
     },
     onError: (error) => toast.error(errorMessage(error, "Não foi possível zerar as estatísticas.")),
   });
@@ -349,28 +358,56 @@ export function AnalyticsPage() {
         title="Analytics"
         description="Painel operacional com métricas reais de sessões, presença, desafios e status dos Operadores."
         action={
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" disabled={resetMutation.isPending}>
-                {resetMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
-                Zerar estatísticas
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Zerar as estatísticas visíveis?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Os relatórios passarão a contar a partir de agora. Logs, desafios, Operadores, configurações e sessões não serão apagados; sessões ativas continuarão gerando novas estatísticas.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                <AlertDialogAction onClick={() => resetMutation.mutate()}>Confirmar e zerar</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <Button variant="outline" size="sm" disabled={resetMutation.isPending} onClick={() => setResetOpen(true)}>
+            {resetMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+            Zerar estatísticas
+          </Button>
         }
       />
+
+      <Dialog open={resetOpen} onOpenChange={(open) => !resetMutation.isPending && setResetOpen(open)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Escolha quais estatísticas zerar</DialogTitle>
+            <DialogDescription>
+              O reset é não destrutivo: os relatórios passam a contar a partir de agora e o histórico permanece na Auditoria. Condomínios e usuários nunca são alterados.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {RESET_OPTIONS.map((option) => {
+              const checked = resetCategories.includes(option.value);
+              return (
+                <label key={option.value} className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 hover:bg-muted/40">
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={(next) => {
+                      setResetCategories((current) =>
+                        next ? [...new Set([...current, option.value])] : current.filter((value) => value !== option.value),
+                      );
+                    }}
+                    aria-label={`Zerar ${option.label}`}
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold">{option.label}</span>
+                    <span className="block text-xs text-muted-foreground">{option.description}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetOpen(false)} disabled={resetMutation.isPending}>Cancelar</Button>
+            <Button
+              variant="destructive"
+              disabled={!resetCategories.length || resetMutation.isPending}
+              onClick={() => resetMutation.mutate(resetCategories)}
+            >
+              {resetMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Zerar selecionadas
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Card className="sticky top-3 z-20 mb-5 border-border/80 bg-card/95 p-3.5 shadow-sm backdrop-blur-sm">
         <div className="grid gap-3 lg:grid-cols-[160px_minmax(0,1fr)]">

@@ -394,6 +394,7 @@ export type MusicStorageOverview = {
   linked_tracks: number;
   orphaned_tracks: number;
   queued_deletions: number;
+  failed_deletions: number;
   measured_tracks: number;
   used_bytes: number;
   last_measured_at: string | null;
@@ -417,6 +418,7 @@ export async function getMusicStorageOverview(): Promise<MusicStorageOverview> {
     linked_tracks: Number(row.linked_tracks ?? 0),
     orphaned_tracks: Number(row.orphaned_tracks ?? 0),
     queued_deletions: Number(row.queued_deletions ?? 0),
+    failed_deletions: Number(row.failed_deletions ?? 0),
     measured_tracks: Number(row.measured_tracks ?? 0),
     used_bytes: Number(row.used_bytes ?? 0),
     last_measured_at: row.last_measured_at ?? null,
@@ -434,6 +436,33 @@ export async function queueOrphanedMusicDeletions(): Promise<number> {
   if (error) throw error;
   const result = (data ?? {}) as { queued?: unknown };
   return Number(result.queued ?? 0);
+}
+
+export type MusicStorageDeletionJob = {
+  id: string;
+  track_id: string;
+  title: string;
+  artist: string | null;
+  storage_object_key: string;
+  status: "queued" | "running" | "error" | string;
+  attempts: number;
+  last_error: string | null;
+  next_attempt_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listMusicStorageDeletionJobs(): Promise<MusicStorageDeletionJob[]> {
+  const { data, error } = await supabase.rpc("admin_list_storage_deletion_jobs", { p_limit: 50 });
+  if (error) throw error;
+  return (data ?? []) as MusicStorageDeletionJob[];
+}
+
+export async function retryMusicStorageDeletionJobs(): Promise<number> {
+  const { data, error } = await supabase.rpc("admin_retry_storage_deletion_jobs");
+  if (error) throw error;
+  const result = (data ?? {}) as { requeued?: unknown };
+  return Number(result.requeued ?? 0);
 }
 
 export type MusicTrack = {

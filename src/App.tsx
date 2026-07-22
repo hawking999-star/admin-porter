@@ -5,8 +5,6 @@ import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/features/auth/AuthProvider";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { AppShell } from "@/components/layout/AppShell";
-import { ComingSoonPage } from "@/components/shared";
-import { ClipboardList } from "lucide-react";
 
 const OverviewPage = lazy(() => import("@/features/overview/OverviewPage").then((module) => ({ default: module.OverviewPage })));
 const CondominiosPage = lazy(() => import("@/features/condominios/CondominiosPage").then((module) => ({ default: module.CondominiosPage })));
@@ -18,6 +16,7 @@ const AtualizacoesPage = lazy(() => import("@/features/atualizacoes/Atualizacoes
 const AnalyticsPage = lazy(() => import("@/features/analytics/AnalyticsPage").then((module) => ({ default: module.AnalyticsPage })));
 const ChallengesPage = lazy(() => import("@/features/challenges/ChallengesPage").then((module) => ({ default: module.ChallengesPage })));
 const IntegracaoPage = lazy(() => import("@/features/integracao/IntegracaoPage").then((module) => ({ default: module.IntegracaoPage })));
+const AuditoriaPage = lazy(() => import("@/features/auditoria/AuditoriaPage").then((module) => ({ default: module.AuditoriaPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -103,22 +102,7 @@ export default function App() {
               <Route path="/feedback" element={<FeedbackPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/logs" element={<LogsPage />} />
-              <Route
-                path="/auditoria"
-                element={
-                  <ComingSoonPage
-                    title="Auditoria"
-                    description="Registro detalhado das ações administrativas feitas no painel."
-                    icon={ClipboardList}
-                    planned={[
-                      "Histórico de alterações no painel",
-                      "Autor e data de cada ação",
-                      "Filtros por período e por área",
-                      "Exportação da trilha de auditoria",
-                    ]}
-                  />
-                }
-              />
+              <Route path="/auditoria" element={<AuditoriaPage />} />
               <Route path="/atualizacoes" element={<AtualizacoesPage />} />
               <Route path="/integracao" element={<IntegracaoPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />

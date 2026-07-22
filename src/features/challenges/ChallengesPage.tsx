@@ -5,6 +5,7 @@ import { Download, FileSpreadsheet, FileUp, Layers, ListChecks, Pencil, Puzzle, 
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -463,6 +464,8 @@ export function ChallengesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingChallenge, setEditingChallenge] = useState<Challenge | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const queryClient = useQueryClient();
   const debouncedSearch = useDebounce(search, 300);
   const units = useQuery({ queryKey: ["challenges", "units"], queryFn: listUnitOptions, staleTime: 60_000 });
@@ -471,6 +474,12 @@ export function ChallengesPage() {
   const list = useQuery({ queryKey: ["challenges", "list", filters], queryFn: () => listChallenges(filters), placeholderData: keepPreviousData });
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
+  const selectedCount = selectedIds.length;
+  const allPageSelected = rows.length > 0 && rows.every((challenge) => selectedIds.includes(challenge.id));
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [page, debouncedSearch, status, kind, unit]);
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["challenges"] });
     void queryClient.invalidateQueries({ queryKey: ["challenge-rules"] });
@@ -482,6 +491,28 @@ export function ChallengesPage() {
       refresh();
     } catch (error) {
       toast.error(errorMessage(error, "Não foi possível atualizar o status."));
+    }
+  };
+  const toggleSelected = (id: string, checked: boolean) => {
+    setSelectedIds((current) => checked ? [...new Set([...current, id])] : current.filter((value) => value !== id));
+  };
+  const togglePage = (checked: boolean) => {
+    const pageIds = rows.map((challenge) => challenge.id);
+    setSelectedIds((current) => checked ? [...new Set([...current, ...pageIds])] : current.filter((id) => !pageIds.includes(id)));
+  };
+  const changeSelectedStatus = async (next: "active" | "inactive" | "archived") => {
+    if (!selectedIds.length) return;
+    setBulkSaving(true);
+    try {
+      await Promise.all(selectedIds.map((id) => setChallengeStatus(id, next)));
+      toast.success(`${selectedIds.length} desafio(s) atualizado(s).`);
+      setSelectedIds([]);
+      refresh();
+    } catch (error) {
+      toast.error(errorMessage(error, "Não foi possível atualizar os desafios selecionados."));
+      refresh();
+    } finally {
+      setBulkSaving(false);
     }
   };
 
@@ -517,6 +548,27 @@ export function ChallengesPage() {
         </Select>
       </FilterBar>
 
+      {rows.length > 0 && (
+        <Card className="mb-4 flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+            <Checkbox
+              checked={allPageSelected ? true : selectedCount > 0 ? "indeterminate" : false}
+              onCheckedChange={(checked) => togglePage(checked === true)}
+              aria-label="Selecionar todos os desafios desta página"
+            />
+            {selectedCount ? `${selectedCount} selecionado(s)` : "Selecionar esta página"}
+          </label>
+          {selectedCount > 0 && (
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => changeSelectedStatus("active")}>Ativar</Button>
+              <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => changeSelectedStatus("inactive")}>Inativar</Button>
+              <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => changeSelectedStatus("archived")}>Arquivar</Button>
+              <Button size="sm" variant="ghost" disabled={bulkSaving} onClick={() => setSelectedIds([])}><X className="h-4 w-4" /> Limpar</Button>
+            </div>
+          )}
+        </Card>
+      )}
+
       {list.isError ? (
         <Card><ErrorState title="Não foi possível carregar os desafios." description={(list.error as Error).message} action={<RetryButton onClick={() => list.refetch()} />} /></Card>
       ) : rows.length === 0 && !list.isLoading ? (
@@ -527,7 +579,17 @@ export function ChallengesPage() {
             const badge = challengeStatusBadge(challenge.status);
             return (
               <Card key={challenge.id} className="space-y-3 p-5">
-                <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">{challenge.title}</h3><StatusBadge label={badge.label} tone={badge.tone} /></div>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <Checkbox
+                      checked={selectedIds.includes(challenge.id)}
+                      onCheckedChange={(checked) => toggleSelected(challenge.id, checked === true)}
+                      aria-label={`Selecionar desafio ${challenge.title}`}
+                    />
+                    <h3 className="truncate font-semibold">{challenge.title}</h3>
+                  </div>
+                  <StatusBadge label={badge.label} tone={badge.tone} />
+                </div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">{challenge.prompt}</p>
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span>Tempo definido nas regras</span><span>{challenge.unit_name ? unitLabel({ name: challenge.unit_name, city: challenge.unit_city, state: challenge.unit_state }) : "Global"}</span></div>
                 <div className="flex gap-2 border-t pt-3">

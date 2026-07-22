@@ -136,35 +136,48 @@ export type AnalyticsDashboard = {
   status_breakdown: StatusBreakdownRow[];
   sources: AnalyticsSource[];
   statistics_reset_at?: string | null;
+  statistics_resets?: Record<string, string | null>;
 };
 
 export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promise<AnalyticsDashboard> {
   const resetInfo = await fetchStatisticsResetInfo();
-  const effectiveStartAt = effectiveStatisticsStart(filters.startAt, filters.endAt, resetInfo.reset_at);
-  const request = {
-    start_at: effectiveStartAt,
+  const sessionsStartAt = effectiveStatisticsStart(filters.startAt, filters.endAt, resetInfo.resets.sessions);
+  const callsStartAt = effectiveStatisticsStart(filters.startAt, filters.endAt, resetInfo.resets.calls);
+  const challengesStartAt = effectiveStatisticsStart(filters.startAt, filters.endAt, resetInfo.resets.challenges);
+  const attentionStartAt = effectiveStatisticsStart(filters.startAt, filters.endAt, resetInfo.resets.attention);
+  const requestFor = (startAt: string) => ({
+    start_at: startAt,
     end_at: filters.endAt,
     unit_id: filters.unitId === "all" ? null : filters.unitId,
     operator_id: filters.operatorId === "all" ? null : filters.operatorId,
     shift: filters.shift,
     ranking_page: filters.rankingPage,
     ranking_page_size: filters.rankingPageSize,
-  };
-  const [dashboardResult, callsResult, leaderboardResult, attentionResult, unitsResult] = await Promise.all([
-    supabase.rpc("admin_analytics_dashboard", { p_request: request }),
-    supabase.rpc("admin_analytics_answered_calls", { p_request: request }),
-    supabase.rpc("admin_challenge_leaderboard", { p_request: request }),
-    supabase.rpc("admin_operator_attention_leaderboard", { p_request: request }),
+  });
+  const sessionsRequest = requestFor(sessionsStartAt);
+  const challengesRequest = requestFor(challengesStartAt);
+  const dashboardPromise = supabase.rpc("admin_analytics_dashboard", { p_request: sessionsRequest });
+  const challengeDashboardPromise = challengesStartAt === sessionsStartAt
+    ? dashboardPromise
+    : supabase.rpc("admin_analytics_dashboard", { p_request: challengesRequest });
+  const [dashboardResult, challengeDashboardResult, callsResult, leaderboardResult, attentionResult, unitsResult] = await Promise.all([
+    dashboardPromise,
+    challengeDashboardPromise,
+    supabase.rpc("admin_analytics_answered_calls", { p_request: requestFor(callsStartAt) }),
+    supabase.rpc("admin_challenge_leaderboard", { p_request: challengesRequest }),
+    supabase.rpc("admin_operator_attention_leaderboard", { p_request: requestFor(attentionStartAt) }),
     supabase.from("units").select("id, name, city, state, code").eq("active", true).order("name").limit(500),
   ]);
 
   if (dashboardResult.error) throw dashboardResult.error;
+  if (challengeDashboardResult.error) throw challengeDashboardResult.error;
   if (callsResult.error) throw callsResult.error;
   if (leaderboardResult.error) throw leaderboardResult.error;
   if (attentionResult.error) throw attentionResult.error;
   if (unitsResult.error) throw unitsResult.error;
 
   const dashboard = dashboardResult.data as AnalyticsDashboard;
+  const challengeDashboard = challengeDashboardResult.data as AnalyticsDashboard;
   const calls = (callsResult.data ?? {}) as { answered_calls?: unknown };
   const leaderboard = (leaderboardResult.data ?? {}) as AnalyticsDashboard["ranking"];
   const attentionRanking = (attentionResult.data ?? { idle: [], blocked: [] }) as AnalyticsDashboard["attention_ranking"];
@@ -195,10 +208,15 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
     code: string | null;
   }>;
   const unitsById = new Map(unitRows.map((unit) => [unit.id, unit]));
+  const challengeCondominiums = new Map(challengeDashboard.condominiums.map((row) => [row.unit_id, row]));
   const decoratedCondominiums = dashboard.condominiums.map((row) => {
     const unit = unitsById.get(row.unit_id);
+    const challengeRow = challengeCondominiums.get(row.unit_id);
     return {
       ...row,
+      challenges_answered: challengeRow?.challenges_answered ?? 0,
+      challenges_received: challengeRow?.challenges_received ?? 0,
+      challenge_accuracy_rate: challengeRow?.challenge_accuracy_rate ?? null,
       unit_name: unitLabel({
         name: unit?.name ?? row.unit_name,
         city: unit?.city,
@@ -213,6 +231,7 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
   return {
     ...dashboard,
     statistics_reset_at: resetInfo.reset_at,
+    statistics_resets: resetInfo.resets,
     filter_options: {
       ...dashboard.filter_options,
       units: unitRows.map((unit) => ({ ...unit, name: unitLabel(unit) })),
@@ -224,6 +243,10 @@ export async function fetchAnalyticsDashboard(filters: AnalyticsFilters): Promis
     metrics: {
       ...dashboard.metrics,
       answered_calls: Number(calls.answered_calls ?? 0),
+      challenge_response_rate: challengeDashboard.metrics.challenge_response_rate,
+      challenge_accuracy_rate: challengeDashboard.metrics.challenge_accuracy_rate,
+      challenges_received: challengeDashboard.metrics.challenges_received,
+      challenges_answered: challengeDashboard.metrics.challenges_answered,
     },
   };
 }

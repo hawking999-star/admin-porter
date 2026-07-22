@@ -47,7 +47,7 @@ export const navGroups: NavGroup[] = [
       { to: "/atualizacoes", label: "Atualizações", description: "Versões do app", icon: BellRing, ready: true },
       { to: "/integracao", label: "Integrações", description: "Filas e conexões", icon: Code2, ready: true },
       { to: "/logs", label: "Logs do sistema", description: "Eventos e diagnóstico", icon: ClipboardList, ready: true },
-      { to: "/auditoria", label: "Auditoria", description: "Ações administrativas", icon: ClipboardList },
+      { to: "/auditoria", label: "Auditoria", description: "Ações administrativas", icon: ClipboardList, ready: true },
     ],
   },
 ];

@@ -63,6 +63,7 @@ import {
   enqueueTrackReplacement,
   getMusicStorageOverview,
   getPlaylistRequestDetail,
+  listMusicStorageDeletionJobs,
   listOrphanedMusicTracks,
   listOperatorMusicLibraryPage,
   listPlaylists,
@@ -70,6 +71,7 @@ import {
   removePlaylistTrack,
   renameMusicPlaylist,
   queueOrphanedMusicDeletions,
+  retryMusicStorageDeletionJobs,
   reimportPlaylistRequest,
   retryPlaylistImport,
   reviewPlaylist,
@@ -79,6 +81,7 @@ import {
   type OperatorMusicLibrary,
   type OperatorRequestHistory,
   type MusicStorageOverview,
+  type MusicStorageDeletionJob,
   type OrphanedMusicTrack,
   type Playlist,
   type PlaylistRequestDetailItem,
@@ -621,12 +624,20 @@ export function MusicasPage() {
     queryFn: getMusicStorageOverview,
     staleTime: 30_000,
     enabled: activeArea === "storage",
+    refetchInterval: (query) => Number(query.state.data?.queued_deletions ?? 0) > 0 ? 5000 : false,
   });
   const orphanedTracksQuery = useQuery({
     queryKey: ["orphaned-music-tracks"],
     queryFn: listOrphanedMusicTracks,
     staleTime: 30_000,
     enabled: activeArea === "storage",
+  });
+  const storageDeletionJobsQuery = useQuery({
+    queryKey: ["music-storage-deletion-jobs"],
+    queryFn: listMusicStorageDeletionJobs,
+    staleTime: 10_000,
+    enabled: activeArea === "storage",
+    refetchInterval: (query) => (query.state.data?.length ?? 0) > 0 ? 5000 : false,
   });
 
   const toggle = (cur: string, val: string, set: (v: string) => void) =>
@@ -653,6 +664,7 @@ export function MusicasPage() {
     qc.invalidateQueries({ queryKey: ["music-library"] });
     qc.invalidateQueries({ queryKey: ["music-storage-overview"] });
     qc.invalidateQueries({ queryKey: ["orphaned-music-tracks"] });
+    qc.invalidateQueries({ queryKey: ["music-storage-deletion-jobs"] });
   };
 
   const storageCleanupMutation = useMutation({
@@ -664,6 +676,17 @@ export function MusicasPage() {
     },
     onError: (err: unknown) => {
       toast.error("Não foi possível agendar a limpeza", { description: errorMessage(err) });
+    },
+  });
+
+  const storageRetryMutation = useMutation({
+    mutationFn: retryMusicStorageDeletionJobs,
+    onSuccess: (requeued) => {
+      invalidateMusic();
+      toast.success(requeued ? `${requeued} exclusão(ões) reenfileirada(s)` : "Nenhuma exclusão com erro para reenfileirar");
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível reenfileirar as exclusões", { description: errorMessage(err) });
     },
   });
 
@@ -797,7 +820,7 @@ export function MusicasPage() {
     ? isFetching
     : activeArea === "library"
       ? libraryQuery.isFetching
-      : storageOverviewQuery.isFetching || orphanedTracksQuery.isFetching;
+      : storageOverviewQuery.isFetching || orphanedTracksQuery.isFetching || storageDeletionJobsQuery.isFetching;
   const refreshActiveArea = () => {
     if (activeArea === "requests") {
       void refetch();
@@ -809,6 +832,7 @@ export function MusicasPage() {
     }
     void storageOverviewQuery.refetch();
     void orphanedTracksQuery.refetch();
+    void storageDeletionJobsQuery.refetch();
   };
 
   const detail = useMemo(
@@ -1102,11 +1126,14 @@ export function MusicasPage() {
         <MusicStorageSection
           overview={storageOverviewQuery.data ?? null}
           tracks={orphanedTracksQuery.data ?? []}
-          loading={storageOverviewQuery.isLoading || orphanedTracksQuery.isLoading}
-          error={(storageOverviewQuery.error ?? orphanedTracksQuery.error) as Error | null}
-          refreshing={storageOverviewQuery.isFetching || orphanedTracksQuery.isFetching}
+          deletionJobs={storageDeletionJobsQuery.data ?? []}
+          loading={storageOverviewQuery.isLoading || orphanedTracksQuery.isLoading || storageDeletionJobsQuery.isLoading}
+          error={(storageOverviewQuery.error ?? orphanedTracksQuery.error ?? storageDeletionJobsQuery.error) as Error | null}
+          refreshing={storageOverviewQuery.isFetching || orphanedTracksQuery.isFetching || storageDeletionJobsQuery.isFetching}
+          retrying={storageRetryMutation.isPending}
           onRefresh={refreshActiveArea}
           onCleanup={() => setStorageCleanupOpen(true)}
+          onRetryFailed={() => storageRetryMutation.mutate()}
         />
       )}
 
@@ -1427,21 +1454,28 @@ function formatBytes(value: number) {
 function MusicStorageSection({
   overview,
   tracks,
+  deletionJobs,
   loading,
   error,
   refreshing,
+  retrying,
   onRefresh,
   onCleanup,
+  onRetryFailed,
 }: {
   overview: MusicStorageOverview | null;
   tracks: OrphanedMusicTrack[];
+  deletionJobs: MusicStorageDeletionJob[];
   loading: boolean;
   error: Error | null;
   refreshing: boolean;
+  retrying: boolean;
   onRefresh: () => void;
   onCleanup: () => void;
+  onRetryFailed: () => void;
 }) {
   const waitingMeasurement = Boolean(overview && overview.measured_tracks < overview.total_tracks);
+  const failedJobs = deletionJobs.filter((job) => job.status === "error");
 
   return (
     <div className="space-y-5">
@@ -1456,6 +1490,11 @@ function MusicStorageSection({
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
             <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} /> Atualizar
           </Button>
+          {failedJobs.length > 0 && (
+            <Button variant="outline" size="sm" onClick={onRetryFailed} disabled={retrying}>
+              <RefreshCw className={cn("h-4 w-4", retrying && "animate-spin")} /> Reprocessar falhas
+            </Button>
+          )}
           <Button size="sm" variant="destructive" onClick={onCleanup} disabled={!overview?.orphaned_tracks}>
             <Trash2 className="h-4 w-4" /> Limpar sem playlist
           </Button>
@@ -1502,10 +1541,48 @@ function MusicStorageSection({
               iconClassName="bg-muted text-muted-foreground"
               label="Na fila de limpeza"
               value={overview?.queued_deletions ?? 0}
-              hint="Aguardando o Worker R2"
+              hint={failedJobs.length ? `${failedJobs.length} com erro — veja abaixo` : "Aguardando o Worker R2"}
               loading={loading}
             />
           </div>
+
+          {deletionJobs.length > 0 && (
+            <Card className="overflow-hidden border-border shadow-sm">
+              <div className="flex flex-col gap-2 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="font-semibold">Fila de limpeza R2</h3>
+                  <p className="text-xs text-muted-foreground">Acompanhe tentativas e reenvie falhas sem apagar o histórico das solicitações.</p>
+                </div>
+                {failedJobs.length > 0 && <span className="text-sm font-medium text-destructive">{failedJobs.length} com erro</span>}
+              </div>
+              <div className="divide-y divide-border">
+                {deletionJobs.map((job) => (
+                  <div key={job.id} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate text-sm font-medium">{job.title}</p>
+                        <span className={cn(
+                          "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                          job.status === "error" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground",
+                        )}>
+                          {job.status === "error" ? "Falha" : job.status === "running" ? "Processando" : "Na fila"}
+                        </span>
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">{job.artist ?? "Artista não informado"} · tentativa {job.attempts}</p>
+                      {job.last_error && (
+                        <p className="mt-1 line-clamp-2 text-xs text-destructive" title={job.last_error}>
+                          {job.last_error.includes("playlist_request_tracks")
+                            ? "O histórico da solicitação ainda referencia esta faixa. A recuperação preservará o histórico."
+                            : job.last_error}
+                        </p>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">Atualizado {relOrDate(job.updated_at)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {waitingMeasurement && (
             <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning-foreground">
@@ -2613,6 +2690,7 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
     enabled: detectPlatform(p.source_url) === "spotify",
     staleTime: 10_000,
   });
+
   const itemMutation = useMutation({
     mutationFn: ({ action, item, url }: { action: "ignore" | "replace_youtube" | "retry"; item: PlaylistRequestDetailItem; url?: string }) =>
       managePlaylistRequestItem(detailQuery.data!.request.id, action, item.id, url),
