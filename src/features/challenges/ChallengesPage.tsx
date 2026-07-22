@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, FileSpreadsheet, FileUp, Layers, ListChecks, Pencil, Puzzle, Settings2, Upload, X } from "lucide-react";
+import { Building2, FileSpreadsheet, Layers, ListChecks, Pencil, Puzzle, Settings2, Upload, X } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -14,13 +14,13 @@ import { EmptyState, ErrorState, FilterBar, PaginationFooter, RetryButton, Searc
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDebounce } from "@/hooks/useDebounce";
 import { listUnitOptions, unitLabel } from "@/features/usuarios/queries";
-import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type Challenge, type ChallengeActiveWindow, type ChallengeInput, type ChallengeRules, challengeCsvTemplate, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
+import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type Challenge, type ChallengeActiveWindow, type ChallengeInput, type ChallengeRules, bulkUpdateChallenges, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
+import { ChallengeBulkUnitDialog } from "./ChallengeBulkUnitDialog";
+import { ChallengeImportDialog } from "./ChallengeImportDialog";
 
 const PAGE_SIZE = 12;
 type UnitOption = { id: string; name: string; city: string | null; state: string | null; code: string | null };
 
-function downloadCsvTemplate() { const blob = new Blob([challengeCsvTemplate()], { type: "text/csv;charset=utf-8;" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "modelo-desafio-multipla-escolha.csv"; link.click(); URL.revokeObjectURL(url); }
-function csvColumns(row: string) { return [...row.matchAll(/(?:^|,)(?:"([^"]*)"|([^,]*))/g)].map((m) => (m[1] ?? m[2] ?? "").trim()); }
 function errorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
@@ -30,13 +30,12 @@ function errorMessage(error: unknown, fallback: string) {
 const EMPTY_CHALLENGE: ChallengeInput = { unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", status: "draft" };
 
 function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; challenge?: Challenge | null; onSaved: () => void }) {
-  const [unitId, setUnitId] = useState(""); const [file, setFile] = useState<File | null>(null); const inputRef = useRef<HTMLInputElement>(null); const [saving, setSaving] = useState(false);
+  const [unitId, setUnitId] = useState(""); const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ChallengeInput>(EMPTY_CHALLENGE);
   const editing = Boolean(challenge);
 
   useEffect(() => {
     if (!open) return;
-    setFile(null);
     setUnitId(challenge ? (challenge.unit_id ?? "global") : "");
     setForm(challenge ? {
       id: challenge.id,
@@ -53,17 +52,9 @@ function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { op
     const selectedUnitId = unitId === "global" ? null : unitId;
     setSaving(true);
     try {
-      if (file) {
-        if (!file.name.toLowerCase().endsWith(".csv")) throw new Error("PDF ainda não é importado. Use CSV ou cadastro manual.");
-        const rows = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean).slice(1);
-        if (!rows.length) throw new Error("A planilha não possui linhas de desafio.");
-        for (const row of rows) { const c = csvColumns(row); if (c.length < 7 || !/^[ABCD]$/i.test(c[6] ?? "")) throw new Error(`Linha inválida: ${row}`); await upsertChallenge({ unit_id: selectedUnitId, title: c[0], prompt: c[1], alternatives: [c[2], c[3], c[4], c[5]], correct: c[6].toUpperCase(), status: "draft" }); }
-        toast.success(`${rows.length} desafio(s) importado(s) como rascunho.`);
-      } else {
-        if (!form.title.trim() || !form.prompt.trim() || form.alternatives.some((value) => !value.trim()) || !/^[ABCD]$/.test(form.correct)) throw new Error("Preencha título, enunciado, quatro alternativas e a correta (A-D).");
-        await upsertChallenge({ ...form, unit_id: selectedUnitId }); toast.success(editing ? "Desafio atualizado." : "Desafio salvo como rascunho.");
-      }
-      onSaved(); onOpenChange(false); setFile(null); setUnitId("");
+      if (!form.title.trim() || !form.prompt.trim() || form.alternatives.some((value) => !value.trim()) || !/^[ABCD]$/.test(form.correct)) throw new Error("Preencha título, enunciado, quatro alternativas e a correta (A-D).");
+      await upsertChallenge({ ...form, unit_id: selectedUnitId }); toast.success(editing ? "Desafio atualizado." : "Desafio salvo como rascunho.");
+      onSaved(); onOpenChange(false); setUnitId("");
     } catch (error) { toast.error(errorMessage(error, "Não foi possível salvar.")); } finally { setSaving(false); }
   }
   return (
@@ -72,7 +63,7 @@ function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { op
         <DialogHeader>
           <DialogTitle>{editing ? "Editar desafio" : "Novo desafio"}</DialogTitle>
           <DialogDescription>
-            {editing ? "Altere o conteúdo e o condomínio deste desafio." : "Cadastre o conteúdo do desafio manualmente ou importe uma planilha CSV."} Os horários, tempos de resposta e punições são definidos em Regras.
+            {editing ? "Altere o conteúdo e o condomínio deste desafio." : "Cadastre um desafio manualmente."} Os horários, tempos de resposta e punições são definidos em Regras.
           </DialogDescription>
         </DialogHeader>
 
@@ -92,25 +83,7 @@ function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { op
             Este cadastro contém somente pergunta, alternativas e resposta correta. Desafios gerais podem aparecer para Operadores de qualquer condomínio; os tempos e bloqueios seguem as regras aplicáveis a cada condomínio.
           </div>
 
-          {!editing && <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="outline" onClick={downloadCsvTemplate}>
-              <Download className="h-4 w-4" /> Baixar modelo atualizado
-            </Button>
-            <input ref={inputRef} className="hidden" type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-            {file ? (
-              <span className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm">
-                <FileUp className="h-4 w-4" />{file.name}
-                <button type="button" onClick={() => setFile(null)} aria-label="Remover arquivo"><X className="h-4 w-4" /></button>
-              </span>
-            ) : (
-              <Button size="sm" variant="outline" onClick={() => inputRef.current?.click()}>
-                <FileSpreadsheet className="h-4 w-4" /> Importar planilha CSV
-              </Button>
-            )}
-          </div>}
-
-          {!file && (
-            <div className="space-y-3 rounded-lg border p-3">
+          <div className="space-y-3 rounded-lg border p-3">
               <Input placeholder="Título do desafio" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
               <Textarea placeholder="Pergunta ou enunciado" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />
               <div className="grid gap-2 sm:grid-cols-2">
@@ -125,8 +98,7 @@ function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { op
                   <SelectContent>{["A", "B", "C", "D"].map((letter) => <SelectItem key={letter} value={letter}>Alternativa {letter}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
-            </div>
-          )}
+          </div>
         </div>
 
         <DialogFooter>
@@ -462,8 +434,10 @@ export function ChallengesPage() {
   const [unit, setUnit] = useState("all");
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editingChallenge, setEditingChallenge] = useState<Challenge | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [bulkUnitOpen, setBulkUnitOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkSaving, setBulkSaving] = useState(false);
   const queryClient = useQueryClient();
@@ -504,12 +478,28 @@ export function ChallengesPage() {
     if (!selectedIds.length) return;
     setBulkSaving(true);
     try {
-      await Promise.all(selectedIds.map((id) => setChallengeStatus(id, next)));
+      await bulkUpdateChallenges({ challengeIds: selectedIds, status: next });
       toast.success(`${selectedIds.length} desafio(s) atualizado(s).`);
       setSelectedIds([]);
       refresh();
     } catch (error) {
       toast.error(errorMessage(error, "Não foi possível atualizar os desafios selecionados."));
+      refresh();
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+  const changeSelectedUnit = async (targetUnitId: string | null) => {
+    if (!selectedIds.length) return;
+    setBulkSaving(true);
+    try {
+      await bulkUpdateChallenges({ challengeIds: selectedIds, changeUnit: true, unitId: targetUnitId });
+      toast.success(`${selectedIds.length} desafio(s) direcionado(s) com sucesso.`);
+      setBulkUnitOpen(false);
+      setSelectedIds([]);
+      refresh();
+    } catch (error) {
+      toast.error(errorMessage(error, "Não foi possível alterar o condomínio dos desafios selecionados."));
       refresh();
     } finally {
       setBulkSaving(false);
@@ -522,7 +512,7 @@ export function ChallengesPage() {
         eyebrow="Engajamento"
         title="Desafios"
         description="Cadastre desafios e defina as janelas, punições e bloqueios que o servidor aplicará aos Operadores."
-        action={<div className="flex gap-2"><Button variant="outline" onClick={() => setRulesOpen(true)}><Settings2 className="h-4 w-4" /> Regras</Button><Button onClick={() => setCreateOpen(true)}><Upload className="h-4 w-4" /> Novo desafio</Button></div>}
+        action={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setRulesOpen(true)}><Settings2 className="h-4 w-4" /> Regras</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileSpreadsheet className="h-4 w-4" /> Importar CSV</Button><Button onClick={() => setCreateOpen(true)}><Upload className="h-4 w-4" /> Novo desafio</Button></div>}
       />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -563,6 +553,7 @@ export function ChallengesPage() {
               <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => changeSelectedStatus("active")}>Ativar</Button>
               <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => changeSelectedStatus("inactive")}>Inativar</Button>
               <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => changeSelectedStatus("archived")}>Arquivar</Button>
+              <Button size="sm" variant="outline" disabled={bulkSaving} onClick={() => setBulkUnitOpen(true)}><Building2 className="h-4 w-4" /> Alterar condomínio</Button>
               <Button size="sm" variant="ghost" disabled={bulkSaving} onClick={() => setSelectedIds([])}><X className="h-4 w-4" /> Limpar</Button>
             </div>
           )}
@@ -606,6 +597,8 @@ export function ChallengesPage() {
       {total > 0 && <PaginationFooter page={page} pageSize={PAGE_SIZE} total={total} isLoading={list.isFetching} onPageChange={setPage} />}
       <ChallengeDialog open={createOpen} onOpenChange={setCreateOpen} units={units.data ?? []} onSaved={refresh} />
       <ChallengeDialog open={Boolean(editingChallenge)} onOpenChange={(open) => { if (!open) setEditingChallenge(null); }} units={units.data ?? []} challenge={editingChallenge} onSaved={refresh} />
+      <ChallengeImportDialog open={importOpen} onOpenChange={setImportOpen} units={units.data ?? []} onImported={refresh} />
+      <ChallengeBulkUnitDialog open={bulkUnitOpen} onOpenChange={setBulkUnitOpen} units={units.data ?? []} selectedCount={selectedCount} saving={bulkSaving} onConfirm={(targetUnitId) => void changeSelectedUnit(targetUnitId)} />
       <RulesDialog open={rulesOpen} onOpenChange={setRulesOpen} units={units.data ?? []} onSaved={refresh} />
     </div>
   );

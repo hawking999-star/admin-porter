@@ -203,6 +203,22 @@ export type ChallengeInput = {
   status: string;
 };
 
+export type ChallengeBatchInput = {
+  title: string;
+  prompt: string;
+  alternatives: [string, string, string, string];
+  correct: string;
+};
+
+export type ChallengeBatchResult = {
+  imported?: number;
+  updated?: number;
+  unit_id: string | null;
+  status?: string | null;
+  unit_changed?: boolean;
+  challenge_ids?: string[];
+};
+
 export async function upsertChallenge(input: ChallengeInput): Promise<string> {
   const payload = {
     ...input,
@@ -216,6 +232,37 @@ export async function upsertChallenge(input: ChallengeInput): Promise<string> {
 export async function setChallengeStatus(challengeId: string, status: "draft" | "active" | "inactive" | "archived"): Promise<void> {
   const { error } = await supabase.rpc("admin_set_challenge_status", { p_challenge_id: challengeId, p_status: status });
   if (error) throw error;
+}
+
+export async function importChallengesBatch(
+  challenges: ChallengeBatchInput[],
+  unitId: string | null,
+  signal?: AbortSignal,
+): Promise<ChallengeBatchResult> {
+  let request = supabase.rpc("admin_import_challenges_batch", {
+    p_challenges: challenges,
+    p_unit_id: unitId,
+  });
+  if (signal) request = request.abortSignal(signal);
+  const { data, error } = await request;
+  if (error) throw error;
+  return data as ChallengeBatchResult;
+}
+
+export async function bulkUpdateChallenges(input: {
+  challengeIds: string[];
+  status?: "draft" | "active" | "inactive" | "archived" | null;
+  changeUnit?: boolean;
+  unitId?: string | null;
+}): Promise<ChallengeBatchResult> {
+  const { data, error } = await supabase.rpc("admin_bulk_update_challenges", {
+    p_challenge_ids: input.challengeIds,
+    p_status: input.status ?? null,
+    p_change_unit: input.changeUnit ?? false,
+    p_unit_id: input.unitId ?? null,
+  });
+  if (error) throw error;
+  return data as ChallengeBatchResult;
 }
 
 function pageRange(page: number, pageSize: number) {
