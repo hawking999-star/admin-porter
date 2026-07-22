@@ -167,6 +167,8 @@ supabase.rpc("operator_challenge_resume_idle", { p_session_id: session_id })
 
 Essa RPC deve ser chamada **somente por um clique humano no botão Voltar**. Não a chame em renderização, `setInterval`, polling, reconexão, retorno ao foreground ou como efeito automático de `next_screen: "idle"`.
 
+Quando o Operador estiver apto a trabalhar, o backend encerra a ocorrência perdida e devolve imediatamente **outro desafio**. O App não deve tentar escolher ou sortear o substituto localmente; apenas renderize o snapshot retornado.
+
 - ao entrar em `idle`, cancele imediatamente o despertador e o polling de desafios;
 - desabilite o botão Voltar enquanto a única chamada estiver em andamento;
 - aceite no máximo uma chamada de `operator_challenge_resume_idle` por clique;
@@ -184,8 +186,13 @@ O retorno normal contém:
 
 ```json
 {
-  "next_screen": "player",
+  "next_screen": "challenge",
   "status_operacional": "ativo",
+  "challenge": {
+    "id": "UUID-DIFERENTE-DO-DESAFIO-PERDIDO",
+    "log_id": "UUID-DA-NOVA-OCORRENCIA",
+    "status": "pending"
+  },
   "operator_state": {
     "status": "active",
     "revision": 18,
@@ -195,6 +202,8 @@ O retorno normal contém:
   "server_now": "ISO-8601"
 }
 ```
+
+Depois de renderizar a nova tela, chame `operator_challenge_displayed` uma única vez para o novo `log_id`, seguindo o mesmo fluxo de exibição já descrito acima. Um clique repetido em **Voltar** pode devolver a mesma ocorrência aberta e não deve gerar outra tela nem outra confirmação duplicada.
 
 Se o retorno for `blocked`, `in_call` ou `outside_shift`, respeite o estado devolvido; não force `active` localmente.
 
