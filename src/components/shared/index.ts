@@ -14,4 +14,7 @@ export { FilterBar } from "./FilterBar";
 export { DataTable } from "./DataTable";
 export { PaginationFooter } from "./PaginationFooter";
 export { PeriodFilter } from "./PeriodFilter";
+export { UpdatedAt, formatUpdatedAt } from "./UpdatedAt";
+export { EntityHistoryButton } from "./EntityHistoryButton";
+export { ExportCsvButton } from "./ExportCsvButton";
 export { PageHeader } from "@/components/layout/PageHeader";

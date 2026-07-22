@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { EntityHistoryButton } from "@/components/shared/EntityHistoryButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -23,6 +24,7 @@ import {
 import { createUnit, updateUnit, type Unit, type UnitInput } from "./queries";
 
 const DEFAULT_TZ = "America/Sao_Paulo";
+const UNIT_HISTORY_TYPES = ["unit", "units"];
 
 const BRAZILIAN_STATES = [
   { uf: "AC", name: "Acre" }, { uf: "AL", name: "Alagoas" }, { uf: "AP", name: "Amapá" },
@@ -268,6 +270,7 @@ export function CondominioFormDialog({
           </div>
 
           <DialogFooter>
+            {unit && <EntityHistoryButton entityId={unit.id} entityTypes={UNIT_HISTORY_TYPES} title={unit.name} />}
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>

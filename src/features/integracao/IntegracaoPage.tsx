@@ -6,6 +6,8 @@ import {
   ClipboardCopy,
   Database,
   HardDrive,
+  ServerCog,
+  Cloud,
   RefreshCw,
   RotateCcw,
   TriangleAlert,
@@ -13,7 +15,7 @@ import {
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ErrorState, RetryButton, StatCard } from "@/components/shared";
+import { ErrorState, RetryButton, StatCard, UpdatedAt } from "@/components/shared";
 import { cn } from "@/lib/utils";
 import {
   acknowledgeImportError,
@@ -115,13 +117,15 @@ export function IntegracaoPage() {
     queryKey: ["integration-status"],
     queryFn: getIntegrationStatus,
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
   const errorsQuery = useQuery({
     queryKey: ["integration-import-errors"],
     queryFn: listPendingImportErrors,
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: (query) => (query.state.data?.length ?? 0) > 0 ? 30_000 : 120_000,
+    refetchIntervalInBackground: false,
   });
   const refresh = () => {
     void statusQuery.refetch();
@@ -167,9 +171,12 @@ export function IntegracaoPage() {
         title="Integrações"
         description="Acompanhe as filas que conectam o painel, o importador e o armazenamento de músicas."
         action={
-          <Button variant="outline" size="sm" onClick={refresh} disabled={isRefreshing}>
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} /> Atualizar
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <UpdatedAt value={status?.generated_at ?? statusQuery.dataUpdatedAt} loading={isRefreshing} />
+            <Button variant="outline" size="sm" onClick={refresh} disabled={isRefreshing}>
+              <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} /> Atualizar
+            </Button>
+          </div>
         }
       />
 
@@ -183,8 +190,10 @@ export function IntegracaoPage() {
         </Card>
       ) : (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <StatCard icon={<Database className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Supabase" value={status?.database_connected ? "Conectado" : "Verificando"} hint="Leitura autenticada pelo painel" loading={statusQuery.isLoading} />
+            <StatCard icon={<ServerCog className="h-5 w-5" />} iconClassName={status?.worker?.state === "healthy" ? "bg-success/25 text-success-foreground" : "bg-warning/20 text-warning-foreground"} label="Worker" value={status?.worker?.state === "healthy" ? "Online" : status?.worker?.state === "offline" ? "Offline" : "Verificando"} hint={status?.worker?.last_seen_at ? `Heartbeat há ${status.worker.age_seconds ?? 0}s` : "Aguardando heartbeat"} loading={statusQuery.isLoading} />
+            <StatCard icon={<Cloud className="h-5 w-5" />} iconClassName={status?.r2?.state === "healthy" ? "bg-success/25 text-success-foreground" : "bg-warning/20 text-warning-foreground"} label="Cloudflare R2" value={status?.r2?.state === "healthy" ? "Acessível" : status?.r2?.state === "degraded" ? "Atenção" : "Verificando"} hint={status?.r2?.message ?? "Teste executado pelo Worker"} loading={statusQuery.isLoading} />
             <StatCard icon={<TriangleAlert className="h-5 w-5" />} iconClassName="bg-warning/20 text-warning-foreground" label="Falhas de importação" value={status?.imports.with_errors ?? 0} hint="Erros pendentes de tratamento" loading={statusQuery.isLoading} />
             <StatCard icon={<HardDrive className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Limpeza no R2" value={status?.storage_cleanup.queued ?? 0} hint="Arquivos aguardando remoção segura" loading={statusQuery.isLoading} />
           </div>

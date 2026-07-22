@@ -303,48 +303,20 @@ export type OverviewActionCenter = {
 };
 
 export async function fetchOverviewCounts(statisticsSince?: string, unitId?: string): Promise<OverviewCounts> {
-  const today = startOfTodayISO();
-  const endedSince = statisticsSince && statisticsSince > today ? statisticsSince : today;
+  const { data, error } = await supabase.rpc("admin_overview_counts", {
+    p_statistics_since: statisticsSince ?? null,
+    p_unit_id: unitId ?? null,
+  });
+  if (error) throw error;
 
-  let operatorsQuery = supabase.from("operators").select("id", { count: "exact", head: true }).eq("active", true);
-  let onlineQuery = supabase
-    .from("operator_states")
-    .select("operator_id, operators!inner(unit_id)", { count: "exact", head: true })
-    .eq("status", "active");
-  let activeQuery = supabase.from("operator_sessions").select("id", { count: "exact", head: true }).eq("status", "active");
-  let endedQuery = supabase
-    .from("operator_sessions")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "ended")
-    .gte("ended_at", endedSince);
-  let feedbackQuery = supabase.from("feedback").select("id", { count: "exact", head: true }).eq("status", "new");
-  let playlistsQuery = supabase.from("playlists").select("id", { count: "exact", head: true }).eq("approval_status", "pending");
-
-  if (unitId) {
-    operatorsQuery = operatorsQuery.eq("unit_id", unitId);
-    onlineQuery = onlineQuery.eq("operators.unit_id", unitId);
-    activeQuery = activeQuery.eq("unit_id", unitId);
-    endedQuery = endedQuery.eq("unit_id", unitId);
-    feedbackQuery = feedbackQuery.eq("unit_id", unitId);
-    playlistsQuery = playlistsQuery.eq("unit_id", unitId);
-  }
-
-  const [operators, online, active, endedToday, feedback, playlists] = await Promise.all([
-    operatorsQuery,
-    onlineQuery,
-    activeQuery,
-    endedQuery,
-    feedbackQuery,
-    playlistsQuery,
-  ]);
-
+  const counts = (data ?? {}) as Record<string, unknown>;
   return {
-    operators: operators.count ?? 0,
-    operatorsOnline: online.count ?? 0,
-    activeSessions: active.count ?? 0,
-    sessionsEndedToday: endedToday.count ?? 0,
-    pendingFeedback: feedback.count ?? 0,
-    pendingPlaylists: playlists.error ? null : playlists.count ?? 0,
+    operators: Number(counts.operators ?? 0),
+    operatorsOnline: Number(counts.operatorsOnline ?? 0),
+    activeSessions: Number(counts.activeSessions ?? 0),
+    sessionsEndedToday: Number(counts.sessionsEndedToday ?? 0),
+    pendingFeedback: Number(counts.pendingFeedback ?? 0),
+    pendingPlaylists: counts.pendingPlaylists == null ? null : Number(counts.pendingPlaylists),
   };
 }
 

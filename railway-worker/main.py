@@ -76,7 +76,12 @@ YOUTUBE_CIRCUIT_OPEN_SECONDS = min(
     max(int(env("YOUTUBE_CIRCUIT_OPEN_SECONDS", "900")), 60),
     3600,
 )
-STORAGE_AUDIT_INTERVAL_SECONDS = int(env("STORAGE_AUDIT_INTERVAL_SECONDS", "3600"))
+STORAGE_AUDIT_INTERVAL_SECONDS = max(int(env("STORAGE_AUDIT_INTERVAL_SECONDS", "86400")), 3600)
+STORAGE_AUDIT_START_DELAY_SECONDS = max(int(env("STORAGE_AUDIT_START_DELAY_SECONDS", "60")), 10)
+STORAGE_DELETION_POLL_SECONDS = max(int(env("STORAGE_DELETION_POLL_SECONDS", "30")), 5)
+WORKER_HEARTBEAT_SECONDS = min(max(int(env("WORKER_HEARTBEAT_SECONDS", "30")), 10), 60)
+R2_HEALTHCHECK_SECONDS = min(max(int(env("R2_HEALTHCHECK_SECONDS", "300")), 60), 1800)
+WORKER_VERSION = env("RAILWAY_GIT_COMMIT_SHA", env("WORKER_VERSION", "local"))[:64]
 DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS = min(max(int(env("DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS", "120")), 10), 600)
 YTDLP_NETWORK_TIMEOUT_SECONDS = min(max(int(env("YTDLP_NETWORK_TIMEOUT_SECONDS", "30")), 5), 120)
 SPOTDL_RESOLVE_TIMEOUT_SECONDS = min(max(int(env("SPOTDL_RESOLVE_TIMEOUT_SECONDS", "600")), 30), 1800)
@@ -206,6 +211,76 @@ def now_iso() -> str:
 def log(*args):
     safe = [redact_sensitive(arg, SECRET_VALUES) for arg in args]
     print(f"[{now_iso()}]", *safe, flush=True)
+
+
+_WORKER_STATE_LOCK = threading.Lock()
+_WORKER_STATE: dict = {
+    "status": "starting",
+    "current_job_id": None,
+    "activity": "Inicializando o Worker",
+    "activity_at": now_iso(),
+}
+
+
+def set_worker_state(status: str, activity: str, job_id: str | None = None) -> None:
+    """Atualiza o estado lido pela thread de heartbeat sem bloquear o Worker."""
+    with _WORKER_STATE_LOCK:
+        _WORKER_STATE.update(
+            status=status,
+            current_job_id=job_id,
+            activity=activity,
+            activity_at=now_iso(),
+        )
+
+
+def worker_state_snapshot() -> dict:
+    with _WORKER_STATE_LOCK:
+        return dict(_WORKER_STATE)
+
+
+def heartbeat_loop() -> None:
+    """Publica vida do Worker e saude do R2 mesmo durante downloads longos."""
+    heartbeat_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    next_r2_check_at = 0.0
+    r2_status = "unknown"
+    r2_checked_at: str | None = None
+    r2_message: str | None = None
+
+    while True:
+        if time.monotonic() >= next_r2_check_at:
+            try:
+                s3.list_objects_v2(Bucket=R2_BUCKET, MaxKeys=1)
+                r2_status = "healthy"
+                r2_message = "Bucket acessivel pelo Worker"
+            except Exception as exc:  # noqa: BLE001
+                r2_status = "degraded"
+                r2_message = redact_sensitive(exc, SECRET_VALUES)[:240]
+            r2_checked_at = now_iso()
+            next_r2_check_at = time.monotonic() + R2_HEALTHCHECK_SECONDS
+
+        state = worker_state_snapshot()
+        details = {
+            "version": WORKER_VERSION,
+            "current_job_id": state.get("current_job_id"),
+            "activity": state.get("activity"),
+            "activity_at": state.get("activity_at"),
+            "r2_status": r2_status,
+            "r2_checked_at": r2_checked_at,
+            "r2_message": r2_message,
+            "poll_seconds": POLL_SECONDS,
+        }
+        try:
+            heartbeat_client.rpc(
+                "worker_record_service_heartbeat",
+                {
+                    "p_service_name": "railway-worker",
+                    "p_status": state.get("status", "degraded"),
+                    "p_details": details,
+                },
+            ).execute()
+        except Exception as exc:  # noqa: BLE001
+            log(f"Heartbeat nao publicado: {exc}")
+        time.sleep(WORKER_HEARTBEAT_SECONDS)
 
 
 _YOUTUBE_CIRCUIT_LOCK = threading.Lock()
@@ -969,14 +1044,15 @@ def process_storage_deletion(job: dict):
         raise
 
 
-def refresh_storage_sizes():
+def refresh_storage_sizes(audit_client=None):
     """Registra o tamanho real dos objetos R2 para o painel administrativo."""
+    audit_client = audit_client or supabase
     offset = 0
     page_size = 500
     checked = 0
     while True:
         result = (
-            supabase.table("tracks")
+            audit_client.table("tracks")
             .select("id,storage_object_key,metadata")
             .eq("status", "available")
             .range(offset, offset + page_size - 1)
@@ -991,7 +1067,7 @@ def refresh_storage_sizes():
                 metadata = dict(track.get("metadata") or {})
                 metadata["size_bytes"] = int(head["ContentLength"])
                 metadata["storage_checked_at"] = now_iso()
-                supabase.table("tracks").update({"metadata": metadata}).eq("id", track["id"]).execute()
+                audit_client.table("tracks").update({"metadata": metadata}).eq("id", track["id"]).execute()
                 checked += 1
             except Exception as exc:  # noqa: BLE001
                 log(f"Não foi possível medir {track['storage_object_key']}: {exc}")
@@ -999,6 +1075,18 @@ def refresh_storage_sizes():
             break
         offset += page_size
     log(f"Auditoria de armazenamento concluída: {checked} objeto(s) medido(s).")
+
+
+def storage_audit_loop() -> None:
+    """Executa a auditoria pesada em background e, por padrao, uma vez ao dia."""
+    audit_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    time.sleep(STORAGE_AUDIT_START_DELAY_SECONDS)
+    while True:
+        try:
+            refresh_storage_sizes(audit_client)
+        except Exception as exc:  # noqa: BLE001
+            log(f"Falha na auditoria de armazenamento: {exc}")
+        time.sleep(STORAGE_AUDIT_INTERVAL_SECONDS)
 
 
 # --------------------------------------------------------------------------- #
@@ -1704,6 +1792,9 @@ def check_ffmpeg():
 
 def main():
     check_ffmpeg()
+    set_worker_state("starting", "Validacoes de inicializacao concluidas")
+    threading.Thread(target=heartbeat_loop, name="worker-heartbeat", daemon=True).start()
+    threading.Thread(target=storage_audit_loop, name="storage-audit", daemon=True).start()
     log("Worker iniciado. Aguardando jobs...")
     log(
         f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa, "
@@ -1714,9 +1805,10 @@ def main():
         "  PO Token automático: "
         + ("ativo (cookies como fallback)" if POT_PROVIDER_BASE_URL else "desativado")
     )
-    next_storage_audit_at = 0.0
     next_stale_job_check_at = 0.0
+    next_storage_deletion_check_at = 0.0
     next_circuit_log_at = 0.0
+    set_worker_state("idle", "Aguardando jobs")
     while True:
         try:
             if time.monotonic() >= next_stale_job_check_at:
@@ -1725,21 +1817,22 @@ def main():
                 except Exception as exc:  # noqa: BLE001
                     log(f"Falha ao recuperar jobs abandonados: {exc}")
                 next_stale_job_check_at = time.monotonic() + STALE_JOB_CHECK_SECONDS
-            deletion_job = claim_storage_deletion_job()
-            if deletion_job:
-                try:
-                    process_storage_deletion(deletion_job)
-                except Exception as exc:  # noqa: BLE001
-                    log(f"Falha ao excluir objeto órfão; retry agendado: {exc}")
-                continue
-            if time.monotonic() >= next_storage_audit_at:
-                try:
-                    refresh_storage_sizes()
-                except Exception as exc:  # noqa: BLE001
-                    log(f"Falha na auditoria de armazenamento: {exc}")
-                next_storage_audit_at = time.monotonic() + STORAGE_AUDIT_INTERVAL_SECONDS
+            if time.monotonic() >= next_storage_deletion_check_at:
+                next_storage_deletion_check_at = time.monotonic() + STORAGE_DELETION_POLL_SECONDS
+                deletion_job = claim_storage_deletion_job()
+                if deletion_job:
+                    set_worker_state("working", "Removendo objeto orfao do R2")
+                    try:
+                        process_storage_deletion(deletion_job)
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"Falha ao excluir objeto orfao; retry agendado: {exc}")
+                    finally:
+                        set_worker_state("idle", "Aguardando jobs")
+                    next_storage_deletion_check_at = 0.0
+                    continue
             circuit_remaining, circuit_reason = youtube_circuit_remaining()
             if circuit_remaining > 0:
+                set_worker_state("degraded", f"YouTube pausado: {circuit_reason or 'circuit breaker'}")
                 if time.monotonic() >= next_circuit_log_at:
                     log(
                         f"YouTube pausado por mais {circuit_remaining}s "
@@ -1750,14 +1843,19 @@ def main():
                 continue
             job = claim_next_job()
             if not job:
+                set_worker_state("idle", "Aguardando jobs")
                 time.sleep(POLL_SECONDS)
                 continue
+            set_worker_state("working", "Processando importacao", job.get("id"))
             try:
                 process_job(job)
             except Exception as exc:  # noqa: BLE001
                 log(f"Job {job.get('id')} falhou: {exc.__class__.__name__}")
                 fail_job(job, exc)
+            finally:
+                set_worker_state("idle", "Aguardando jobs")
         except Exception as exc:  # noqa: BLE001
+            set_worker_state("degraded", "Falha inesperada no loop principal")
             log(f"[loop] erro inesperado: {exc}")
             time.sleep(POLL_SECONDS)
 

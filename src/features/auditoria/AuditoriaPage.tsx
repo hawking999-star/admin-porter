@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, ErrorState, PaginationFooter, RetryButton, StatusBadge } from "@/components/shared";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { errorMessage } from "@/lib/errors";
 import {
   actionLabel,
@@ -74,12 +75,12 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
 
 export function AuditoriaPage() {
   const queryClient = useQueryClient();
-  const [search, setSearch] = useState("");
-  const [action, setAction] = useState("all");
-  const [entityType, setEntityType] = useState("all");
-  const [adminId, setAdminId] = useState("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useUrlFilterState("q", "");
+  const [action, setAction] = useUrlFilterState("action", "all");
+  const [entityType, setEntityType] = useUrlFilterState("area", "all");
+  const [adminId, setAdminId] = useUrlFilterState("admin", "all");
+  const [dateFrom, setDateFrom] = useUrlFilterState("from", "");
+  const [dateTo, setDateTo] = useUrlFilterState("to", "");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [detail, setDetail] = useState<AuditLogRow | null>(null);
@@ -144,7 +145,7 @@ export function AuditoriaPage() {
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <div className="relative md:col-span-2">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar ação, área ou motivo" className="pl-9" />
+            <Input data-global-search value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar ação, área ou motivo" className="pl-9" />
           </div>
           <Select value={entityType} onValueChange={setEntityType}>
             <SelectTrigger><SelectValue placeholder="Área" /></SelectTrigger>

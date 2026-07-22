@@ -1,12 +1,16 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Menu, LogOut, PanelLeftClose, PanelLeftOpen, ShieldCheck } from "lucide-react";
+import { Menu, LogOut, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck } from "lucide-react";
 import { navGroups, allNavItems } from "@/lib/navigation";
 import { APP_ENVIRONMENT, APP_VERSION } from "@/lib/appInfo";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { CommandPalette } from "@/components/layout/CommandPalette";
+import { SystemHealthPopover } from "@/components/layout/SystemHealthPopover";
+import { UpdatedAt } from "@/components/shared/UpdatedAt";
 
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
@@ -120,16 +124,35 @@ function SidebarFooter({ compact = false }: { compact?: boolean }) {
 }
 
 export function AppShell() {
+  const queryClient = useQueryClient();
+  const activeFetches = useIsFetching();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [compact, setCompact] = useState(() => localStorage.getItem("ptm-admin-density") === "compact");
   const location = useLocation();
   const currentItem = useMemo(
     () => allNavItems.find((item) => item.to === location.pathname) ?? allNavItems[0],
     [location.pathname],
   );
+  const pageUpdatedAt = useMemo(() => {
+    const timestamps = queryClient.getQueryCache().getAll()
+      .filter((query) => query.getObserversCount() > 0 && query.state.dataUpdatedAt > 0)
+      .map((query) => query.state.dataUpdatedAt);
+    return timestamps.length ? Math.max(...timestamps) : null;
+  }, [activeFetches, location.pathname, queryClient]);
+
+  useEffect(() => {
+    localStorage.setItem("ptm-admin-density", compact ? "compact" : "comfortable");
+  }, [compact]);
+
+  const toggleCompact = useCallback(() => setCompact((value) => !value), []);
+  const refreshActiveData = useCallback(() => {
+    void queryClient.invalidateQueries({ type: "active" });
+  }, [queryClient]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground" data-density={compact ? "compact" : "comfortable"}>
       <aside
         className={cn(
           "hidden h-screen shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 md:flex",
@@ -183,8 +206,15 @@ export function AppShell() {
             </div>
           </div>
 
-          <div className="hidden items-center gap-2 sm:flex">
-            <div className="flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <SystemHealthPopover />
+            <UpdatedAt value={pageUpdatedAt} loading={activeFetches > 0} className="hidden xl:inline-flex" />
+            <Button variant="outline" size="sm" className="gap-2 px-2 sm:px-3" onClick={() => setCommandOpen(true)} aria-label="Abrir busca e comandos">
+              <Search className="h-4 w-4" />
+              <span className="hidden lg:inline">Buscar</span>
+              <kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground xl:inline">Ctrl K</kbd>
+            </Button>
+            <div className="hidden h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground sm:flex">
               <ShieldCheck className="h-3.5 w-3.5 text-success-foreground" />
               <span>{APP_ENVIRONMENT}</span>
               <span className="text-border">•</span>
@@ -199,6 +229,13 @@ export function AppShell() {
           </div>
         </main>
       </div>
+      <CommandPalette
+        open={commandOpen}
+        onOpenChange={setCommandOpen}
+        compact={compact}
+        onToggleCompact={toggleCompact}
+        onRefresh={refreshActiveData}
+      />
     </div>
   );
 }

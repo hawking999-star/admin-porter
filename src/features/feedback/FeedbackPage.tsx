@@ -24,7 +24,10 @@ import {
   SearchInput,
   FilterBar,
   PaginationFooter,
+  EntityHistoryButton,
+  ExportCsvButton,
 } from "@/components/shared";
+import type { CsvColumn } from "@/lib/csv";
 import {
   Select,
   SelectContent,
@@ -47,6 +50,16 @@ import {
   FeedbackTypeBadge,
   OperatorAvatar,
 } from "./components";
+
+const FEEDBACK_HISTORY_TYPES = ["feedback"];
+const FEEDBACK_EXPORT_COLUMNS: CsvColumn<Feedback>[] = [
+  { header: "data", value: (row) => row.created_at },
+  { header: "operador", value: (row) => row.operator_name },
+  { header: "condominio", value: (row) => row.unit_name },
+  { header: "tipo", value: (row) => row.type },
+  { header: "status", value: (row) => row.status },
+  { header: "mensagem", value: (row) => row.message },
+];
 
 function unitText(f: Feedback) {
   if (!f.unit_name) return "-";
@@ -148,7 +161,8 @@ function FeedbackCard({
             <span className="truncate">{unitText(f)}</span>
           </div>
 
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            <EntityHistoryButton entityId={f.id} entityTypes={FEEDBACK_HISTORY_TYPES} title="feedback" />
             <StatusSelect value={f.status} onChange={onStatusChange} />
           </div>
         </div>
@@ -184,8 +198,8 @@ export function FeedbackPage() {
     ? requestedStatus
     : "all";
   const [pageSize, setPageSize] = useState(25);
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [search, setSearch] = useState(searchParams.get("q") ?? "");
+  const [typeFilter, setTypeFilter] = useState<string>(searchParams.get("type") ?? "all");
   const [statusFilter, setStatusFilter] = useState<string>(initialStatus);
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 350);
@@ -193,6 +207,15 @@ export function FeedbackPage() {
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch, typeFilter, statusFilter]);
+
+  useEffect(() => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (search.trim()) next.set("q", search.trim()); else next.delete("q");
+      if (typeFilter !== "all") next.set("type", typeFilter); else next.delete("type");
+      return next;
+    }, { replace: true });
+  }, [search, setSearchParams, typeFilter]);
 
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ["feedback", page, pageSize, debouncedSearch, typeFilter, statusFilter],
@@ -247,7 +270,7 @@ export function FeedbackPage() {
 
   return (
     <>
-      <PageHeader title="Feedback" description="Retornos enviados pelos operadores dentro do app." />
+      <PageHeader title="Feedback" description="Retornos enviados pelos operadores dentro do app." action={<ExportCsvButton filename="feedbacks-filtrados" rows={rows} columns={FEEDBACK_EXPORT_COLUMNS} />} />
 
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={<BellDot className="h-5 w-5" />} label="Pendentes" value={stats.pending} hint="Aguardando leitura" iconClassName="bg-warning/15 text-warning-foreground" loading={statsQuery.isLoading} />

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -44,6 +44,7 @@ import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
 import { effectiveStatisticsStart, fetchStatisticsResetInfo } from "@/lib/statistics";
 import { listUnitOptions } from "@/features/usuarios/queries";
 import { unitLabel } from "@/lib/unit-label";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { ActionCenter } from "./ActionCenter";
 import {
   STATUS_BAR,
@@ -483,6 +484,7 @@ function OverviewFilters({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos</SelectItem>
+              <SelectItem value="attention">Em atenção</SelectItem>
               {STATUS_ORDER.map((item) => (
                 <SelectItem key={item} value={item}>
                   {statusLabel(item)}
@@ -524,11 +526,11 @@ function OverviewFilters({
 
 export function OverviewPage() {
   const queryClient = useQueryClient();
-  const [unitFilter, setUnitFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [period, setPeriod] = useState<PeriodPreset>("7d");
-  const [customFrom, setCustomFrom] = useState(todayInput());
-  const [customTo, setCustomTo] = useState(todayInput());
+  const [unitFilter, setUnitFilter] = useUrlFilterState("unit", "all");
+  const [statusFilter, setStatusFilter] = useUrlFilterState("status", "all");
+  const [period, setPeriod] = useUrlFilterState<PeriodPreset>("period", "7d", ["7d", "30d", "90d", "custom"]);
+  const [customFrom, setCustomFrom] = useUrlFilterState("from", todayInput());
+  const [customTo, setCustomTo] = useUrlFilterState("to", todayInput());
   const periodRange = useMemo(() => buildPeriodRange(period, customFrom, customTo), [period, customFrom, customTo]);
   const resetInfo = useQuery({ queryKey: ["overview", "statistics-reset"], queryFn: fetchStatisticsResetInfo, staleTime: 30_000 });
   const effectiveStartAt = effectiveStatisticsStart(periodRange.startAt, periodRange.endAt, resetInfo.data?.reset_at);
@@ -570,15 +572,17 @@ export function OverviewPage() {
     () => (units.data ?? []).map((unit) => ({ value: unit.id, label: unitLabel(unit) })),
     [units.data],
   );
+  const attentionIds = useMemo(() => new Set(deriveAttention(rows).map((row) => row.operator_id)), [rows]);
   const filteredRows = useMemo(
     () =>
       rows.filter((row) => {
         const fallbackUnitValue = row.unit_label ? `unit:${row.unit_label}` : null;
         const matchesUnit = unitFilter === "all" || row.unit_id === unitFilter || fallbackUnitValue === unitFilter;
-        const matchesStatus = statusFilter === "all" || row.status === statusFilter;
+        const matchesStatus = statusFilter === "all"
+          || (statusFilter === "attention" ? attentionIds.has(row.operator_id) : row.status === statusFilter);
         return matchesUnit && matchesStatus;
       }),
-    [rows, statusFilter, unitFilter],
+    [attentionIds, rows, statusFilter, unitFilter],
   );
   const filteredGroups = useMemo(
     () =>

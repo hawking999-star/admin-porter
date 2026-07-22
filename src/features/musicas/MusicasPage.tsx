@@ -90,7 +90,8 @@ import {
   type PlaylistAdminNote,
   type PlaylistRequestDetailItem,
 } from "./queries";
-import { PaginationFooter, PeriodFilter, StatCard, ErrorState, RetryButton } from "@/components/shared";
+import { ExportCsvButton, PaginationFooter, PeriodFilter, StatCard, ErrorState, RetryButton } from "@/components/shared";
+import type { CsvColumn } from "@/lib/csv";
 import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
 import { useDebounce } from "@/hooks/useDebounce";
 import {
@@ -104,6 +105,18 @@ import {
   SpotifyIcon,
   type Platform,
 } from "./components";
+
+const PLAYLIST_EXPORT_COLUMNS: CsvColumn<Playlist>[] = [
+  { header: "playlist", value: (row) => row.name },
+  { header: "operador", value: (row) => row.operator_name },
+  { header: "condominio", value: (row) => row.unit_name },
+  { header: "tipo", value: (row) => row.type },
+  { header: "aprovacao", value: (row) => row.approval_status },
+  { header: "importacao", value: (row) => row.import_status },
+  { header: "enviada_em", value: (row) => row.submitted_at },
+  { header: "erro", value: (row) => row.error_message },
+  { header: "origem", value: (row) => row.source_url },
+];
 
 /* --------------------------------- Helpers -------------------------------- */
 
@@ -545,19 +558,22 @@ export function MusicasPage() {
   const initialPeriod = ["7d", "30d", "90d", "custom"].includes(requestedPeriod ?? "")
     ? requestedPeriod as PeriodPreset
     : "7d";
-  const [activeArea, setActiveArea] = useState<"requests" | "library" | "storage">("requests");
-  const [search, setSearch] = useState("");
+  const requestedArea = searchParams.get("area");
+  const [activeArea, setActiveArea] = useState<"requests" | "library" | "storage">(
+    requestedArea === "library" || requestedArea === "storage" ? requestedArea : "requests",
+  );
+  const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [librarySearch, setLibrarySearch] = useState("");
   const [requestsPage, setRequestsPage] = useState(1);
   const [libraryPage, setLibraryPage] = useState(1);
   const [requestsPageSize, setRequestsPageSize] = useState(25);
   const [libraryPageSize, setLibraryPageSize] = useState(25);
   const [statusFilter, setStatusFilter] = useState(initialStatus);
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [platformFilter, setPlatformFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState(searchParams.get("type") ?? "all");
+  const [platformFilter, setPlatformFilter] = useState(searchParams.get("platform") ?? "all");
   const [dateFilter, setDateFilter] = useState<PeriodPreset>(initialPeriod);
-  const [customFrom, setCustomFrom] = useState(todayInput());
-  const [customTo, setCustomTo] = useState(todayInput());
+  const [customFrom, setCustomFrom] = useState(searchParams.get("from") ?? todayInput());
+  const [customTo, setCustomTo] = useState(searchParams.get("to") ?? todayInput());
   const [operatorRequestFilter, setOperatorRequestFilter] = useState<string | null>(null);
   const debouncedSearch = useDebounce(search, 350);
   const debouncedLibrarySearch = useDebounce(librarySearch, 350);
@@ -627,6 +643,25 @@ export function MusicasPage() {
   useEffect(() => {
     setRequestsPage(1);
   }, [debouncedSearch, statusFilter, typeFilter, platformFilter, dateFilter, customFrom, customTo, operatorRequestFilter]);
+
+  useEffect(() => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      const sync = (key: string, value: string, fallback: string) => value === fallback ? next.delete(key) : next.set(key, value);
+      sync("q", search.trim(), "");
+      sync("type", typeFilter, "all");
+      sync("platform", platformFilter, "all");
+      sync("area", activeArea, "requests");
+      if (dateFilter === "custom") {
+        next.set("from", customFrom);
+        next.set("to", customTo);
+      } else {
+        next.delete("from");
+        next.delete("to");
+      }
+      return next;
+    }, { replace: true });
+  }, [activeArea, customFrom, customTo, dateFilter, platformFilter, search, setSearchParams, typeFilter]);
 
   useEffect(() => {
     setLibraryPage(1);
@@ -995,15 +1030,18 @@ export function MusicasPage() {
         title="Músicas"
         description="Central de aprovação das playlists enviadas pelos operadores."
         action={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={refreshActiveArea}
-            disabled={activeRefreshing}
-          >
-            <RefreshCw className={cn("h-4 w-4", activeRefreshing && "animate-spin")} />
-            Atualizar
-          </Button>
+          <>
+            {activeArea === "requests" && <ExportCsvButton filename="playlists-filtradas" rows={playlists} columns={PLAYLIST_EXPORT_COLUMNS} />}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={refreshActiveArea}
+              disabled={activeRefreshing}
+            >
+              <RefreshCw className={cn("h-4 w-4", activeRefreshing && "animate-spin")} />
+              Atualizar
+            </Button>
+          </>
         }
       />
 
@@ -1083,6 +1121,7 @@ export function MusicasPage() {
           <div className="relative w-full max-w-md">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              data-global-search
               placeholder="Buscar por operador, condomínio, link, status, erro..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}

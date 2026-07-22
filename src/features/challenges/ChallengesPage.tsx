@@ -10,13 +10,15 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { EmptyState, ErrorState, FilterBar, PaginationFooter, RetryButton, SearchInput, StatCard, StatusBadge } from "@/components/shared";
+import { EmptyState, EntityHistoryButton, ErrorState, ExportCsvButton, FilterBar, PaginationFooter, RetryButton, SearchInput, StatCard, StatusBadge } from "@/components/shared";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { listUnitOptions, unitLabel } from "@/features/usuarios/queries";
 import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type Challenge, type ChallengeActiveWindow, type ChallengeInput, type ChallengeRules, bulkUpdateChallenges, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
 import { ChallengeBulkUnitDialog } from "./ChallengeBulkUnitDialog";
 import { ChallengeImportDialog } from "./ChallengeImportDialog";
+import type { CsvColumn } from "@/lib/csv";
 
 const PAGE_SIZE = 12;
 type UnitOption = { id: string; name: string; city: string | null; state: string | null; code: string | null };
@@ -28,6 +30,16 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 const EMPTY_CHALLENGE: ChallengeInput = { unit_id: null, title: "", prompt: "", alternatives: ["", "", "", ""], correct: "A", status: "draft" };
+const CHALLENGE_HISTORY_TYPES = ["challenge", "challenges"];
+const CHALLENGE_EXPORT_COLUMNS: CsvColumn<Challenge>[] = [
+  { header: "titulo", value: (row) => row.title },
+  { header: "enunciado", value: (row) => row.prompt },
+  { header: "status", value: (row) => row.status },
+  { header: "tipo", value: (row) => challengeKindLabel(row.kind) },
+  { header: "condominio", value: (row) => row.unit_name ?? "Global" },
+  { header: "criado_em", value: (row) => row.created_at },
+  { header: "atualizado_em", value: (row) => row.updated_at },
+];
 
 function ChallengeDialog({ open, onOpenChange, units, challenge, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; units: UnitOption[]; challenge?: Challenge | null; onSaved: () => void }) {
   const [unitId, setUnitId] = useState(""); const [saving, setSaving] = useState(false);
@@ -428,10 +440,10 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
 }
 
 export function ChallengesPage() {
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("all");
-  const [kind, setKind] = useState("all");
-  const [unit, setUnit] = useState("all");
+  const [search, setSearch] = useUrlFilterState("q", "");
+  const [status, setStatus] = useUrlFilterState("status", "all");
+  const [kind, setKind] = useUrlFilterState("kind", "all");
+  const [unit, setUnit] = useUrlFilterState("unit", "all");
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -512,7 +524,7 @@ export function ChallengesPage() {
         eyebrow="Engajamento"
         title="Desafios"
         description="Cadastre desafios e defina as janelas, punições e bloqueios que o servidor aplicará aos Operadores."
-        action={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setRulesOpen(true)}><Settings2 className="h-4 w-4" /> Regras</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileSpreadsheet className="h-4 w-4" /> Importar CSV</Button><Button onClick={() => setCreateOpen(true)}><Upload className="h-4 w-4" /> Novo desafio</Button></div>}
+        action={<div className="flex flex-wrap gap-2"><ExportCsvButton filename="desafios-filtrados" rows={rows} columns={CHALLENGE_EXPORT_COLUMNS} /><Button variant="outline" onClick={() => setRulesOpen(true)}><Settings2 className="h-4 w-4" /> Regras</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileSpreadsheet className="h-4 w-4" /> Importar CSV</Button><Button onClick={() => setCreateOpen(true)}><Upload className="h-4 w-4" /> Novo desafio</Button></div>}
       />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -583,8 +595,9 @@ export function ChallengesPage() {
                 </div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">{challenge.prompt}</p>
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground"><span>{challengeKindLabel(challenge.kind)}</span><span>Tempo definido nas regras</span><span>{challenge.unit_name ? unitLabel({ name: challenge.unit_name, city: challenge.unit_city, state: challenge.unit_state }) : "Global"}</span></div>
-                <div className="flex gap-2 border-t pt-3">
+                <div className="flex flex-wrap gap-2 border-t pt-3">
                   <Button size="sm" variant="outline" onClick={() => setEditingChallenge(challenge)}><Pencil className="h-4 w-4" /> Editar</Button>
+                  <EntityHistoryButton entityId={challenge.id} entityTypes={CHALLENGE_HISTORY_TYPES} title={challenge.title} />
                   <Button size="sm" variant="outline" onClick={() => changeStatus(challenge.id, challenge.status === "active" ? "inactive" : "active")}>{challenge.status === "active" ? "Inativar" : "Ativar"}</Button>
                   {challenge.status !== "archived" && <Button size="sm" variant="ghost" onClick={() => changeStatus(challenge.id, "archived")}>Arquivar</Button>}
                 </div>

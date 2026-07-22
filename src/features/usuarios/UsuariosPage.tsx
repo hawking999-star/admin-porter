@@ -19,7 +19,9 @@ import {
   FilterBar,
   DataTable,
   PaginationFooter,
+  ExportCsvButton,
 } from "@/components/shared";
+import type { CsvColumn } from "@/lib/csv";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -72,6 +74,17 @@ import { GrantPanelAccessDialog } from "./GrantPanelAccessDialog";
 import { GrantAppAccessDialog } from "./GrantAppAccessDialog";
 import { DisplayNameModerationTab } from "./DisplayNameModerationTab";
 
+const OPERATOR_EXPORT_COLUMNS: CsvColumn<Operator>[] = [
+  { header: "nome_cadastral", value: (row) => row.registered_name },
+  { header: "nome_exibicao", value: (row) => row.display_name },
+  { header: "usuario", value: (row) => row.username },
+  { header: "condominio", value: (row) => row.unit_name },
+  { header: "funcao", value: (row) => row.role },
+  { header: "turno", value: (row) => shiftLabel(row.shift_kind, row.shift_start, row.shift_end) },
+  { header: "status", value: (row) => row.active ? "ativo" : "inativo" },
+  { header: "possui_login", value: (row) => row.has_login ? "sim" : "nao" },
+];
+
 export function UsuariosPage() {
   return (
     <>
@@ -107,13 +120,16 @@ export function UsuariosPage() {
 
 function OperadoresTab() {
   const qc = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [pageSize, setPageSize] = useState(25);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [page, setPage] = useState(1);
   const [unitFilter, setUnitFilter] = useState(searchParams.get("unit") ?? "all");
-  const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
-  const [roleFilter, setRoleFilter] = useState("all");
+  const requestedActive = searchParams.get("active");
+  const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">(
+    requestedActive === "active" || requestedActive === "inactive" ? requestedActive : "all",
+  );
+  const [roleFilter, setRoleFilter] = useState(searchParams.get("role") ?? "all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Operator | null>(null);
   const [confirmToggle, setConfirmToggle] = useState<Operator | null>(null);
@@ -122,6 +138,17 @@ function OperadoresTab() {
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch, unitFilter, activeFilter, roleFilter]);
+
+  useEffect(() => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      const values = { q: search.trim(), unit: unitFilter, active: activeFilter, role: roleFilter };
+      Object.entries(values).forEach(([key, value]) => {
+        if (!value || value === "all") next.delete(key); else next.set(key, value);
+      });
+      return next;
+    }, { replace: true });
+  }, [activeFilter, roleFilter, search, setSearchParams, unitFilter]);
 
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ["operators", page, pageSize, debouncedSearch, unitFilter, activeFilter, roleFilter],
@@ -232,6 +259,7 @@ function OperadoresTab() {
         {hasFilters && <Button variant="outline" onClick={clearFilters}>Limpar filtros</Button>}
         <div className="ml-auto flex items-center gap-3">
           <span className="text-sm text-muted-foreground">{rows.length} de {total}</span>
+          <ExportCsvButton filename="operadores-filtrados" rows={rows} columns={OPERATOR_EXPORT_COLUMNS} />
           <Button onClick={openNew}>
             <Plus className="h-4 w-4" /> Novo operador
           </Button>

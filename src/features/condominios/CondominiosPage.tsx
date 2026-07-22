@@ -19,6 +19,7 @@ import {
   FilterBar,
   DataTable,
   PaginationFooter,
+  ExportCsvButton,
 } from "@/components/shared";
 import {
   Select,
@@ -52,15 +53,27 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { countUnitStats, listUnits, setUnitActive, timezoneLabel, type Unit } from "./queries";
 import { CondominioFormDialog } from "./CondominioFormDialog";
+import type { CsvColumn } from "@/lib/csv";
+
+const UNIT_EXPORT_COLUMNS: CsvColumn<Unit>[] = [
+  { header: "nome", value: (row) => row.name },
+  { header: "codigo", value: (row) => row.code },
+  { header: "cidade", value: (row) => row.city },
+  { header: "estado", value: (row) => row.state },
+  { header: "operadores", value: (row) => row.operator_count },
+  { header: "status", value: (row) => row.active ? "ativo" : "inativo" },
+  { header: "criado_em", value: (row) => row.created_at },
+];
 
 export function CondominiosPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [pageSize, setPageSize] = useState(25);
-  const [search, setSearch] = useState("");
-  const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
+  const [search, setSearch] = useUrlFilterState("q", "");
+  const [activeFilter, setActiveFilter] = useUrlFilterState<"all" | "active" | "inactive">("active", "all", ["all", "active", "inactive"]);
   const [page, setPage] = useState(1);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Unit | null>(null);
@@ -122,7 +135,7 @@ export function CondominiosPage() {
       <PageHeader
         title="Condomínios"
         description="Unidades vinculadas à operação e aos operadores."
-        action={<Button onClick={openNew}><Plus className="h-4 w-4" /> Novo condomínio</Button>}
+        action={<><ExportCsvButton filename="condominios-filtrados" rows={rows} columns={UNIT_EXPORT_COLUMNS} /><Button onClick={openNew}><Plus className="h-4 w-4" /> Novo condomínio</Button></>}
       />
 
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

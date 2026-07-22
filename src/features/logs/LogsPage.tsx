@@ -18,8 +18,10 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatCard, StatusBadge, EmptyState, ErrorState, RetryButton, PaginationFooter } from "@/components/shared";
+import { ExportCsvButton, StatCard, StatusBadge, EmptyState, ErrorState, RetryButton, PaginationFooter } from "@/components/shared";
+import type { CsvColumn } from "@/lib/csv";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import {
   Select,
   SelectContent,
@@ -53,14 +55,22 @@ const CATEGORY_ICON: Record<LogCategory, ReactNode> = {
   evento: <Info className="h-3.5 w-3.5 text-muted-foreground" />,
 };
 
+const LOG_EXPORT_COLUMNS: CsvColumn<LogEntry>[] = [
+  { header: "data", value: (row) => row.occurred_at },
+  { header: "categoria", value: (row) => categoryLabel(row.category) },
+  { header: "nivel", value: (row) => row.level },
+  { header: "titulo", value: (row) => row.title },
+  { header: "detalhe", value: (row) => row.detail },
+];
+
 export function LogsPage() {
   const qc = useQueryClient();
-  const [search, setSearch] = useState("");
-  const [actor, setActor] = useState("");
-  const [category, setCategory] = useState<LogCategory | "all">("all");
-  const [level, setLevel] = useState<LogLevel | "all">("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useUrlFilterState("q", "");
+  const [actor, setActor] = useUrlFilterState("actor", "");
+  const [category, setCategory] = useUrlFilterState<LogCategory | "all">("category", "all");
+  const [level, setLevel] = useUrlFilterState<LogLevel | "all">("level", "all");
+  const [dateFrom, setDateFrom] = useUrlFilterState("from", "");
+  const [dateTo, setDateTo] = useUrlFilterState("to", "");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const debouncedSearch = useDebounce(search, 350);
@@ -124,10 +134,13 @@ export function LogsPage() {
         title="Logs"
         description="Eventos operacionais, mudancas de status e diagnostico de importacoes."
         action={
-          <Button variant="outline" size="sm" onClick={invalidate} disabled={isFetching}>
-            <RotateCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
-            Atualizar
-          </Button>
+          <>
+            <ExportCsvButton filename="logs-filtrados" rows={rows} columns={LOG_EXPORT_COLUMNS} />
+            <Button variant="outline" size="sm" onClick={invalidate} disabled={isFetching}>
+              <RotateCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
+              Atualizar
+            </Button>
+          </>
         }
       />
 
@@ -166,6 +179,7 @@ export function LogsPage() {
         <div className="relative w-full max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
+            data-global-search
             placeholder="Buscar por descricao, motivo ou evento..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}

@@ -49,6 +49,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState, ErrorState, PeriodFilter, RetryButton } from "@/components/shared";
 import { todayInput, type PeriodPreset } from "@/lib/period";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { errorMessage } from "@/lib/errors";
 import { resetStatistics, type StatisticsResetCategory } from "@/lib/statistics";
 import { unitLabel } from "@/lib/unit-label";
@@ -269,12 +270,12 @@ function metricCards(metrics: AnalyticsMetrics) {
 
 export function AnalyticsPage() {
   const queryClient = useQueryClient();
-  const [period, setPeriod] = useState<PeriodPreset>("7d");
-  const [customFrom, setCustomFrom] = useState(todayInput());
-  const [customTo, setCustomTo] = useState(todayInput());
-  const [unitId, setUnitId] = useState("all");
-  const [operatorId, setOperatorId] = useState("all");
-  const [shift, setShift] = useState<ShiftFilter>("all");
+  const [period, setPeriod] = useUrlFilterState<PeriodPreset>("period", "7d", ["7d", "30d", "90d", "custom"]);
+  const [customFrom, setCustomFrom] = useUrlFilterState("from", todayInput());
+  const [customTo, setCustomTo] = useUrlFilterState("to", todayInput());
+  const [unitId, setUnitId] = useUrlFilterState("unit", "all");
+  const [operatorId, setOperatorId] = useUrlFilterState("operator", "all");
+  const [shift, setShift] = useUrlFilterState<ShiftFilter>("shift", "all");
   const [attentionMode, setAttentionMode] = useState<"idle" | "blocked">("idle");
   const [resetOpen, setResetOpen] = useState(false);
   const [resetCategories, setResetCategories] = useState<StatisticsResetCategory[]>(
@@ -309,7 +310,8 @@ export function AnalyticsPage() {
       });
     },
     staleTime: 30_000,
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
 

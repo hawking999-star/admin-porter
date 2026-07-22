@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { EntityHistoryButton } from "@/components/shared/EntityHistoryButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -35,6 +36,8 @@ import {
   SHIFT_TYPES,
   type Operator,
 } from "./queries";
+
+const OPERATOR_HISTORY_TYPES = ["operator", "operators"];
 
 export function OperatorFormDialog({
   open,
@@ -434,6 +437,7 @@ export function OperatorFormDialog({
           </div>
 
           <DialogFooter>
+            {operator && <EntityHistoryButton entityId={operator.id} entityTypes={OPERATOR_HISTORY_TYPES} title={operator.display_name} />}
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>

@@ -59,8 +59,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { EmptyState, StatCard, ErrorState, RetryButton, PaginationFooter, StatusBadge } from "@/components/shared";
+import { EmptyState, ExportCsvButton, StatCard, ErrorState, RetryButton, PaginationFooter, StatusBadge } from "@/components/shared";
+import type { CsvColumn } from "@/lib/csv";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import {
   approveAppRelease,
   blockAppRelease,
@@ -121,6 +123,27 @@ const EMPTY_INPUT: AppReleaseInput = {
   sha512: "",
   size_bytes: "",
 };
+
+const RELEASE_EXPORT_COLUMNS: CsvColumn<AppRelease>[] = [
+  { header: "versao", value: (row) => row.version },
+  { header: "titulo", value: (row) => row.title },
+  { header: "canal", value: (row) => row.channel },
+  { header: "status", value: (row) => row.status },
+  { header: "obrigatoria", value: (row) => row.mandatory ? "sim" : "nao" },
+  { header: "criada_em", value: (row) => row.created_at },
+  { header: "publicada_em", value: (row) => row.released_at },
+];
+
+const NOTICE_EXPORT_COLUMNS: CsvColumn<AppNotice>[] = [
+  { header: "titulo", value: (row) => row.title },
+  { header: "mensagem", value: (row) => row.message },
+  { header: "severidade", value: (row) => row.severity },
+  { header: "status", value: (row) => row.status },
+  { header: "publico", value: (row) => row.audience_type },
+  { header: "leituras", value: (row) => row.read_count },
+  { header: "confirmacoes", value: (row) => row.ack_count },
+  { header: "atualizado_em", value: (row) => row.updated_at },
+];
 
 const EMPTY_NOTICE_INPUT: AppNoticeInput = {
   title: "",
@@ -262,9 +285,9 @@ function toInput(release: AppRelease): AppReleaseInput {
 
 export function AtualizacoesPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState("versoes");
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<ReleaseStatus | "all">("all");
+  const [tab, setTab] = useUrlFilterState("tab", "versoes");
+  const [search, setSearch] = useUrlFilterState("q", "");
+  const [status, setStatus] = useUrlFilterState<ReleaseStatus | "all">("status", "all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [noticeSearch, setNoticeSearch] = useState("");
@@ -471,6 +494,9 @@ export function AtualizacoesPage() {
         description="Gerencie versões do app, notas de atualização e avisos enviados aos operadores."
         action={
           <div className="flex flex-wrap items-center gap-2">
+            {tab === "versoes"
+              ? <ExportCsvButton filename="versoes-filtradas" rows={releases} columns={RELEASE_EXPORT_COLUMNS} />
+              : <ExportCsvButton filename="avisos-filtrados" rows={sortedNotices} columns={NOTICE_EXPORT_COLUMNS} />}
             <Button variant="outline" size="sm" onClick={() => setNoticeDialog("new")}>
               <Megaphone className="h-4 w-4" /> Novo aviso
             </Button>
