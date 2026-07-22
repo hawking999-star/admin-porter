@@ -67,6 +67,7 @@ import {
   listMusicStorageDeletionJobs,
   listOrphanedMusicTracks,
   listOperatorMusicLibraryPage,
+  listPlaylistAdminNotes,
   listPlaylists,
   managePlaylistRequestItem,
   removePlaylistTrack,
@@ -76,6 +77,7 @@ import {
   reimportPlaylistRequest,
   retryPlaylistImport,
   reviewPlaylist,
+  savePlaylistAdminNote,
   playlistTypeLabel,
   type MusicLibraryPlaylist,
   type MusicTrack,
@@ -85,6 +87,7 @@ import {
   type MusicStorageDeletionJob,
   type OrphanedMusicTrack,
   type Playlist,
+  type PlaylistAdminNote,
   type PlaylistRequestDetailItem,
 } from "./queries";
 import { PaginationFooter, PeriodFilter, StatCard, ErrorState, RetryButton } from "@/components/shared";
@@ -501,21 +504,31 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
   );
 }
 
-const NOTES_KEY = "ptm:playlist-notes";
-function loadNotes(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(NOTES_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
-
 async function copy(text: string) {
   try {
     await navigator.clipboard.writeText(text);
     toast.success("Link copiado");
   } catch {
     toast.error("Não foi possível copiar");
+  }
+}
+
+const LEGACY_PLAYLIST_NOTES_KEY = "ptm:playlist-notes";
+
+function readLegacyPlaylistNotes(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(LEGACY_PLAYLIST_NOTES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([playlistId, content]) => playlistId.length > 0 && typeof content === "string" && content.trim().length > 0)
+        .map(([playlistId, content]) => [playlistId, (content as string).slice(0, 5000)]),
+    );
+  } catch {
+    return {};
   }
 }
 
@@ -573,9 +586,43 @@ export function MusicasPage() {
     null,
   );
   const [reason, setReason] = useState("");
-  const [notes, setNotes] = useState<Record<string, string>>(() => loadNotes());
   const [noteDraft, setNoteDraft] = useState("");
   const [storageCleanupOpen, setStorageCleanupOpen] = useState(false);
+
+  useEffect(() => {
+    const entries = Object.entries(readLegacyPlaylistNotes());
+    if (entries.length === 0) {
+      localStorage.removeItem(LEGACY_PLAYLIST_NOTES_KEY);
+      return;
+    }
+
+    let cancelled = false;
+    void Promise.allSettled(
+      entries.map(([playlistId, content]) => savePlaylistAdminNote(playlistId, content)),
+    ).then((results) => {
+      if (cancelled) return;
+
+      const failed = Object.fromEntries(
+        entries.filter((_, index) => results[index]?.status === "rejected"),
+      );
+      const migratedCount = entries.length - Object.keys(failed).length;
+
+      if (Object.keys(failed).length === 0) localStorage.removeItem(LEGACY_PLAYLIST_NOTES_KEY);
+      else localStorage.setItem(LEGACY_PLAYLIST_NOTES_KEY, JSON.stringify(failed));
+
+      if (migratedCount > 0) {
+        qc.invalidateQueries({ queryKey: ["playlist-admin-notes"] });
+        toast.success(`${migratedCount} observação(ões) antiga(s) migrada(s) para o Supabase`);
+      }
+      if (Object.keys(failed).length > 0) {
+        toast.warning("Algumas observações antigas ainda não puderam ser migradas");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [qc]);
 
   useEffect(() => {
     setRequestsPage(1);
@@ -671,6 +718,18 @@ export function MusicasPage() {
     enabled: activeArea === "storage",
     refetchInterval: (query) => (query.state.data?.length ?? 0) > 0 ? 5000 : false,
   });
+  const playlistNotesQuery = useQuery({
+    queryKey: ["playlist-admin-notes", detailId],
+    queryFn: () => listPlaylistAdminNotes(detailId!),
+    enabled: Boolean(detailId),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  useEffect(() => {
+    if (!detailId || !playlistNotesQuery.data) return;
+    setNoteDraft(playlistNotesQuery.data[0]?.content ?? "");
+  }, [detailId, playlistNotesQuery.data]);
 
   const toggle = (cur: string, val: string, set: (v: string) => void) =>
     set(cur === val ? "all" : val);
@@ -842,6 +901,23 @@ export function MusicasPage() {
     },
   });
 
+  const noteMutation = useMutation({
+    mutationFn: ({ id, content }: { id: string; content: string }) =>
+      savePlaylistAdminNote(id, content),
+    onSuccess: (saved, vars) => {
+      qc.setQueryData<PlaylistAdminNote[]>(["playlist-admin-notes", vars.id], (current = []) => {
+        if (saved.created === false) return current;
+        return [saved, ...current.filter((note) => note.id !== saved.id)].slice(0, 20);
+      });
+      void qc.invalidateQueries({ queryKey: ["playlist-admin-notes", vars.id] });
+      setNoteDraft(saved.content);
+      toast.success(saved.created === false ? "Observação já estava atualizada" : "Observação salva no histórico");
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível salvar as observações", { description: errorMessage(err) });
+    },
+  });
+
   const playlists = data?.rows ?? [];
   const playlistsTotal = data?.total ?? 0;
   const withPlatform = useMemo(
@@ -902,20 +978,9 @@ export function MusicasPage() {
     [playlists, confirmState],
   );
 
-  const saveNote = (id: string) => {
-    const next = { ...notes, [id]: noteDraft };
-    setNotes(next);
-    try {
-      localStorage.setItem(NOTES_KEY, JSON.stringify(next));
-      toast.success("Observações salvas");
-    } catch {
-      toast.error("Não foi possível salvar as observações");
-    }
-  };
-
   const openDetail = (p: Playlist) => {
+    setNoteDraft("");
     setDetailId(p.id);
-    setNoteDraft(notes[p.id] ?? "");
   };
 
   const askApprove = (id: string) => setConfirmState({ id, action: "approve" });
@@ -1199,8 +1264,13 @@ export function MusicasPage() {
               p={detail}
               platform={detectPlatform(detail.source_url)}
               note={noteDraft}
+              notes={playlistNotesQuery.data ?? []}
+              notesLoading={playlistNotesQuery.isLoading}
+              notesError={playlistNotesQuery.isError}
               onNoteChange={setNoteDraft}
-              onSaveNote={() => saveNote(detail.id)}
+              onRetryNotes={() => playlistNotesQuery.refetch()}
+              onSaveNote={() => noteMutation.mutate({ id: detail.id, content: noteDraft })}
+              noteSaving={noteMutation.isPending}
               busy={mutation.isPending || retryMutation.isPending}
               onApprove={() => askApprove(detail.id)}
               onReject={() => askReject(detail.id)}
@@ -2904,8 +2974,13 @@ function DetailPanel({
   p,
   platform,
   note,
+  notes,
+  notesLoading,
+  notesError,
   onNoteChange,
   onSaveNote,
+  onRetryNotes,
+  noteSaving,
   busy,
   onApprove,
   onReject,
@@ -2915,8 +2990,13 @@ function DetailPanel({
   p: Playlist;
   platform: Platform;
   note: string;
+  notes: PlaylistAdminNote[];
+  notesLoading: boolean;
+  notesError: boolean;
   onNoteChange: (v: string) => void;
   onSaveNote: () => void;
+  onRetryNotes: () => void;
+  noteSaving: boolean;
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
@@ -3082,23 +3162,16 @@ function DetailPanel({
         </div>
       </div>
 
-      {/* Observações internas (local) */}
-      <div className="mt-5">
-        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Observações internas
-        </p>
-        <Textarea
-          value={note}
-          onChange={(e) => onNoteChange(e.target.value)}
-          placeholder="Anotações visíveis só para a moderação..."
-          rows={3}
-        />
-        <div className="mt-2 flex justify-end">
-          <Button size="sm" variant="outline" onClick={onSaveNote}>
-            <Save className="h-4 w-4" /> Salvar observações
-          </Button>
-        </div>
-      </div>
+      <PlaylistNotesEditor
+        note={note}
+        notes={notes}
+        loading={notesLoading}
+        error={notesError}
+        saving={noteSaving}
+        onChange={onNoteChange}
+        onSave={onSaveNote}
+        onRetry={onRetryNotes}
+      />
 
       {/* Ações */}
       {(canApprove || canReject || canRetry) && (
@@ -3121,6 +3194,111 @@ function DetailPanel({
         </div>
       )}
     </div>
+  );
+}
+
+function PlaylistNotesEditor({
+  note,
+  notes,
+  loading,
+  error,
+  saving,
+  onChange,
+  onSave,
+  onRetry,
+}: {
+  note: string;
+  notes: PlaylistAdminNote[];
+  loading: boolean;
+  error: boolean;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  onRetry: () => void;
+}) {
+  const current = notes[0] ?? null;
+  const unchanged = note.trim() === (current?.content ?? "");
+
+  return (
+    <section className="mt-5 rounded-lg border border-border bg-muted/20 p-3">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Observações internas
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Compartilhadas somente entre administradores e registradas para auditoria.
+          </p>
+        </div>
+        {current && (
+          <span className="shrink-0 rounded-full bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground ring-1 ring-border">
+            Versão {current.version}
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="flex min-h-24 items-center justify-center text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Carregando observações...
+        </div>
+      ) : error ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          <p>Não foi possível carregar as observações compartilhadas.</p>
+          <Button size="sm" variant="outline" className="mt-2" onClick={onRetry}>
+            <RefreshCw className="h-4 w-4" /> Tentar novamente
+          </Button>
+        </div>
+      ) : (
+        <>
+          <Textarea
+            value={note}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Registre contexto útil para os outros administradores..."
+            rows={4}
+            maxLength={5000}
+            disabled={saving}
+          />
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">{note.length.toLocaleString("pt-BR")}/5.000 caracteres</span>
+            <Button size="sm" variant="outline" onClick={onSave} disabled={saving || unchanged}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {saving ? "Salvando..." : note.trim() ? "Salvar nova versão" : "Limpar observação"}
+            </Button>
+          </div>
+
+          {current && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Última alteração por <span className="font-medium text-foreground">{current.created_by_name ?? "Administrador"}</span>
+              {" · "}{fmtDate(current.created_at)}
+            </p>
+          )}
+
+          {notes.length > 0 && (
+            <details className="mt-3 border-t border-border pt-3">
+              <summary className="cursor-pointer select-none text-xs font-medium text-foreground">
+                Histórico de versões ({notes.length} {notes.length === 1 ? "versão" : "versões"})
+              </summary>
+              <ol className="mt-3 space-y-3">
+                {notes.map((entry, index) => (
+                  <li key={entry.id} className="rounded-md border border-border bg-background p-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">
+                        Versão {entry.version}{index === 0 ? " · atual" : ""}
+                      </span>
+                      <span>{fmtDate(entry.created_at)}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{entry.created_by_name ?? "Administrador"}</p>
+                    <p className={cn("mt-2 whitespace-pre-wrap break-words text-sm", !entry.content && "italic text-muted-foreground")}>
+                      {entry.content || "Observação removida nesta versão."}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

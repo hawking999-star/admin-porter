@@ -97,6 +97,17 @@ export type PlaylistStats = {
   week: number;
 };
 
+export type PlaylistAdminNote = {
+  id: string;
+  playlist_id: string;
+  version: number;
+  content: string;
+  created_by_admin_id: string;
+  created_by_name: string | null;
+  created_at: string;
+  created?: boolean;
+};
+
 function pageRange(page: number, pageSize: number) {
   const from = Math.max(0, page - 1) * pageSize;
   return { from, to: from + pageSize - 1 };
@@ -241,6 +252,30 @@ export async function countPlaylistStats(): Promise<PlaylistStats> {
     today: today.count ?? 0,
     week: week.count ?? 0,
   };
+}
+
+export async function listPlaylistAdminNotes(playlistId: string): Promise<PlaylistAdminNote[]> {
+  const { data, error } = await supabase.rpc("admin_list_playlist_notes", {
+    p_playlist: playlistId,
+    p_limit: 20,
+  });
+  if (error) throw error;
+  return (data ?? []) as PlaylistAdminNote[];
+}
+
+export async function savePlaylistAdminNote(
+  playlistId: string,
+  content: string,
+): Promise<PlaylistAdminNote> {
+  const { data, error } = await supabase.rpc("admin_save_playlist_note", {
+    p_playlist: playlistId,
+    p_content: content,
+  });
+  if (error) throw error;
+
+  const saved = (data as PlaylistAdminNote[] | null)?.[0];
+  if (!saved) throw new Error("PLAYLIST_NOTE_SAVE_EMPTY_RESPONSE");
+  return saved;
 }
 
 export async function reviewPlaylist(
