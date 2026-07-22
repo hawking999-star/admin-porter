@@ -144,16 +144,39 @@ Substitua o snapshot anterior pelo objeto devolvido por `operator_challenge_disp
 
 ## Resposta
 
-Renderize as alternativas na ordem de `challenge.answer_definition.alternatives`. Envie o índice selecionado como `A`, `B`, `C` ou `D`:
+Renderize as alternativas na ordem de `challenge.answer_definition.alternatives`. Envie apenas o `option_id` selecionado para a RPC versionada:
 
 ```ts
-supabase.rpc("operator_challenge_answer", {
+supabase.rpc("operator_challenge_answer_v2", {
   p_log_id: challenge.log_id,
-  p_answer: { value: "A" },
+  p_answer: { option_id: "option_a" },
 })
 ```
 
-Renderize imediatamente o próximo estado devolvido pela RPC. Não revele a alternativa correta no App.
+Após a resposta aceita, exiba o feedback educacional retornado pelo backend antes de seguir para `next_snapshot`:
+
+```ts
+type ChallengeAnswerResponse = {
+  schema_version: 2
+  answer_feedback: {
+    result: "correct" | "incorrect"
+    is_correct: boolean
+    selected_option_id: string
+    correct_option_id: string
+    correct_option_text: string
+    answered_at: string
+  }
+  next_snapshot: ChallengeSnapshot
+}
+```
+
+- Mostre se a resposta está correta por `answer_feedback.is_correct`.
+- Mostre a alternativa correta em `answer_feedback.correct_option_text`, inclusive quando o Operador errar.
+- Use exclusivamente o feedback devolvido pela RPC; o App não calcula correção localmente nem consulta tabelas diretamente.
+- Não envie `is_correct`, `result`, `correct_option_id` ou qualquer campo de feedback no payload: o cliente envia somente `{ option_id }`.
+- Em repetição por falha de rede, reenvie o mesmo `p_log_id` e o mesmo `option_id`; a RPC devolve o mesmo feedback sem reaplicar a punição.
+
+Depois que o feedback for exibido conforme a experiência atual do App, renderize `next_snapshot` devolvido pela RPC.
 
 ## Ociosidade e botão Voltar
 
