@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,10 @@ TRACK_MAX_ATTEMPTS = min(max(int(env("TRACK_MAX_ATTEMPTS", "2")), 1), 2)
 STALE_JOB_SECONDS = int(env("STALE_JOB_SECONDS", "1800"))
 STALE_JOB_CHECK_SECONDS = int(env("STALE_JOB_CHECK_SECONDS", "60"))
 GLOBAL_FAILURE_ABORT_THRESHOLD = int(env("GLOBAL_FAILURE_ABORT_THRESHOLD", "3"))
+YOUTUBE_CIRCUIT_OPEN_SECONDS = min(
+    max(int(env("YOUTUBE_CIRCUIT_OPEN_SECONDS", "900")), 60),
+    3600,
+)
 STORAGE_AUDIT_INTERVAL_SECONDS = int(env("STORAGE_AUDIT_INTERVAL_SECONDS", "3600"))
 DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS = min(max(int(env("DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS", "120")), 10), 600)
 YTDLP_NETWORK_TIMEOUT_SECONDS = min(max(int(env("YTDLP_NETWORK_TIMEOUT_SECONDS", "30")), 5), 120)
@@ -78,18 +83,22 @@ SPOTDL_RESOLVE_TIMEOUT_SECONDS = min(max(int(env("SPOTDL_RESOLVE_TIMEOUT_SECONDS
 REQUEST_TIMEOUT_SECONDS = min(max(int(env("REQUEST_TIMEOUT_SECONDS", "3600")), 60), 7200)
 YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
 YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
+# URL interna do provedor de PO Token (bgutil). Quando configurado, links
+# públicos usam o token automático primeiro; cookies ficam apenas como fallback.
+POT_PROVIDER_BASE_URL = env("POT_PROVIDER_BASE_URL", "").rstrip("/")
 # Ordem dos "player clients" do YouTube que o yt-dlp tenta ao baixar. Alguns
 # clients ficam bloqueados de tempos em tempos; tentar vários em cascata aumenta
 # muito a chance de sucesso. Dá para mudar via env sem alterar o código.
 YT_PLAYER_CLIENTS = [
     c.strip()
-    for c in env("YT_PLAYER_CLIENTS", "default,web_safari,tv,ios,mweb,android,web").split(",")
+    for c in env(
+        "YT_PLAYER_CLIENTS",
+        "mweb,web_safari,default" if POT_PROVIDER_BASE_URL else "default,web_safari,tv,ios,mweb,android,web",
+    ).split(",")
     if c.strip()
 ]
 # Substituição automática: quando uma faixa é INDISPONÍVEL de forma permanente
 # (geo-bloqueio, sem formato, removida), procurar outra versão da mesma música.
-# URL do provedor de PO token (bgutil). Vazio = desligado (comportamento atual).
-POT_PROVIDER_BASE_URL = env("POT_PROVIDER_BASE_URL", "").rstrip("/")
 ENABLE_AUTO_SUBSTITUTE = env("ENABLE_AUTO_SUBSTITUTE", "true").lower() in ("1", "true", "yes", "on")
 SUBSTITUTE_SEARCH_LIMIT = int(env("SUBSTITUTE_SEARCH_LIMIT", "4"))
 
@@ -109,6 +118,7 @@ PERMANENT_SKIP_CODES = {
 JOB_ABORT_CODES = {
     "YOUTUBE_COOKIES_MISSING",
     "YOUTUBE_COOKIES_INVALID",
+    "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
     "WORKER_ENV_MISSING",
     "SUPABASE_PERMISSION_DENIED",
     "SUPABASE_ERROR",
@@ -122,16 +132,15 @@ JOB_ABORT_CODES = {
 # Erros de configuração não melhoram com retry automático. O Admin pode
 # reenfileirar depois que a variável/permissão for corrigida.
 NON_RETRYABLE_JOB_CODES = {
-    "YOUTUBE_COOKIES_MISSING",
-    "YOUTUBE_COOKIES_INVALID",
     "WORKER_ENV_MISSING",
     "SUPABASE_PERMISSION_DENIED",
     "R2_ACCESS_DENIED",
     "SPOTIFY_LINK_UNAVAILABLE",
 }
-DELAYED_ABORT_CODES = {
+YOUTUBE_CIRCUIT_CODES = {
     "YOUTUBE_COOKIES_MISSING",
     "YOUTUBE_COOKIES_INVALID",
+    "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
 }
 # Dos permanentes, quais vale tentar substituir por outra versão (mesma música).
 SUBSTITUTABLE_CODES = {
@@ -199,6 +208,39 @@ def log(*args):
     print(f"[{now_iso()}]", *safe, flush=True)
 
 
+_YOUTUBE_CIRCUIT_LOCK = threading.Lock()
+_YOUTUBE_CIRCUIT_OPEN_UNTIL = 0.0
+_YOUTUBE_CIRCUIT_REASON: str | None = None
+
+
+def open_youtube_circuit(reason: str) -> None:
+    """Pausa novos downloads quando o bloqueio afeta todo o IP/worker."""
+    global _YOUTUBE_CIRCUIT_OPEN_UNTIL, _YOUTUBE_CIRCUIT_REASON
+    with _YOUTUBE_CIRCUIT_LOCK:
+        _YOUTUBE_CIRCUIT_OPEN_UNTIL = max(
+            _YOUTUBE_CIRCUIT_OPEN_UNTIL,
+            time.monotonic() + YOUTUBE_CIRCUIT_OPEN_SECONDS,
+        )
+        _YOUTUBE_CIRCUIT_REASON = reason
+    log(
+        f"Circuit breaker do YouTube aberto por {YOUTUBE_CIRCUIT_OPEN_SECONDS}s "
+        f"[{reason}]."
+    )
+
+
+def youtube_circuit_remaining() -> tuple[int, str | None]:
+    with _YOUTUBE_CIRCUIT_LOCK:
+        remaining = max(0, int(_YOUTUBE_CIRCUIT_OPEN_UNTIL - time.monotonic()))
+        return remaining, _YOUTUBE_CIRCUIT_REASON if remaining else None
+
+
+def close_youtube_circuit() -> None:
+    global _YOUTUBE_CIRCUIT_OPEN_UNTIL, _YOUTUBE_CIRCUIT_REASON
+    with _YOUTUBE_CIRCUIT_LOCK:
+        _YOUTUBE_CIRCUIT_OPEN_UNTIL = 0.0
+        _YOUTUBE_CIRCUIT_REASON = None
+
+
 def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str]:
     """Converte erros técnicos em código estável + mensagem operacional."""
     raw = str(exc_or_message or "").strip()
@@ -209,6 +251,15 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
 
     # Sentinelas internas do importador: comparar no texto ORIGINAL (case-sensitive).
     # Ficam no topo para não serem "engolidas" pelas regras genéricas abaixo.
+    if "YOUTUBE_COOKIES_MISSING" in raw:
+        return "YOUTUBE_COOKIES_MISSING", "O importador do YouTube está se recuperando automaticamente."
+    if "YOUTUBE_COOKIES_INVALID" in raw:
+        return "YOUTUBE_COOKIES_INVALID", "O importador do YouTube está se recuperando automaticamente."
+    if "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE" in raw:
+        return (
+            "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
+            "O importador do YouTube está se recuperando automaticamente.",
+        )
     if "TRACK_DURATION_LIMIT_EXCEEDED" in raw:
         return "TRACK_DURATION_LIMIT_EXCEEDED", "A música ultrapassa a duração máxima de 16 minutos."
     if "TRACK_SIZE_LIMIT_EXCEEDED" in raw:
@@ -232,6 +283,21 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         )
     if "SPOTIFY_METADATA_ERROR" in raw:
         return "SPOTIFY_METADATA_ERROR", "Não foi possível ler as músicas deste link do Spotify."
+
+    if "youtubepot-bgutilhttp" in msg and any(
+        marker in msg
+        for marker in (
+            "connection refused",
+            "failed to establish",
+            "error reaching",
+            "timed out",
+            "timeout",
+        )
+    ):
+        return (
+            "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
+            "O importador do YouTube está se recuperando automaticamente.",
+        )
 
     if "timed out" in msg or "timeout" in msg:
         return "IMPORT_TIMEOUT", "O serviço de importação está temporariamente indisponível."
@@ -420,10 +486,26 @@ def list_playlist_entries(url: str) -> tuple[list[dict], list[dict]]:
         "skip_download": True,
         "socket_timeout": YTDLP_NETWORK_TIMEOUT_SECONDS,
     }
-    if YOUTUBE_COOKIEFILE:
+    if POT_PROVIDER_BASE_URL:
+        opts["extractor_args"] = {
+            "youtube": {"player_client": [YT_PLAYER_CLIENTS[0]]},
+            "youtubepot-bgutilhttp": {"base_url": [POT_PROVIDER_BASE_URL]},
+        }
+    elif YOUTUBE_COOKIEFILE:
         opts["cookiefile"] = YOUTUBE_COOKIEFILE
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:
+        if not (POT_PROVIDER_BASE_URL and YOUTUBE_COOKIEFILE):
+            raise
+        # Metadados privados/por idade ainda podem exigir sessão. O fallback
+        # nunca recebe URL arbitrária: `url` já foi normalizada pela allowlist.
+        fallback_opts = dict(opts)
+        fallback_opts.pop("extractor_args", None)
+        fallback_opts["cookiefile"] = YOUTUBE_COOKIEFILE
+        with YoutubeDL(fallback_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
     entries = info.get("entries")
     if entries is None:  # link de vídeo único
         entries = [info]
@@ -712,9 +794,15 @@ def download_one(entry: dict, workdir: str, *, deadline: float | None = None) ->
             opts["cookiefile"] = YOUTUBE_COOKIEFILE
         return opts
 
-    # Combinações a tentar: cada client, com cookie (se houver) e depois sem.
-    cookie_modes = [True, False] if YOUTUBE_COOKIEFILE else [False]
-    attempts = [(client, cookie) for client in YT_PLAYER_CLIENTS for cookie in cookie_modes]
+    # Para conteúdo público, PO Token sem conta é o caminho principal. Cookies
+    # são fallback apenas para conteúdo que realmente exige sessão.
+    if POT_PROVIDER_BASE_URL and YOUTUBE_COOKIEFILE:
+        cookie_modes = [False, True]
+    elif YOUTUBE_COOKIEFILE:
+        cookie_modes = [True, False]
+    else:
+        cookie_modes = [False]
+    attempts = [(client, cookie) for cookie in cookie_modes for client in YT_PLAYER_CLIENTS]
 
     last_exc: Exception | None = None
     for client, use_cookie in attempts:
@@ -758,6 +846,7 @@ def download_one(entry: dict, workdir: str, *, deadline: float | None = None) ->
                 raise ValueError(
                     f"TRACK_SIZE_LIMIT_EXCEEDED: {size/1048576:.1f} MB (limite {MAX_FILE_MB:.0f} MB)"
                 )
+            close_youtube_circuit()
             return mp3
         except ValueError:
             raise  # limites internos (tamanho) — propaga sem tentar outro client
@@ -790,7 +879,12 @@ def find_alternatives(
         "skip_download": True,
         "socket_timeout": min(YTDLP_NETWORK_TIMEOUT_SECONDS, remaining_request_seconds(deadline)),
     }
-    if YOUTUBE_COOKIEFILE:
+    if POT_PROVIDER_BASE_URL:
+        opts["extractor_args"] = {
+            "youtube": {"player_client": [YT_PLAYER_CLIENTS[0]]},
+            "youtubepot-bgutilhttp": {"base_url": [POT_PROVIDER_BASE_URL]},
+        }
+    elif YOUTUBE_COOKIEFILE:
         opts["cookiefile"] = YOUTUBE_COOKIEFILE
     try:
         with YoutubeDL(opts) as ydl:
@@ -1286,6 +1380,35 @@ def process_playlist_entry(
             return {"status": "completed", "reused": reused, "abort": False}
         except Exception as exc:  # noqa: BLE001
             code, friendly = classify_error(exc)
+            attempts = int(claimed.get("attempts") or 1)
+
+            # Bloqueios globais do YouTube não são falha da música. Devolve o
+            # item ao estado retomável e não consome sua tentativa.
+            if code in YOUTUBE_CIRCUIT_CODES:
+                set_request_item_status(
+                    playlist_request_id,
+                    work_entry,
+                    "resolved",
+                    attempts=max(attempts - 1, 0),
+                    error_message=friendly[:1000],
+                    last_error_code=code,
+                )
+                open_youtube_circuit(code)
+                return {
+                    "status": "deferred",
+                    "code": code,
+                    "reason": friendly,
+                    "abort": True,
+                    "reused": False,
+                    "technical": error_details(
+                        exc,
+                        playlist_id=playlist_id,
+                        job_id=job_id,
+                        track_id=work_entry.get("id"),
+                        url=source_url,
+                    ),
+                }
+
             item_status = request_item_status_from_code(code)
             set_request_item_status(
                 playlist_request_id,
@@ -1294,7 +1417,6 @@ def process_playlist_entry(
                 error_message=friendly[:1000],
                 last_error_code=code,
             )
-            attempts = int(claimed.get("attempts") or 1)
             abort = code in JOB_ABORT_CODES
             permanent = code in PERMANENT_SKIP_CODES
             if abort or permanent or attempts >= TRACK_MAX_ATTEMPTS:
@@ -1431,7 +1553,7 @@ def process_job(job: dict):
             if status in ("completed", "duplicate"):
                 completed += 1
                 reused += int(bool(result.get("reused")))
-            elif status != "review_recommended":
+            elif status not in ("review_recommended", "deferred"):
                 failed += 1
             if result.get("skipped"):
                 skipped.append(result["skipped"])
@@ -1523,6 +1645,25 @@ def process_job(job: dict):
 def fail_job(job: dict, exc: Exception):
     attempts = job.get("attempts") or 1
     code, friendly = classify_error(exc)
+    if code in YOUTUBE_CIRCUIT_CODES:
+        open_youtube_circuit(code)
+        update_job(
+            job["id"],
+            status="queued",
+            # Mantém uma tentativa-base para que a retomada não volte a apagar
+            # vínculos já concluídos; novas pausas continuam neste mesmo valor.
+            attempts=1,
+            started_at=job.get("started_at"),
+            finished_at=None,
+            locked_at=None,
+            error=f"paused: {redact_sensitive(exc, SECRET_VALUES)}",
+            error_code=code,
+            error_message=friendly,
+            error_details=error_details(exc, job_id=job.get("id"), playlist_id=job.get("playlist_id")),
+            last_error_at=now_iso(),
+        )
+        log(f"Job {job['id']} pausado por bloqueio global do YouTube [{code}].")
+        return
     # Volta para a fila se ainda tem tentativas; senao marca erro definitivo.
     if code not in NON_RETRYABLE_JOB_CODES and attempts < MAX_ATTEMPTS:
         update_job(
@@ -1569,8 +1710,13 @@ def main():
         f"{MAX_CONCURRENT_JOBS} job(s), {TRACK_CONCURRENCY} faixa(s)/job, "
         f"{TRACK_MAX_ATTEMPTS} tentativa(s)/faixa, {REQUEST_TIMEOUT_SECONDS}s/solicitação"
     )
+    log(
+        "  PO Token automático: "
+        + ("ativo (cookies como fallback)" if POT_PROVIDER_BASE_URL else "desativado")
+    )
     next_storage_audit_at = 0.0
     next_stale_job_check_at = 0.0
+    next_circuit_log_at = 0.0
     while True:
         try:
             if time.monotonic() >= next_stale_job_check_at:
@@ -1592,6 +1738,16 @@ def main():
                 except Exception as exc:  # noqa: BLE001
                     log(f"Falha na auditoria de armazenamento: {exc}")
                 next_storage_audit_at = time.monotonic() + STORAGE_AUDIT_INTERVAL_SECONDS
+            circuit_remaining, circuit_reason = youtube_circuit_remaining()
+            if circuit_remaining > 0:
+                if time.monotonic() >= next_circuit_log_at:
+                    log(
+                        f"YouTube pausado por mais {circuit_remaining}s "
+                        f"[{circuit_reason}]; jobs permanecem na fila."
+                    )
+                    next_circuit_log_at = time.monotonic() + 60
+                time.sleep(min(POLL_SECONDS, max(circuit_remaining, 1)))
+                continue
             job = claim_next_job()
             if not job:
                 time.sleep(POLL_SECONDS)

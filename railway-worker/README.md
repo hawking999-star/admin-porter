@@ -114,11 +114,14 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 | `STALE_JOB_SECONDS` | 1800 | Recupera jobs abandonados após 30 minutos sem progresso |
 | `STALE_JOB_CHECK_SECONDS` | 60 | Intervalo da verificação de jobs abandonados |
 | `GLOBAL_FAILURE_ABORT_THRESHOLD` | 3 | Encerra cedo após erros globais consecutivos do YouTube |
+| `YOUTUBE_CIRCUIT_OPEN_SECONDS` | 900 | Pausa a fila após bloqueio global sem consumir novas tentativas por faixa |
 | `SPOTDL_RESOLVE_TIMEOUT_SECONDS` | 600 | Tempo para ler Spotify e localizar as faixas no YouTube |
 | `REQUEST_TIMEOUT_SECONDS` | 3600 | Tempo máximo da solicitação inteira |
 | `SPOTIFY_RESOLVER_URL` | vazio | URL de um resolver interno separado; vazio usa spotDL neste worker Docker |
 | `SPOTIFY_RESOLVER_TOKEN` | vazio | Token secreto do resolver interno; obrigatório somente com a URL preenchida |
 | `SPOTIFY_RESOLVER_ALLOW_PRIVATE` | false | Permite endpoint privado apenas quando explicitamente necessário |
+| `POT_PROVIDER_BASE_URL` | vazio | URL privada do provedor automático de PO Token; cookies ficam como fallback |
+| `YT_PLAYER_CLIENTS` | `mweb,web_safari,default` | Ordem dos clientes públicos usados com o provedor automático |
 
 ### Segurança do importador
 

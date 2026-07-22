@@ -85,7 +85,7 @@ export type PlaylistFilters = PageParams & {
   type?: "all" | string;
   platform?: "all" | string;
   startAt?: string;
-  endAt?: string;
+  endAt?: string | null;
 };
 
 export type PlaylistStats = {

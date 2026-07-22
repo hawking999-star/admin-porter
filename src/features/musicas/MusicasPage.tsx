@@ -231,8 +231,17 @@ const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
   SUPABASE_ERROR: "O serviço de importação está temporariamente indisponível.",
   R2_ACCESS_DENIED: "O serviço de importação está temporariamente indisponível.",
   R2_ERROR: "O serviço de importação está temporariamente indisponível.",
+  YOUTUBE_COOKIES_MISSING: "O importador do YouTube está se recuperando automaticamente.",
+  YOUTUBE_COOKIES_INVALID: "O importador do YouTube está se recuperando automaticamente.",
+  YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE: "O importador do YouTube está se recuperando automaticamente.",
   IMPORTER_ERROR: "O serviço de importação está temporariamente indisponível.",
 };
+
+const YOUTUBE_PAUSE_CODES = new Set([
+  "YOUTUBE_COOKIES_MISSING",
+  "YOUTUBE_COOKIES_INVALID",
+  "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
+]);
 
 function friendlyImportMessage(code?: string | null, fallback?: string | null): string | null {
   if (code) {
@@ -246,6 +255,12 @@ function playlistImportError(p: Playlist): string | null {
     p.error_code || p.download?.error_code,
     p.error_message || p.download?.error_message || null,
   );
+}
+
+function playlistImportPauseMessage(p: Playlist): string | null {
+  const code = p.download?.error_code || p.error_code;
+  if (p.download?.status !== "queued" || !code || !YOUTUBE_PAUSE_CODES.has(code)) return null;
+  return "Importação pausada automaticamente. O sistema tentará novamente quando o YouTube responder.";
 }
 
 function isImportErrorAcknowledged(p: Playlist) {
@@ -524,7 +539,12 @@ export function MusicasPage() {
   const debouncedSearch = useDebounce(search, 350);
   const debouncedLibrarySearch = useDebounce(librarySearch, 350);
   const requestPeriodRange = useMemo(
-    () => buildPeriodRange(dateFilter, customFrom, customTo),
+    () => {
+      const range = buildPeriodRange(dateFilter, customFrom, customTo);
+      // Presets ficam abertos até o momento de cada consulta. Fixar o fim no
+      // mount fazia solicitações novas só aparecerem depois de recarregar/login.
+      return dateFilter === "custom" ? range : { ...range, endAt: null };
+    },
     [dateFilter, customFrom, customTo],
   );
 
@@ -584,6 +604,8 @@ export function MusicasPage() {
     staleTime: 30_000,
     placeholderData: keepPreviousData,
     enabled: activeArea === "requests",
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
     refetchInterval: (query) => {
       const rows = query.state.data?.rows;
       const active = rows?.some(
@@ -592,7 +614,7 @@ export function MusicasPage() {
           p.download?.status === "queued" ||
           p.download?.status === "running",
       );
-      return active ? 5000 : false;
+      return active ? 5000 : 15000;
     },
   });
   const statsQuery = useQuery({
@@ -2452,6 +2474,7 @@ function PlaylistCard({
   const canRetry = p.approval_status === "approved" && p.import_status === "failed";
   const canAcknowledgeError = p.import_status === "failed" && !isImportErrorAcknowledged(p);
   const importError = playlistImportError(p);
+  const pauseMessage = playlistImportPauseMessage(p);
   const stop = (fn: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     fn();
@@ -2527,6 +2550,13 @@ function PlaylistCard({
               <span className="font-semibold">Falha ao importar: </span>
               {importError || "motivo técnico não informado pelo backend"}
             </span>
+          </div>
+        )}
+
+        {pauseMessage && (
+          <div className="mt-2 flex items-start gap-1.5 rounded-md bg-warning/10 px-2.5 py-1.5 text-xs text-warning-foreground ring-1 ring-warning/20">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{pauseMessage}</span>
           </div>
         )}
 
@@ -2870,6 +2900,7 @@ function DetailPanel({
   const canAcknowledgeError = p.import_status === "failed" && !isImportErrorAcknowledged(p);
   const importError = playlistImportError(p);
   const technicalError = technicalErrorText(p);
+  const pauseMessage = playlistImportPauseMessage(p);
 
   return (
     <div className="flex h-full flex-col">
@@ -2929,6 +2960,13 @@ function DetailPanel({
       </div>
 
       <SpotifyRequestDetail p={p} onApprove={onApprove} />
+
+      {pauseMessage && (
+        <div className="mt-5 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning-foreground">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{pauseMessage}</span>
+        </div>
+      )}
 
       {(canAcknowledgeError || p.approval_status === "rejected") && (
         <div className="mt-5 rounded-lg border border-border bg-muted/30 p-3">

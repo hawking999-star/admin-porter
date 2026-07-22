@@ -20,6 +20,9 @@ def load_worker_module():
         "R2_BUCKET": "test-bucket",
         "TRACK_CONCURRENCY": "2",
         "TRACK_MAX_ATTEMPTS": "2",
+        "POT_PROVIDER_BASE_URL": "",
+        "YOUTUBE_COOKIES": "",
+        "YOUTUBE_COOKIES_FILE": "",
     }
     with (
         patch.dict(os.environ, environment, clear=False),
@@ -118,6 +121,64 @@ class AsyncTrackProcessingTests(unittest.TestCase):
 
         self.assertEqual(maximum_active, self.worker.TRACK_CONCURRENCY)
         self.assertLessEqual(maximum_active, 2)
+
+    def test_global_youtube_block_defers_track_without_consuming_attempt(self):
+        entry = {
+            "id": "abcdefghijk",
+            "title": "Faixa teste",
+            "duration": 180,
+            "request_position": 1,
+        }
+        with (
+            patch.object(
+                self.worker,
+                "claim_request_item",
+                return_value={"id": "item-1", "attempts": 1},
+            ),
+            patch.object(self.worker, "set_request_item_status") as set_status,
+            patch.object(self.worker, "open_youtube_circuit") as open_circuit,
+            patch.object(
+                self.worker.supabase,
+                "table",
+                side_effect=RuntimeError("YOUTUBE_COOKIES_INVALID"),
+            ),
+        ):
+            result = self.worker.process_playlist_entry(
+                job_id="job-1",
+                playlist_id="playlist-1",
+                playlist_request_id="request-1",
+                entry=entry,
+                source_url="https://www.youtube.com/watch?v=abcdefghijk",
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertTrue(result["abort"])
+        open_circuit.assert_called_once_with("YOUTUBE_COOKIES_INVALID")
+        self.assertEqual(set_status.call_args.args[2], "resolved")
+        self.assertEqual(set_status.call_args.kwargs["attempts"], 0)
+
+    def test_global_youtube_block_requeues_job_for_automatic_resume(self):
+        with (
+            patch.object(self.worker, "update_job") as update_job,
+            patch.object(self.worker, "open_youtube_circuit") as open_circuit,
+        ):
+            self.worker.fail_job(
+                {
+                    "id": "job-1",
+                    "playlist_id": "playlist-1",
+                    "attempts": 3,
+                    "started_at": "2026-07-22T12:00:00+00:00",
+                },
+                RuntimeError("YOUTUBE_COOKIES_INVALID"),
+            )
+
+        open_circuit.assert_called_once_with("YOUTUBE_COOKIES_INVALID")
+        fields = update_job.call_args.kwargs
+        self.assertEqual(fields["status"], "queued")
+        self.assertEqual(fields["attempts"], 1)
+        self.assertIsNone(fields["locked_at"])
+        self.assertEqual(fields["error_code"], "YOUTUBE_COOKIES_INVALID")
 
 
 if __name__ == "__main__":
