@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   BellDot,
@@ -177,10 +178,15 @@ function FeedbackCardSkeleton() {
 
 export function FeedbackPage() {
   const qc = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedStatus = searchParams.get("status");
+  const initialStatus = requestedStatus && FEEDBACK_STATUSES.some((item) => item.value === requestedStatus)
+    ? requestedStatus
+    : "all";
   const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>(initialStatus);
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 350);
 
@@ -224,10 +230,19 @@ export function FeedbackPage() {
   const total = data?.total ?? 0;
   const stats = statsQuery.data ?? { pending: 0, resolved: 0, problems: 0, today: 0 };
   const hasFilters = Boolean(debouncedSearch.trim()) || typeFilter !== "all" || statusFilter !== "all";
+  const changeStatusFilter = (value: string) => {
+    setStatusFilter(value);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value === "all") next.delete("status");
+      else next.set("status", value);
+      return next;
+    }, { replace: true });
+  };
   const clearFilters = () => {
     setSearch("");
     setTypeFilter("all");
-    setStatusFilter("all");
+    changeStatusFilter("all");
   };
 
   return (
@@ -260,7 +275,7 @@ export function FeedbackPage() {
           </SelectContent>
         </Select>
 
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
+        <Select value={statusFilter} onValueChange={changeStatusFilter}>
           <SelectTrigger className="h-10 w-[170px] rounded-lg">
             <SelectValue placeholder="Status" />
           </SelectTrigger>

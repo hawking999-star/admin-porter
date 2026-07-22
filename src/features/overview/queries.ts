@@ -280,6 +280,28 @@ export type OverviewCounts = {
   pendingPlaylists: number | null; // null = estrutura de aprovação indisponível
 };
 
+export type OverviewPendingAction = {
+  id: string;
+  kind: "playlist" | "feedback";
+  title: string;
+  operator_name: string | null;
+  unit_label: string | null;
+  occurred_at: string;
+};
+
+export type OverviewImportHealth = {
+  queued: number;
+  running: number;
+  with_errors: number;
+  last_activity_at: string | null;
+};
+
+export type OverviewActionCenter = {
+  oldest_playlist: OverviewPendingAction | null;
+  oldest_feedback: OverviewPendingAction | null;
+  imports: OverviewImportHealth;
+};
+
 export async function fetchOverviewCounts(statisticsSince?: string, unitId?: string): Promise<OverviewCounts> {
   const today = startOfTodayISO();
   const endedSince = statisticsSince && statisticsSince > today ? statisticsSince : today;
@@ -323,6 +345,79 @@ export async function fetchOverviewCounts(statisticsSince?: string, unitId?: str
     sessionsEndedToday: endedToday.count ?? 0,
     pendingFeedback: feedback.count ?? 0,
     pendingPlaylists: playlists.error ? null : playlists.count ?? 0,
+  };
+}
+
+/**
+ * Carrega somente os itens necessários para priorizar o trabalho do Admin.
+ * As contagens completas continuam em fetchOverviewCounts; aqui buscamos o item
+ * mais antigo de cada fila e a saúde agregada do importador.
+ */
+export async function fetchOverviewActionCenter(unitId?: string): Promise<OverviewActionCenter> {
+  let playlistQuery = supabase
+    .from("playlists")
+    .select("id, name, submitted_at, operators(display_name), units(name, city, state)")
+    .eq("approval_status", "pending")
+    .not("submitted_at", "is", null)
+    .order("submitted_at", { ascending: true })
+    .limit(1);
+  let feedbackQuery = supabase
+    .from("feedback")
+    .select("id, message, created_at, operators(display_name), units(name, city, state)")
+    .eq("status", "new")
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (unitId) {
+    playlistQuery = playlistQuery.eq("unit_id", unitId);
+    feedbackQuery = feedbackQuery.eq("unit_id", unitId);
+  }
+
+  const [playlistResult, feedbackResult, integrationResult] = await Promise.all([
+    playlistQuery.maybeSingle(),
+    feedbackQuery.maybeSingle(),
+    supabase.rpc("admin_integration_status"),
+  ]);
+
+  const error = playlistResult.error ?? feedbackResult.error ?? integrationResult.error;
+  if (error) throw error;
+
+  const playlist = playlistResult.data as any;
+  const feedback = feedbackResult.data as any;
+  const integration = (integrationResult.data ?? {}) as any;
+  const imports = integration.imports ?? {};
+  const contextLabel = (units: any) =>
+    units?.name
+      ? unitLabel({ name: units.name, city: units.city, state: units.state })
+      : null;
+
+  return {
+    oldest_playlist: playlist
+      ? {
+          id: playlist.id,
+          kind: "playlist",
+          title: playlist.name?.trim() || "Playlist sem nome",
+          operator_name: playlist.operators?.display_name ?? null,
+          unit_label: contextLabel(playlist.units),
+          occurred_at: playlist.submitted_at,
+        }
+      : null,
+    oldest_feedback: feedback
+      ? {
+          id: feedback.id,
+          kind: "feedback",
+          title: feedback.message?.trim() || "Feedback sem mensagem",
+          operator_name: feedback.operators?.display_name ?? null,
+          unit_label: contextLabel(feedback.units),
+          occurred_at: feedback.created_at,
+        }
+      : null,
+    imports: {
+      queued: Number(imports.queued ?? 0),
+      running: Number(imports.running ?? 0),
+      with_errors: Number(imports.with_errors ?? 0),
+      last_activity_at: imports.last_activity_at ?? null,
+    },
   };
 }
 

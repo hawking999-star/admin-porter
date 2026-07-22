@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Search,
@@ -522,6 +523,15 @@ async function copy(text: string) {
 
 export function MusicasPage() {
   const qc = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedStatus = searchParams.get("status");
+  const requestedPeriod = searchParams.get("period");
+  const initialStatus = ["pending", "approved", "rejected", "import_failed"].includes(requestedStatus ?? "")
+    ? requestedStatus as string
+    : "all";
+  const initialPeriod = ["7d", "30d", "90d", "custom"].includes(requestedPeriod ?? "")
+    ? requestedPeriod as PeriodPreset
+    : "7d";
   const [activeArea, setActiveArea] = useState<"requests" | "library" | "storage">("requests");
   const [search, setSearch] = useState("");
   const [librarySearch, setLibrarySearch] = useState("");
@@ -529,10 +539,10 @@ export function MusicasPage() {
   const [libraryPage, setLibraryPage] = useState(1);
   const [requestsPageSize, setRequestsPageSize] = useState(25);
   const [libraryPageSize, setLibraryPageSize] = useState(25);
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [typeFilter, setTypeFilter] = useState("all");
   const [platformFilter, setPlatformFilter] = useState("all");
-  const [dateFilter, setDateFilter] = useState<PeriodPreset>("7d");
+  const [dateFilter, setDateFilter] = useState<PeriodPreset>(initialPeriod);
   const [customFrom, setCustomFrom] = useState(todayInput());
   const [customTo, setCustomTo] = useState(todayInput());
   const [operatorRequestFilter, setOperatorRequestFilter] = useState<string | null>(null);
@@ -664,6 +674,24 @@ export function MusicasPage() {
 
   const toggle = (cur: string, val: string, set: (v: string) => void) =>
     set(cur === val ? "all" : val);
+  const changeStatusFilter = (value: string) => {
+    setStatusFilter(value);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value === "all") next.delete("status");
+      else next.set("status", value);
+      return next;
+    }, { replace: true });
+  };
+  const changeDateFilter = (value: PeriodPreset) => {
+    setDateFilter(value);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value === "7d") next.delete("period");
+      else next.set("period", value);
+      return next;
+    }, { replace: true });
+  };
   const requestHasFilters =
     Boolean(debouncedSearch.trim()) ||
     statusFilter !== "all" ||
@@ -678,6 +706,12 @@ export function MusicasPage() {
     setPlatformFilter("all");
     setDateFilter("7d");
     setOperatorRequestFilter(null);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("status");
+      next.delete("period");
+      return next;
+    }, { replace: true });
   };
 
   const invalidateMusic = () => {
@@ -942,7 +976,7 @@ export function MusicasPage() {
             value={stats.pending}
             hint="Aguardando aprovação"
             active={statusFilter === "pending"}
-            onClick={() => toggle(statusFilter, "pending", setStatusFilter)}
+            onClick={() => toggle(statusFilter, "pending", changeStatusFilter)}
             loading={statsQuery.isLoading}
           />
           <StatCard
@@ -952,7 +986,7 @@ export function MusicasPage() {
             value={stats.approved}
             hint={`${stats.today} enviadas hoje`}
             active={statusFilter === "approved"}
-            onClick={() => toggle(statusFilter, "approved", setStatusFilter)}
+            onClick={() => toggle(statusFilter, "approved", changeStatusFilter)}
             loading={statsQuery.isLoading}
           />
           <StatCard
@@ -961,7 +995,7 @@ export function MusicasPage() {
             label="Rejeitadas"
             value={stats.rejected}
             active={statusFilter === "rejected"}
-            onClick={() => toggle(statusFilter, "rejected", setStatusFilter)}
+            onClick={() => toggle(statusFilter, "rejected", changeStatusFilter)}
             loading={statsQuery.isLoading}
           />
           <StatCard
@@ -970,7 +1004,7 @@ export function MusicasPage() {
             label="Importações com erro"
             value={stats.importFailed}
             active={statusFilter === "import_failed"}
-            onClick={() => toggle(statusFilter, "import_failed", setStatusFilter)}
+            onClick={() => toggle(statusFilter, "import_failed", changeStatusFilter)}
             loading={statsQuery.isLoading}
           />
         </div>
@@ -1024,7 +1058,7 @@ export function MusicasPage() {
             value={dateFilter}
             customFrom={customFrom}
             customTo={customTo}
-            onValueChange={setDateFilter}
+            onValueChange={changeDateFilter}
             onCustomFromChange={setCustomFrom}
             onCustomToChange={setCustomTo}
             className="min-w-48"

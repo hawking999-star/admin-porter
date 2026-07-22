@@ -44,17 +44,20 @@ import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
 import { effectiveStatisticsStart, fetchStatisticsResetInfo } from "@/lib/statistics";
 import { listUnitOptions } from "@/features/usuarios/queries";
 import { unitLabel } from "@/lib/unit-label";
+import { ActionCenter } from "./ActionCenter";
 import {
   STATUS_BAR,
   STATUS_DOT,
   STATUS_ORDER,
   attentionReasonLabel,
   deriveAttention,
+  fetchOverviewActionCenter,
   fetchDailySummary,
   fetchOperatorStates,
   fetchOverviewCounts,
   fetchRecentActivity,
   fmtRelative,
+  minutesSince,
   statusLabel,
   type ActivityKind,
   type DailyMetric,
@@ -541,16 +544,22 @@ export function OverviewPage() {
   const units = useQuery({ queryKey: ["overview", "units"], queryFn: listUnitOptions, staleTime: 60_000 });
   const activity = useQuery({ queryKey: ["overview", "activity", effectiveStartAt, periodRange.endAt, scopedUnitId], queryFn: () => fetchRecentActivity(effectiveStartAt, periodRange.endAt, scopedUnitId), staleTime: 30_000, enabled: resetInfo.isSuccess });
   const daily = useQuery({ queryKey: ["overview", "daily", effectiveStartAt, periodRange.endAt, scopedUnitId], queryFn: () => fetchDailySummary(effectiveStartAt, periodRange.endAt, scopedUnitId), staleTime: 60_000, enabled: resetInfo.isSuccess });
+  const actionCenter = useQuery({
+    queryKey: ["overview", "action-center", scopedUnitId],
+    queryFn: () => fetchOverviewActionCenter(scopedUnitId),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
 
-  const isFetching = resetInfo.isFetching || counts.isFetching || states.isFetching || units.isFetching || activity.isFetching || daily.isFetching;
-  const isError = resetInfo.isError || counts.isError || states.isError || units.isError || activity.isError || daily.isError;
+  const isFetching = resetInfo.isFetching || counts.isFetching || states.isFetching || units.isFetching || activity.isFetching || daily.isFetching || actionCenter.isFetching;
+  const isError = resetInfo.isError || counts.isError || states.isError || units.isError || activity.isError || daily.isError || actionCenter.isError;
 
   const lastUpdated = useMemo(() => {
-    const ts = [resetInfo.dataUpdatedAt, counts.dataUpdatedAt, states.dataUpdatedAt, units.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt].filter(
+    const ts = [resetInfo.dataUpdatedAt, counts.dataUpdatedAt, states.dataUpdatedAt, units.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt, actionCenter.dataUpdatedAt].filter(
       Boolean,
     );
     return ts.length ? new Date(Math.max(...ts)).toISOString() : null;
-  }, [resetInfo.dataUpdatedAt, counts.dataUpdatedAt, states.dataUpdatedAt, units.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt]);
+  }, [resetInfo.dataUpdatedAt, counts.dataUpdatedAt, states.dataUpdatedAt, units.dataUpdatedAt, activity.dataUpdatedAt, daily.dataUpdatedAt, actionCenter.dataUpdatedAt]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["overview"] });
 
@@ -582,6 +591,10 @@ export function OverviewPage() {
   const hasFilters = unitFilter !== "all" || statusFilter !== "all" || period !== "7d";
   const visibleTotal = hasFilters ? filteredRows.length : total;
   const pendingTotal = (counts.data?.pendingFeedback ?? 0) + (counts.data?.pendingPlaylists ?? 0);
+  const importFailures = actionCenter.data?.imports.with_errors ?? 0;
+  const activeImports = (actionCenter.data?.imports.queued ?? 0) + (actionCenter.data?.imports.running ?? 0);
+  const possiblyStalled = activeImports > 0 && (minutesSince(actionCenter.data?.imports.last_activity_at ?? null) ?? Number.POSITIVE_INFINITY) >= 15;
+  const actionTotal = pendingTotal + importFailures + (possiblyStalled ? 1 : 0);
   const todayLabel = useMemo(
     () => new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "long", year: "numeric" }).format(new Date()),
     [],
@@ -594,10 +607,10 @@ export function OverviewPage() {
         description="Acompanhe em tempo real a operação, presença dos operadores e alertas importantes."
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs text-muted-foreground shadow-sm">
+            <a href="#central-de-acao" className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-primary" aria-label={`${actionTotal} ações pendentes. Ir para a Central de ação.`}>
               <Bell className="mr-2 h-4 w-4" />
-              {pendingTotal}
-            </span>
+              {actionTotal} {actionTotal === 1 ? "ação" : "ações"}
+            </a>
             <span className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs text-muted-foreground shadow-sm">
               <CalendarDays className="mr-2 h-4 w-4" />
               {todayLabel}
@@ -649,6 +662,14 @@ export function OverviewPage() {
           setStatusFilter("all");
           setPeriod("7d");
         }}
+      />
+
+      <ActionCenter
+        data={actionCenter.data}
+        pendingFeedback={counts.data?.pendingFeedback ?? 0}
+        pendingPlaylists={counts.data?.pendingPlaylists ?? null}
+        loading={actionCenter.isLoading || counts.isLoading}
+        error={actionCenter.isError}
       />
 
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
