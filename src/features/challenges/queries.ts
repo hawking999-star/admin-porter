@@ -101,6 +101,13 @@ export type ChallengeStats = {
   applications: number;
 };
 
+export type ChallengeActiveWindow = {
+  key: "daytime" | "nighttime";
+  enabled: boolean;
+  start: string;
+  end: string;
+};
+
 export type ChallengeRules = {
   revision: number;
   min_interval_seconds: number;
@@ -110,8 +117,14 @@ export type ChallengeRules = {
   error_block_seconds: number[];
   active_window_start: string;
   active_window_end: string;
+  active_windows: ChallengeActiveWindow[];
   timezone: string;
 };
+
+const DEFAULT_ACTIVE_WINDOWS: ChallengeActiveWindow[] = [
+  { key: "daytime", enabled: true, start: "06:00", end: "18:00" },
+  { key: "nighttime", enabled: true, start: "18:00", end: "06:00" },
+];
 
 export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
   revision: 0,
@@ -122,8 +135,37 @@ export const DEFAULT_CHALLENGE_RULES: ChallengeRules = {
   error_block_seconds: [300, 900, 3600],
   active_window_start: "00:00",
   active_window_end: "00:00",
+  active_windows: DEFAULT_ACTIVE_WINDOWS,
   timezone: "America/Sao_Paulo",
 };
+
+function normalizeActiveWindows(value: Partial<ChallengeRules>): ChallengeActiveWindow[] {
+  if (Array.isArray(value.active_windows) && value.active_windows.length) {
+    return DEFAULT_ACTIVE_WINDOWS.map((fallback) => {
+      const saved = value.active_windows?.find((window) => window?.key === fallback.key);
+      return saved
+        ? {
+            key: fallback.key,
+            enabled: Boolean(saved.enabled),
+            start: saved.start || fallback.start,
+            end: saved.end || fallback.end,
+          }
+        : fallback;
+    });
+  }
+
+  const start = value.active_window_start ?? DEFAULT_CHALLENGE_RULES.active_window_start;
+  const end = value.active_window_end ?? DEFAULT_CHALLENGE_RULES.active_window_end;
+  if (start === end) return DEFAULT_ACTIVE_WINDOWS.map((window) => ({ ...window }));
+
+  const overnight = start > end;
+  return DEFAULT_ACTIVE_WINDOWS.map((window) => {
+    if ((overnight && window.key === "nighttime") || (!overnight && window.key === "daytime")) {
+      return { ...window, enabled: true, start, end };
+    }
+    return { ...window, enabled: false };
+  });
+}
 
 export async function getChallengeRules(unitId: string | null): Promise<ChallengeRules> {
   let query = supabase
@@ -137,9 +179,11 @@ export async function getChallengeRules(unitId: string | null): Promise<Challeng
   query = unitId ? query.eq("scope_id", unitId) : query.is("scope_id", null);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
+  const saved = (data?.value as Partial<ChallengeRules> | null) ?? {};
   return {
     ...DEFAULT_CHALLENGE_RULES,
-    ...((data?.value as Partial<ChallengeRules> | null) ?? {}),
+    ...saved,
+    active_windows: normalizeActiveWindows(saved),
     revision: Number(data?.revision ?? 0),
   };
 }

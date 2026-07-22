@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, ErrorState, FilterBar, PaginationFooter, RetryButton, SearchInput, StatCard, StatusBadge } from "@/components/shared";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDebounce } from "@/hooks/useDebounce";
 import { listUnitOptions, unitLabel } from "@/features/usuarios/queries";
-import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type Challenge, type ChallengeInput, type ChallengeRules, challengeCsvTemplate, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
+import { CHALLENGE_KINDS, CHALLENGE_STATUSES, DEFAULT_CHALLENGE_RULES, type Challenge, type ChallengeActiveWindow, type ChallengeInput, type ChallengeRules, challengeCsvTemplate, challengeKindLabel, challengeStatusBadge, countChallengeStats, getChallengeRules, listChallenges, saveChallengeRules, setChallengeStatus, upsertChallenge } from "./queries";
 
 const PAGE_SIZE = 12;
 type UnitOption = { id: string; name: string; city: string | null; state: string | null; code: string | null };
@@ -158,6 +159,28 @@ function activeWindowSeconds(start: string, end: string): number {
   return durationMinutes * 60;
 }
 
+function activeWindowSegments(window: ChallengeActiveWindow): Array<[number, number]> {
+  const toMinutes = (value: string) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+  const start = toMinutes(window.start);
+  const end = toMinutes(window.end);
+  return start < end ? [[start, end]] : [[start, 1_440], [0, end]];
+}
+
+function activeWindowsOverlap(first: ChallengeActiveWindow, second: ChallengeActiveWindow) {
+  return activeWindowSegments(first).some(([firstStart, firstEnd]) =>
+    activeWindowSegments(second).some(([secondStart, secondEnd]) =>
+      Math.max(firstStart, secondStart) < Math.min(firstEnd, secondEnd),
+    ),
+  );
+}
+
+function activeWindowLabel(key: ChallengeActiveWindow["key"]) {
+  return key === "daytime" ? "Período diurno" : "Período noturno";
+}
+
 function validateChallengeRules(rules: ChallengeRules): string | null {
   if (!Number.isFinite(rules.min_interval_seconds) || rules.min_interval_seconds < 1) {
     return "O tempo mínimo precisa ser maior que zero.";
@@ -175,10 +198,19 @@ function validateChallengeRules(rules: ChallengeRules): string | null {
     return "Os tempos de bloqueio por resposta errada não podem ser negativos.";
   }
 
-  const windowSeconds = activeWindowSeconds(rules.active_window_start, rules.active_window_end);
-  const unrestricted = rules.active_window_start === rules.active_window_end;
-  if (!unrestricted && rules.max_interval_seconds >= windowSeconds) {
-    return `O tempo máximo precisa ser menor que a faixa permitida de ${timeLabel(windowSeconds)}. Aumente o horário final ou reduza o tempo máximo.`;
+  const enabledWindows = (rules.active_windows ?? DEFAULT_CHALLENGE_RULES.active_windows).filter((window) => window.enabled);
+  if (!enabledWindows.length) return "Ative pelo menos um período para os desafios.";
+  for (const window of enabledWindows) {
+    if (window.start === window.end) {
+      return `${activeWindowLabel(window.key)} precisa ter horários diferentes.`;
+    }
+    const windowSeconds = activeWindowSeconds(window.start, window.end);
+    if (rules.max_interval_seconds >= windowSeconds) {
+      return `O tempo máximo precisa ser menor que ${timeLabel(windowSeconds)} em ${activeWindowLabel(window.key).toLowerCase()}.`;
+    }
+  }
+  if (enabledWindows.length === 2 && activeWindowsOverlap(enabledWindows[0], enabledWindows[1])) {
+    return "Os períodos diurno e noturno não podem se sobrepor.";
   }
   return null;
 }
@@ -188,6 +220,11 @@ const CHALLENGE_RULE_ERROR_MESSAGES: Record<string, string> = {
   tempo_resposta_invalido: "O tempo para responder precisa ser maior que zero.",
   tempo_abandono_invalido: "A punição por fechar o App não pode ser negativa.",
   janela_horario_invalida: "O horário permitido informado é inválido.",
+  janelas_horario_invalidas: "Os períodos permitidos informados são inválidos.",
+  janela_horario_sem_duracao: "O início e o fim de cada período precisam ser diferentes.",
+  janela_horario_sem_periodo_ativo: "Ative pelo menos um período para os desafios.",
+  janelas_horario_sobrepostas: "Os períodos diurno e noturno não podem se sobrepor.",
+  janela_horario_sem_espaco: "Não há espaço suficiente nos períodos para agendar o próximo desafio.",
   fuso_horario_invalido: "O fuso horário configurado é inválido.",
   intervalo_maior_que_janela_horaria: "O tempo máximo precisa ser menor que a faixa de horário permitida.",
   acesso_negado: "Seu acesso de Admin não está ativo.",
@@ -245,8 +282,17 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
   const rules = useQuery({ queryKey: ["challenge-rules", unitId], queryFn: () => getChallengeRules(unitId), enabled: open });
   const [draft, setDraft] = useState<ChallengeRules | null>(null);
   const value = draft ?? rules.data ?? DEFAULT_CHALLENGE_RULES;
+  const activeWindows = value.active_windows ?? DEFAULT_CHALLENGE_RULES.active_windows;
   const updateNumber = (key: "min_interval_seconds" | "max_interval_seconds" | "response_seconds" | "abandon_block_seconds", next: number) => setDraft((current) => ({ ...(current ?? rules.data ?? DEFAULT_CHALLENGE_RULES), [key]: next }));
-  const updateTime = (key: "active_window_start" | "active_window_end", next: string) => setDraft((current) => ({ ...(current ?? rules.data ?? DEFAULT_CHALLENGE_RULES), [key]: next }));
+  const updateActiveWindow = (key: ChallengeActiveWindow["key"], patch: Partial<ChallengeActiveWindow>) => {
+    setDraft((current) => {
+      const base = current ?? rules.data ?? DEFAULT_CHALLENGE_RULES;
+      return {
+        ...base,
+        active_windows: (base.active_windows ?? DEFAULT_CHALLENGE_RULES.active_windows).map((window) => window.key === key ? { ...window, ...patch } : window),
+      };
+    });
+  };
   const updateErrorBlock = (index: number, next: number) => {
     setDraft((current) => {
       const base = current ?? rules.data ?? DEFAULT_CHALLENGE_RULES;
@@ -254,6 +300,10 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
       errorBlocks[index] = next;
       return { ...base, error_block_seconds: errorBlocks };
     });
+  };
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) setDraft(null);
+    onOpenChange(nextOpen);
   };
   async function save() {
     const validationMessage = validateChallengeRules(value);
@@ -264,6 +314,8 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
     setSaving(true);
     try {
       await saveChallengeRules(unitId, value);
+      setDraft(null);
+      await queryClient.invalidateQueries({ queryKey: ["challenge-rules", unitId] });
       toast.success("Regras salvas e agendamentos atualizados.");
       onSaved();
       onOpenChange(false);
@@ -281,7 +333,7 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
     }
   }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Regras de desafios</DialogTitle>
@@ -310,21 +362,46 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
             </div>
           </div>
 
-          <section className="space-y-3 rounded-xl border border-border p-4">
+          <section className="space-y-4 rounded-xl border border-border p-4">
             <div>
-              <h3 className="text-sm font-semibold">Horário permitido para desafios</h3>
+              <h3 className="text-sm font-semibold">Períodos permitidos para desafios</h3>
               <p className="text-xs text-muted-foreground">
-                Fora desta faixa, o servidor não entrega desafios e agenda o próximo para a abertura seguinte. O fuso usado é o horário de Brasília.
+                Separe o dia em até dois períodos. Nos intervalos entre eles, o servidor não entrega desafios e agenda o próximo para a abertura seguinte. O fuso usado é o horário de Brasília.
               </p>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <TimeField label="Começa às" description="Primeiro horário do dia em que um desafio pode aparecer." value={value.active_window_start} onChange={(next) => updateTime("active_window_start", next)} />
-              <TimeField label="Termina às" description="A partir deste horário, nenhum novo desafio é apresentado." value={value.active_window_end} onChange={(next) => updateTime("active_window_end", next)} />
+            <div className="grid gap-3 lg:grid-cols-2">
+              {activeWindows.map((window) => (
+                <div key={window.key} className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">{activeWindowLabel(window.key)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {window.key === "daytime" ? "Faixa principal durante o dia." : "Pode atravessar a madrugada, por exemplo 18:00–05:30."}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{window.enabled ? "Ativo" : "Inativo"}</span>
+                      <Switch
+                        checked={window.enabled}
+                        onCheckedChange={(enabled) => updateActiveWindow(window.key, { enabled })}
+                        aria-label={`${window.enabled ? "Desativar" : "Ativar"} ${activeWindowLabel(window.key).toLowerCase()}`}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <TimeField label="Começa às" description="Primeiro horário permitido." value={window.start} onChange={(start) => updateActiveWindow(window.key, { start })} />
+                    <TimeField label="Termina às" description="Nenhum desafio novo após este horário." value={window.end} onChange={(end) => updateActiveWindow(window.key, { end })} />
+                  </div>
+                  <p className="rounded-md bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+                    {window.enabled
+                      ? <>Permitido de <strong>{window.start}</strong> até <strong>{window.end}</strong>{window.start > window.end ? " do dia seguinte" : ""}.</>
+                      : "Este período não será usado pelo servidor."}
+                  </p>
+                </div>
+              ))}
             </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-              {value.active_window_start === value.active_window_end
-                ? "Horários iguais significam funcionamento durante 24 horas."
-                : <>Os desafios podem aparecer diariamente entre <strong>{value.active_window_start}</strong> e <strong>{value.active_window_end}</strong>. Se o início for maior que o fim, a faixa atravessa a madrugada.</>}
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              Para evitar desafios perto da troca de turno, deixe uma folga entre o fim de um período e o início do próximo. Exemplo: diurno até 17:30 e noturno a partir de 18:00.
             </div>
           </section>
 
@@ -369,7 +446,7 @@ function RulesDialog({ open, onOpenChange, units, onSaved }: { open: boolean; on
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>Cancelar</Button>
           <Button disabled={saving || rules.isLoading} onClick={save}>{saving ? "Salvando..." : "Salvar regras"}</Button>
         </DialogFooter>
       </DialogContent>
