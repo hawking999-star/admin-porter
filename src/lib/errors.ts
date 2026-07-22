@@ -34,6 +34,10 @@ const RPC_MESSAGES: Record<string, string> = {
   operator_role_invalid: "Cargo do operador inválido.",
   session_policy_invalid: "Política de sessão inválida.",
   unit_not_found_or_inactive: "Condomínio não encontrado ou inativo.",
+  already_reviewed: "Essa playlist já foi decidida. Atualize a lista.",
+  playlist_not_found: "Playlist não encontrada. Atualize a lista e tente novamente.",
+  playlist_not_approved: "A playlist precisa estar aprovada antes de ser importada.",
+  import_already_running: "Esta playlist já está sendo importada.",
   // permissões / genéricos
   forbidden: "Você não tem permissão para executar esta ação.",
   unauthorized: "Sessão expirada. Entre novamente para continuar.",

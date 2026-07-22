@@ -722,11 +722,9 @@ export function MusicasPage() {
       setReason("");
     },
     onError: (err: unknown) => {
-      const raw = err instanceof Error ? err.message : "Erro ao salvar";
-      const msg = raw.includes("already_reviewed")
-        ? "Essa playlist já foi decidida. Atualize a lista."
-        : raw;
-      toast.error("Não foi possível salvar", { description: msg });
+      toast.error("Não foi possível salvar", {
+        description: errorMessage(err, "Erro ao salvar. Atualize a lista e tente novamente."),
+      });
       invalidateMusic();
     },
   });
