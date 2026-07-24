@@ -128,7 +128,7 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
   let query = supabase
     .from("playlists")
     .select(
-      "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_error_acknowledged_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, created_at)",
+      "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_error_acknowledged_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(mode, status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, created_at)",
       { count: "exact" },
     )
     .order("submitted_at", { ascending: false, nullsFirst: false })
@@ -162,8 +162,11 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
   if (error) throw error;
 
   const rows = (data ?? []).map((p: any) => {
-    // pega o job de download mais recente da playlist (se houver)
-    const jobs = Array.isArray(p.download_jobs) ? p.download_jobs : [];
+    // Trocas manuais criam jobs single_track. Uma falha pontual nelas não pode
+    // substituir o resultado nem o selo da importação da playlist inteira.
+    const jobs = Array.isArray(p.download_jobs)
+      ? p.download_jobs.filter((job: any) => job.mode !== "single_track")
+      : [];
     const latest = jobs
       .slice()
       .sort((a: any, b: any) => (a.created_at < b.created_at ? 1 : -1))[0];
