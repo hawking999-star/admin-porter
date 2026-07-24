@@ -158,6 +158,21 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertEqual(set_status.call_args.args[2], "resolved")
         self.assertEqual(set_status.call_args.kwargs["attempts"], 0)
 
+    def test_duplicate_snapshot_item_does_not_repeat_track_id(self):
+        entry = {"_request_item_id": "item-1", "request_position": 1}
+        with patch.object(self.worker.supabase, "table") as table:
+            self.worker.set_request_item_status(
+                "request-1",
+                entry,
+                "duplicate",
+                track_id="track-1",
+                error_message="Faixa já vinculada a esta playlist.",
+            )
+
+        payload = table.return_value.update.call_args.args[0]
+        self.assertEqual(payload["item_status"], "duplicate")
+        self.assertNotIn("track_id", payload)
+
     def test_global_youtube_block_requeues_job_for_automatic_resume(self):
         with (
             patch.object(self.worker, "update_job") as update_job,

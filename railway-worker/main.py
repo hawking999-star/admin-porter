@@ -808,6 +808,11 @@ def claim_request_item(job_id: str, entry: dict) -> dict | None:
 def set_request_item_status(request_id: str | None, entry: dict, status: str, **fields) -> None:
     if not request_id:
         return
+    # O snapshot de um envio guarda uma única referência para cada track. Quando
+    # duas posições do Spotify resolvem para o mesmo vídeo, a segunda permanece
+    # visível como duplicada, mas sem repetir o mesmo track_id no histórico.
+    if status == "duplicate":
+        fields.pop("track_id", None)
     payload = {"item_status": status, "locked_at": None, "updated_at": now_iso(), **fields}
     query = supabase.table("playlist_request_tracks").update(payload)
     if entry.get("_request_item_id"):
