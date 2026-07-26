@@ -75,6 +75,20 @@ begin
     raise exception 'expected partially_completed, got %', v_actual;
   end if;
 
+  -- Resíduos de uma tentativa anterior não podem rebaixar o job mais recente
+  -- depois que ele concluiu todas as faixas.
+  update public.playlist_request_tracks
+     set item_status = 'processing'
+   where id = v_item_failed;
+  update public.download_jobs
+     set status = 'done', total = 2, completed = 2, failed = 0
+   where id = v_job;
+  v_actual := public.playlist_request_general_status(v_request);
+  if v_actual <> 'completed' then
+    raise exception 'expected completed for latest done job with stale items, got %', v_actual;
+  end if;
+
+  update public.playlist_request_tracks set item_status = 'failed' where id = v_item_failed;
   delete from public.playlist_request_tracks where id = v_item_ok;
   update public.download_jobs set status = 'error', completed = 0, failed = 1 where id = v_job;
   v_actual := public.playlist_request_general_status(v_request);

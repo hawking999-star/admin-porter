@@ -229,6 +229,30 @@ function operatorTotals(operator: OperatorMusicLibrary) {
   return { principal, secondary, tracks, failed, processing };
 }
 
+function operatorLibraryUpdatedAt(operator: OperatorMusicLibrary): string {
+  const candidates: unknown[] = [operator.updated_at];
+  for (const playlist of operator.playlists) {
+    candidates.push(
+      playlist.updated_at,
+      playlist.import_finished_at,
+      playlist.latest_job?.updated_at,
+      playlist.latest_job?.finished_at,
+    );
+  }
+
+  let latest = operator.updated_at;
+  let latestTime = Date.parse(latest);
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const candidateTime = Date.parse(candidate);
+    if (Number.isFinite(candidateTime) && (!Number.isFinite(latestTime) || candidateTime > latestTime)) {
+      latest = candidate;
+      latestTime = candidateTime;
+    }
+  }
+  return latest;
+}
+
 const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
   SPOTIFY_PLAYLIST_EMPTY: "A playlist do Spotify não possui músicas disponíveis.",
   PLAYLIST_EMPTY: "A playlist não possui músicas disponíveis.",
@@ -1940,7 +1964,7 @@ function OperatorLibraryCard({
         <MiniMetric label="Principal" value={totals.principal} />
         <MiniMetric label="Secundárias" value={totals.secondary} />
         <MiniMetric label="Músicas" value={totals.tracks} />
-        <MiniMetric label="Atualizado" value={relOrDate(operator.updated_at)} />
+        <MiniMetric label="Atualizado" value={relOrDate(operatorLibraryUpdatedAt(operator))} />
         <MiniMetric label="Status" value={status} tone={totals.failed ? "danger" : totals.processing ? "info" : "default"} />
       </div>
 
