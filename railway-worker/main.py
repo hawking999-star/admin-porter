@@ -1123,6 +1123,9 @@ def download_with_fallback(
                 log(f"    ✓ substituída por {alt['id']} ({(alt.get('title') or '')[:50]})")
                 return mp3, alt["id"], True
             except Exception as exc2:  # noqa: BLE001
+                alt_code, _ = classify_error(exc2)
+                if alt_code in YOUTUBE_CIRCUIT_CODES:
+                    raise
                 log(f"    alt {alt['id']} falhou: {exc2}")
                 continue
         raise exc  # nenhuma alternativa serviu — propaga o erro original (indisponível)

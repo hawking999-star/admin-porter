@@ -376,6 +376,42 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             {video_id},
         )
 
+    def test_global_degradation_from_an_alternative_is_not_swallowed(self):
+        entry = {
+            "id": "abcdefghijk",
+            "title": "Faixa teste",
+            "artist": "Artista teste",
+            "duration": 180,
+        }
+        with (
+            tempfile.TemporaryDirectory() as workdir,
+            patch.object(
+                self.worker,
+                "download_one",
+                side_effect=[
+                    RuntimeError("YOUTUBE_FORMAT_UNAVAILABLE"),
+                    RuntimeError("YOUTUBE_EXTRACTION_DEGRADED"),
+                ],
+            ),
+            patch.object(
+                self.worker,
+                "find_alternatives",
+                return_value=[
+                    {
+                        "id": "lmnopqrstuv",
+                        "title": "Faixa teste alternativa",
+                        "duration": 180,
+                    }
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "YOUTUBE_EXTRACTION_DEGRADED"):
+                self.worker.download_with_fallback(
+                    entry,
+                    workdir,
+                    deadline=self.worker.time.monotonic() + 30,
+                )
+
     def test_one_format_failure_remains_track_scoped(self):
         self.assertFalse(self.worker.record_youtube_format_failure("video-one"))
         code, _message = self.worker.classify_error(

@@ -78,7 +78,7 @@ Você **não precisa programar nada**. Só cliques:
    ```
    railway-worker
    ```
-   (assim o Railway usa o `Dockerfile` daqui — ele já instala ffmpeg e o yt-dlp.)
+   (assim o Railway usa o `Dockerfile` daqui — ele já instala ffmpeg, Deno e o yt-dlp.)
 4. Vá em **Variables** e adicione as 6 chaves acima (mais `SUPABASE_URL`).
    Dá pra colar tudo de uma vez usando o **Raw Editor** e o conteúdo do
    arquivo `.env.example` como modelo.
@@ -134,6 +134,8 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 - `SUPABASE_SERVICE_ROLE_KEY`, R2 e token do resolver existem somente no Worker.
 - `mweb`/`web_safari` usam PO Token; `default`/`android_vr` são fallbacks
   independentes, e cookies só entram depois das tentativas públicas compatíveis.
+- a imagem inclui Deno fixado, runtime recomendado pelo `yt-dlp` para resolver os
+  desafios JavaScript do YouTube e disponibilizar os formatos de áudio completos.
 
 ## Como ele respeita os limites
 
