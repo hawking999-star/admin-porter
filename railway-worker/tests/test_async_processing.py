@@ -117,6 +117,52 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             error_message=None,
         )
 
+    def test_single_track_status_updates_only_processing_duplicate_item(self):
+        select_query = MagicMock()
+        select_query.select.return_value = select_query
+        select_query.eq.return_value = select_query
+        select_query.order.return_value = select_query
+        select_query.execute.return_value = Mock(
+            data=[
+                {
+                    "id": "item-processing",
+                    "item_status": "processing",
+                    "track_id": None,
+                },
+                {
+                    "id": "item-historical",
+                    "item_status": "failed",
+                    "track_id": "track-existing",
+                },
+            ]
+        )
+        update_query = MagicMock()
+        update_query.update.return_value = update_query
+        update_query.eq.return_value = update_query
+        update_query.execute.return_value = Mock(data=[])
+
+        with patch.object(
+            self.worker.supabase,
+            "table",
+            side_effect=[select_query, update_query],
+        ):
+            self.worker.set_request_item_status_by_youtube_id(
+                "request-1",
+                "e_TAAedy0Y4",
+                "completed",
+                track_id="track-existing",
+                error_message=None,
+            )
+
+        payload = update_query.update.call_args.args[0]
+        self.assertEqual(payload["item_status"], "duplicate")
+        self.assertEqual(
+            payload["error_message"],
+            "Faixa já vinculada a esta playlist.",
+        )
+        self.assertNotIn("track_id", payload)
+        update_query.eq.assert_called_once_with("id", "item-processing")
+
     def test_spotify_failure_resumes_from_validated_request_snapshot(self):
         snapshot = [
             {
