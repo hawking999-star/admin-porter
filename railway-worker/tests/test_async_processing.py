@@ -47,6 +47,89 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertEqual(self.worker.TRACK_CONCURRENCY, 2)
         self.assertEqual(self.worker.TRACK_MAX_ATTEMPTS, 2)
 
+    def test_spotify_failure_resumes_from_validated_request_snapshot(self):
+        snapshot = [
+            {
+                "id": "abcdefghijk",
+                "request_position": 1,
+                "title": "Faixa teste",
+            }
+        ]
+        with (
+            patch.object(
+                self.worker,
+                "list_source_entries",
+                side_effect=RuntimeError("SPOTIFY_METADATA_ERROR"),
+            ),
+            patch.object(
+                self.worker,
+                "list_request_snapshot_entries",
+                return_value=snapshot,
+            ) as list_snapshot,
+        ):
+            entries, skipped = self.worker.list_source_entries_resumable(
+                "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+                "request-1",
+                "job-new",
+            )
+
+        self.assertEqual(entries, snapshot)
+        self.assertEqual(skipped, [])
+        list_snapshot.assert_called_once_with("request-1", "job-new")
+
+    def test_request_snapshot_prefers_the_most_complete_previous_job(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.execute.return_value = Mock(
+            data=[
+                {
+                    "download_job_id": "job-new",
+                    "position": 1,
+                    "youtube_video_id": "zzzzzzzzzzz",
+                },
+                {
+                    "download_job_id": "job-recent",
+                    "position": 1,
+                    "youtube_video_id": "yyyyyyyyyyy",
+                    "updated_at": "2026-07-26T09:00:00+00:00",
+                },
+                {
+                    "download_job_id": "job-complete",
+                    "position": 1,
+                    "youtube_video_id": "abcdefghijk",
+                    "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
+                    "title": "Faixa um",
+                    "artists": ["Artista"],
+                    "duration_ms": 180000,
+                    "updated_at": "2026-07-24T09:00:00+00:00",
+                },
+                {
+                    "download_job_id": "job-complete",
+                    "position": 2,
+                    "youtube_video_id": "lmnopqrstuv",
+                    "title": "Faixa dois",
+                    "artists": ["Artista"],
+                    "duration_ms": 190000,
+                    "updated_at": "2026-07-24T09:00:00+00:00",
+                },
+            ]
+        )
+
+        with patch.object(self.worker.supabase, "table", return_value=query):
+            entries = self.worker.list_request_snapshot_entries(
+                "request-1",
+                "job-new",
+            )
+
+        self.assertEqual(
+            [entry["id"] for entry in entries],
+            ["abcdefghijk", "lmnopqrstuv"],
+        )
+        self.assertTrue(
+            all(entry["match_method"] == "playlist_request_snapshot" for entry in entries)
+        )
+
     def test_transient_track_failure_stops_after_two_claims(self):
         entry = {
             "id": "abcdefghijk",

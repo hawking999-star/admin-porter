@@ -752,6 +752,103 @@ def list_source_entries(url: str) -> tuple[list[dict], list[dict]]:
     raise ValueError("INVALID_URL")
 
 
+def list_request_snapshot_entries(
+    playlist_request_id: str | None,
+    current_job_id: str,
+) -> list[dict]:
+    """Recupera o snapshot mais completo de uma tentativa anterior do envio."""
+    if not playlist_request_id:
+        return []
+    result = (
+        supabase.table("playlist_request_tracks")
+        .select(
+            "download_job_id,position,item_status,source_track_id,source_url,"
+            "youtube_url,youtube_video_id,title,artists,album,duration_ms,"
+            "match_confidence,error_message,updated_at"
+        )
+        .eq("playlist_request_id", playlist_request_id)
+        .execute()
+    )
+    snapshots: dict[str, list[dict]] = {}
+    for row in result.data or []:
+        snapshot_job_id = str(row.get("download_job_id") or "")
+        if (
+            not snapshot_job_id
+            or snapshot_job_id == current_job_id
+            or not row.get("youtube_video_id")
+            or row.get("position") is None
+        ):
+            continue
+        snapshots.setdefault(snapshot_job_id, []).append(row)
+    if not snapshots:
+        return []
+    rows = max(
+        snapshots.values(),
+        key=lambda items: (
+            len({int(item["position"]) for item in items}),
+            max(str(item.get("updated_at") or "") for item in items),
+        ),
+    )
+    entries: list[dict] = []
+    for row in sorted(rows, key=lambda item: int(item["position"])):
+        artists = row.get("artists") if isinstance(row.get("artists"), list) else []
+        video_id = str(row["youtube_video_id"])
+        duration_ms = row.get("duration_ms")
+        entries.append(
+            {
+                "id": video_id,
+                "youtube_url": row.get("youtube_url")
+                or f"https://www.youtube.com/watch?v={video_id}",
+                "request_position": int(row["position"]),
+                "spotify_id": row.get("source_track_id"),
+                "spotify_url": row.get("source_url"),
+                "title": sanitize_text(row.get("title") or video_id),
+                "artist": ", ".join(str(artist) for artist in artists if artist) or None,
+                "duration": (
+                    float(duration_ms) / 1000
+                    if isinstance(duration_ms, (int, float))
+                    else None
+                ),
+                "spotify_album": row.get("album"),
+                "spotify_match_confidence": row.get("match_confidence"),
+                "spotify_match_status": (
+                    "review_recommended"
+                    if row.get("item_status") == "review_recommended"
+                    else "resolved"
+                ),
+                "spotify_review_reason": row.get("error_message"),
+                "match_method": "playlist_request_snapshot",
+                "source": "spotify",
+            }
+        )
+    return entries
+
+
+def list_source_entries_resumable(
+    url: str,
+    playlist_request_id: str | None,
+    job_id: str,
+) -> tuple[list[dict], list[dict]]:
+    try:
+        return list_source_entries(url)
+    except Exception as exc:  # noqa: BLE001
+        source = parse_supported_music_url(url).source
+        code, _ = classify_error(exc)
+        if source == "spotify" and code in {
+            "SPOTIFY_METADATA_ERROR",
+            "SPOTIFY_RESOLVE_TIMEOUT",
+            "SPOTIFY_RESOLVER_UNAVAILABLE",
+        }:
+            snapshot = list_request_snapshot_entries(playlist_request_id, job_id)
+            if snapshot:
+                log(
+                    f"  Spotify indisponível [{code}]; retomando snapshot "
+                    f"validado com {len(snapshot)} faixa(s)."
+                )
+                return snapshot, []
+        raise
+
+
 def request_item_status_from_code(code: str | None) -> str:
     return {
         "SPOTIFY_MATCH_NOT_FOUND": "not_found",
@@ -1679,14 +1776,13 @@ def process_job(job: dict):
     url = safe_source.normalized_url
     playlist_request_id = job.get("playlist_request_id")
 
-    # Somente a primeira execução substitui o snapshot ativo. Retomadas preservam
-    # vínculos já concluídos e continuam nos itens ainda pendentes.
-    if int(job.get("attempts") or 1) == 1:
-        supabase.table("playlist_tracks").delete().eq("playlist_id", playlist_id).eq(
-            "added_by_type", "system"
-        ).execute()
-
-    entries, skipped = list_source_entries(url)
+    # Retomadas são estritamente aditivas: vínculos existentes nunca são apagados.
+    # O upsert por playlist/faixa reaproveita o que já estiver no banco/R2.
+    entries, skipped = list_source_entries_resumable(
+        url,
+        playlist_request_id,
+        job_id,
+    )
     remaining_request_seconds(deadline)
     sync_request_items(playlist_request_id, job_id, entries, skipped)
     total = len(entries) + len(skipped)
