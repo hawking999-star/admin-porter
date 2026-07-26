@@ -1,4 +1,5 @@
 begin;
+select plan(1);
 
 do $$
 declare
@@ -6,6 +7,8 @@ declare
   v_operator uuid := gen_random_uuid();
   v_playlist uuid := gen_random_uuid();
   v_request uuid := gen_random_uuid();
+  v_old_job uuid := gen_random_uuid();
+  v_old_item uuid := gen_random_uuid();
   v_job uuid := gen_random_uuid();
   v_item_ok uuid := gen_random_uuid();
   v_item_failed uuid := gen_random_uuid();
@@ -14,8 +17,8 @@ begin
   insert into public.units (id, code, name)
   values (v_unit, 'phase10-status-test', 'Phase 10 Status Test');
 
-  insert into public.operators (id, display_name, unit_id)
-  values (v_operator, 'Operador Phase 10', v_unit);
+  insert into public.operators (id, registered_name, display_name, unit_id)
+  values (v_operator, 'Operador Phase 10', 'Operador Phase 10', v_unit);
 
   insert into public.playlists (
     id, created_by_operator_id, unit_id, name, type, approval_status, source_url
@@ -42,19 +45,39 @@ begin
   if v_actual <> 'approved' then raise exception 'expected approved, got %', v_actual; end if;
 
   insert into public.download_jobs (
+    id, playlist_id, playlist_request_id, source_url, status, created_at
+  ) values (
+    v_old_job, v_playlist, v_request,
+    'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
+    'partial', now() - interval '1 day'
+  );
+  insert into public.playlist_request_tracks (
+    id, playlist_request_id, download_job_id, position, item_status, title
+  ) values (
+    v_old_item, v_request, v_old_job, 99, 'review_recommended',
+    'Revisão de tentativa antiga'
+  );
+
+  insert into public.download_jobs (
     id, playlist_id, playlist_request_id, source_url, status
   ) values (
     v_job, v_playlist, v_request,
-    'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M', 'running'
+    'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M', 'queued'
   );
   update public.playlist_requests set download_job_id = v_job where id = v_request;
+  v_actual := public.playlist_request_general_status(v_request);
+  if v_actual <> 'analyzing' then
+    raise exception 'expected queued retry to remain analyzing, got %', v_actual;
+  end if;
+
+  update public.download_jobs set status = 'running' where id = v_job;
   v_actual := public.playlist_request_general_status(v_request);
   if v_actual <> 'analyzing' then raise exception 'expected analyzing, got %', v_actual; end if;
 
   insert into public.playlist_request_tracks (
-    id, playlist_request_id, position, item_status, title
+    id, playlist_request_id, download_job_id, position, item_status, title
   ) values (
-    v_item_ok, v_request, 1, 'review_recommended', 'Faixa em revisão'
+    v_item_ok, v_request, v_job, 1, 'review_recommended', 'Faixa em revisão'
   );
   v_actual := public.playlist_request_general_status(v_request);
   if v_actual <> 'waiting_review' then raise exception 'expected waiting_review, got %', v_actual; end if;
@@ -65,15 +88,26 @@ begin
 
   update public.playlist_request_tracks set item_status = 'completed' where id = v_item_ok;
   insert into public.playlist_request_tracks (
-    id, playlist_request_id, position, item_status, title
+    id, playlist_request_id, download_job_id, position, item_status, title
   ) values (
-    v_item_failed, v_request, 2, 'failed', 'Faixa com falha'
+    v_item_failed, v_request, v_job, 2, 'failed', 'Faixa com falha'
   );
   update public.download_jobs set status = 'partial', completed = 1, failed = 1 where id = v_job;
   v_actual := public.playlist_request_general_status(v_request);
   if v_actual <> 'partially_completed' then
     raise exception 'expected partially_completed, got %', v_actual;
   end if;
+
+  update public.playlist_request_tracks
+     set item_status = 'review_recommended'
+   where id = v_item_failed;
+  v_actual := public.playlist_request_general_status(v_request);
+  if v_actual <> 'waiting_review' then
+    raise exception 'expected waiting_review for partial job with review, got %', v_actual;
+  end if;
+  update public.playlist_request_tracks
+     set item_status = 'failed'
+   where id = v_item_failed;
 
   -- Resíduos de uma tentativa anterior não podem rebaixar o job mais recente
   -- depois que ele concluiu todas as faixas.
@@ -102,4 +136,6 @@ begin
 end;
 $$;
 
+select pass('status geral diferencia análise, revisão e conclusão');
+select * from finish();
 rollback;

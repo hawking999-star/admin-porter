@@ -5,7 +5,7 @@ fila do Supabase. Quando você **aprova** um link do YouTube ou Spotify no admin
 coloca um pedido na fila (`download_jobs`) e este worker faz o resto sozinho:
 
 1. Lê o link do YouTube ou os metadados do Spotify (até **170** faixas).
-2. Para Spotify, usa o spotDL apenas para localizar a faixa correspondente no YouTube.
+2. Para Spotify, usa o cliente leve SpotipyFree apenas para ler metadados atuais.
 3. Encaminha a URL canônica resolvida para o mesmo downloader do YouTube usado por links diretos.
 4. Baixa cada música do YouTube em mp3, garantindo **no máximo 15 MB** por faixa.
 5. Sobe cada arquivo pro **Cloudflare R2**.
@@ -115,9 +115,10 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 | `STALE_JOB_CHECK_SECONDS` | 60 | Intervalo da verificação de jobs abandonados |
 | `GLOBAL_FAILURE_ABORT_THRESHOLD` | 3 | Pausa após vídeos distintos falharem sem nenhum download bem-sucedido |
 | `YOUTUBE_CIRCUIT_OPEN_SECONDS` | 900 | Pausa a fila após bloqueio global sem consumir novas tentativas por faixa |
-| `SPOTDL_RESOLVE_TIMEOUT_SECONDS` | 600 | Tempo para ler Spotify e localizar as faixas no YouTube |
+| `SPOTIFY_METADATA_TIMEOUT_SECONDS` | 600 | Tempo máximo para ler os metadados atuais do Spotify |
+| `SPOTIFY_SEARCH_LIMIT` | 5 | Candidatos do YouTube comparados para cada faixa do Spotify |
 | `REQUEST_TIMEOUT_SECONDS` | 3600 | Tempo máximo da solicitação inteira |
-| `SPOTIFY_RESOLVER_URL` | vazio | URL de um resolver interno separado; vazio usa spotDL neste worker Docker |
+| `SPOTIFY_RESOLVER_URL` | vazio | URL de um resolver interno separado; vazio usa SpotipyFree neste worker Docker |
 | `SPOTIFY_RESOLVER_TOKEN` | vazio | Token secreto do resolver interno; obrigatório somente com a URL preenchida |
 | `SPOTIFY_RESOLVER_ALLOW_PRIVATE` | false | Permite endpoint privado apenas quando explicitamente necessário |
 | `POT_PROVIDER_BASE_URL` | vazio | URL privada do provedor automático de PO Token; cookies ficam como fallback |
@@ -138,12 +139,14 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
   desafios JavaScript do YouTube e disponibilizar os formatos de áudio completos.
 - uma retomada é aditiva e, se a leitura do Spotify falhar, reutiliza o snapshot
   validado do mesmo envio; vínculos existentes em `playlist_tracks` não são apagados.
+- cada novo envio exige leitura fresca do Spotify; snapshots de outras solicitações
+  nunca são usados. Falhas transitórias aguardam 1 e 5 minutos antes da terceira tentativa.
 
 ## Como ele respeita os limites
 
 - **170 faixas:** processa no máximo as primeiras 170; as demais são contabilizadas no relatório.
 - **960 segundos/faixa:** descarta faixas sem duração confirmada ou acima desse teto.
-- **Spotify sem áudio:** o spotDL fornece metadados e a correspondência; todo MP3 continua vindo do YouTube.
+- **Spotify sem áudio:** SpotipyFree fornece somente metadados; busca e MP3 continuam vindo do YouTube.
 - **Um só importador:** Spotify e YouTube usam a mesma validação de duração, conversão MP3,
   deduplicação, upload R2, cadastro em `tracks` e vínculo em `playlist_tracks`.
 - **Confiança não bloqueia:** uma correspondência encontrada não é rejeitada apenas por pontuação automática.

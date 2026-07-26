@@ -220,13 +220,31 @@ function playlistLibraryError(p: MusicLibraryPlaylist): string | null {
   return p.error_message?.trim() || friendlyImportMessage(code, jobMessage);
 }
 
+function latestLibraryJobStatus(p: MusicLibraryPlaylist): string | null {
+  return typeof p.latest_job?.status === "string" ? p.latest_job.status : null;
+}
+
+function playlistRefreshActive(p: MusicLibraryPlaylist): boolean {
+  const status = latestLibraryJobStatus(p);
+  return p.import_status === "processing" || status === "queued" || status === "running";
+}
+
+function playlistRefreshFailed(p: MusicLibraryPlaylist): boolean {
+  const status = latestLibraryJobStatus(p);
+  return (status === "partial" || status === "error") && (p.track_count ?? p.tracks.length) > 0;
+}
+
 function operatorTotals(operator: OperatorMusicLibrary) {
   const principal = operator.playlists.filter((p) => p.type === "principal").length;
   const secondary = operator.playlists.filter((p) => p.type === "secondary").length;
   const tracks = operator.playlists.reduce((sum, p) => sum + (p.track_count ?? p.tracks.length), 0);
-  const failed = operator.playlists.filter((p) => p.import_status === "failed").length;
-  const processing = operator.playlists.filter((p) => p.import_status === "processing").length;
-  return { principal, secondary, tracks, failed, processing };
+  const refreshFailed = operator.playlists.filter(playlistRefreshFailed).length;
+  const hardFailed = operator.playlists.filter(
+    (p) => p.import_status === "failed" && !playlistRefreshFailed(p),
+  ).length;
+  const failed = refreshFailed + hardFailed;
+  const processing = operator.playlists.filter(playlistRefreshActive).length;
+  return { principal, secondary, tracks, failed, hardFailed, refreshFailed, processing };
 }
 
 function operatorLibraryUpdatedAt(operator: OperatorMusicLibrary): string {
@@ -752,7 +770,7 @@ export function MusicasPage() {
     refetchInterval: (query) => {
       const rows = query.state.data?.rows;
       const active = rows?.some((operator) =>
-        operator.playlists.some((p) => p.import_status === "processing"),
+        operator.playlists.some(playlistRefreshActive),
       );
       return active ? 5000 : false;
     },
@@ -1930,8 +1948,10 @@ function OperatorLibraryCard({
 }) {
   const totals = operatorTotals(operator);
   const status = totals.processing
-    ? "Importando"
-    : totals.failed
+    ? "Atualizando"
+    : totals.refreshFailed
+      ? "Biblioteca ok · atualização falhou"
+      : totals.hardFailed
       ? "Com falhas"
       : operator.playlists.length
         ? "Biblioteca ok"
@@ -1965,7 +1985,19 @@ function OperatorLibraryCard({
         <MiniMetric label="Secundárias" value={totals.secondary} />
         <MiniMetric label="Músicas" value={totals.tracks} />
         <MiniMetric label="Atualizado" value={relOrDate(operatorLibraryUpdatedAt(operator))} />
-        <MiniMetric label="Status" value={status} tone={totals.failed ? "danger" : totals.processing ? "info" : "default"} />
+        <MiniMetric
+          label="Status"
+          value={status}
+          tone={
+            totals.hardFailed
+              ? "danger"
+              : totals.refreshFailed
+                ? "warning"
+                : totals.processing
+                  ? "info"
+                  : "default"
+          }
+        />
       </div>
 
       <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto md:flex-col">
@@ -1989,7 +2021,7 @@ function MiniMetric({
 }: {
   label: string;
   value: number | string;
-  tone?: "default" | "danger" | "info";
+  tone?: "default" | "danger" | "warning" | "info";
 }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2">
@@ -1998,6 +2030,7 @@ function MiniMetric({
         className={cn(
           "truncate text-sm font-semibold",
           tone === "danger" && "text-destructive",
+          tone === "warning" && "text-warning-foreground",
           tone === "info" && "text-primary",
         )}
       >
@@ -2144,7 +2177,10 @@ function OperatorLibraryPanel({
 }
 
 function ImportStatusText({ playlist }: { playlist: MusicLibraryPlaylist }) {
-  if (playlist.import_status === "processing") return <span className="text-primary">Importando</span>;
+  if (playlistRefreshActive(playlist)) return <span className="text-primary">Atualizando</span>;
+  if (playlistRefreshFailed(playlist)) {
+    return <span className="text-warning-foreground">Biblioteca ok · atualização falhou</span>;
+  }
   if (playlist.import_status === "failed") return <span className="text-destructive">Importação falhou</span>;
   if (playlist.import_status === "success") return <span className="text-success-foreground">Importada</span>;
   return <span>Importação não iniciada</span>;
