@@ -522,7 +522,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                   — {friendlyImportMessage(t.code, t.reason) || "Motivo não informado."}
                 </span>
               </span>
-              {permanent && (
+              {t.youtube_id && (
                 <span className="ml-1 flex shrink-0 items-start gap-1">
                   <button
                     type="button"
@@ -536,15 +536,15 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
                   </button>
                   <button
                     type="button"
-                    disabled={dismiss.isPending || !t.youtube_id}
+                    disabled={dismiss.isPending}
                     onClick={(event) => {
                       event.stopPropagation();
-                      if (t.youtube_id) dismiss.mutate(t.youtube_id);
+                      dismiss.mutate(t.youtube_id!);
                     }}
                     className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
-                    title="Dispensar: tira a faixa do relatório"
+                    title="Remover este aviso do relatório"
                   >
-                    OK
+                    Remover aviso
                   </button>
                 </span>
               )}
@@ -3111,8 +3111,14 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 {item.youtube_url && <Button size="sm" variant="outline" asChild><a href={item.youtube_url} target="_blank" rel="noreferrer noopener"><ExternalLink className="h-3.5 w-3.5" /> YouTube</a></Button>}
-                <Button size="sm" variant="outline" onClick={() => { setReplacement(item); setYoutubeUrl(item.youtube_url ?? ""); }} disabled={itemMutation.isPending}>
-                  <Pencil className="h-3.5 w-3.5" /> Substituir resultado
+                <Button
+                  size="sm"
+                  variant={item.status === "failed" || item.status === "not_found" ? "default" : "outline"}
+                  onClick={() => { setReplacement(item); setYoutubeUrl(item.youtube_url ?? ""); }}
+                  disabled={itemMutation.isPending}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  {item.youtube_url ? "Substituir resultado" : "Escolher música no YouTube"}
                 </Button>
                 {review ? (
                   <Button
@@ -3122,11 +3128,11 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
                   >
                     <Check className="h-3.5 w-3.5" /> Usar esta música
                   </Button>
-                ) : (
+                ) : item.youtube_url ? (
                   <Button size="sm" variant="outline" onClick={() => itemMutation.mutate({ action: "retry", item })} disabled={!canUseCurrentResult}>
                     <RefreshCw className="h-3.5 w-3.5" /> Tentar novamente
                   </Button>
-                )}
+                ) : null}
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => itemMutation.mutate({ action: "ignore", item })} disabled={itemMutation.isPending}>
                   <X className="h-3.5 w-3.5" /> Ignorar faixa
                 </Button>
