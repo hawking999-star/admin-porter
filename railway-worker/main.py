@@ -1197,6 +1197,57 @@ def set_request_item_status_by_youtube_id(request_id: str | None, youtube_id: st
     ).execute()
 
 
+def reconcile_playlist_job_after_manual_item(request_id: str | None) -> None:
+    """Conclui o job principal quando a remediação resolveu todos os seus itens."""
+    if not request_id:
+        return
+    jobs = (
+        supabase.table("download_jobs")
+        .select("id,mode,status,created_at")
+        .eq("playlist_request_id", request_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    playlist_job = next(
+        (
+            job
+            for job in (jobs.data or [])
+            if (job.get("mode") or "playlist") == "playlist"
+        ),
+        None,
+    )
+    if not playlist_job:
+        return
+
+    items = (
+        supabase.table("playlist_request_tracks")
+        .select("item_status")
+        .eq("playlist_request_id", request_id)
+        .eq("download_job_id", playlist_job["id"])
+        .execute()
+    )
+    statuses = [row.get("item_status") for row in (items.data or [])]
+    if not statuses or any(
+        item_status not in ("completed", "duplicate")
+        for item_status in statuses
+    ):
+        return
+
+    update_job(
+        playlist_job["id"],
+        status="done",
+        total=len(statuses),
+        completed=len(statuses),
+        failed=0,
+        finished_at=now_iso(),
+        error=None,
+        error_code=None,
+        error_message=None,
+        error_details=None,
+        last_error_at=None,
+    )
+
+
 @dataclass(frozen=True)
 class YoutubeDownloadStrategy:
     client: str
@@ -1893,6 +1944,7 @@ def process_single_track_job(job: dict, url: str):
             set_request_item_status_by_youtube_id(
                 playlist_request_id, used_vid, "completed", track_id=track_id, error_message=None
             )
+            reconcile_playlist_job_after_manual_item(playlist_request_id)
             log(f"Job {job_id} — faixa trocada com sucesso ({entry['title'][:60]})")
     except Exception as exc:  # noqa: BLE001
         code, friendly = classify_error(exc)

@@ -95,6 +95,10 @@ class AsyncTrackProcessingTests(unittest.TestCase):
                 self.worker,
                 "set_request_item_status_by_youtube_id",
             ) as set_item_status,
+            patch.object(
+                self.worker,
+                "reconcile_playlist_job_after_manual_item",
+            ) as reconcile_job,
         ):
             self.worker.process_single_track_job(
                 {
@@ -116,6 +120,7 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             track_id="track-existing",
             error_message=None,
         )
+        reconcile_job.assert_called_once_with("request-1")
 
     def test_single_track_status_updates_only_processing_duplicate_item(self):
         select_query = MagicMock()
@@ -162,6 +167,53 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         )
         self.assertNotIn("track_id", payload)
         update_query.eq.assert_called_once_with("id", "item-processing")
+
+    def test_manual_retry_reconciles_fully_resolved_playlist_job(self):
+        jobs_query = MagicMock()
+        jobs_query.select.return_value = jobs_query
+        jobs_query.eq.return_value = jobs_query
+        jobs_query.order.return_value = jobs_query
+        jobs_query.execute.return_value = Mock(
+            data=[
+                {
+                    "id": "single-job",
+                    "mode": "single_track",
+                    "status": "done",
+                },
+                {
+                    "id": "playlist-job",
+                    "mode": None,
+                    "status": "partial",
+                },
+            ]
+        )
+        items_query = MagicMock()
+        items_query.select.return_value = items_query
+        items_query.eq.return_value = items_query
+        items_query.execute.return_value = Mock(
+            data=[
+                {"item_status": "duplicate"},
+                {"item_status": "completed"},
+            ]
+        )
+
+        with (
+            patch.object(
+                self.worker.supabase,
+                "table",
+                side_effect=[jobs_query, items_query],
+            ),
+            patch.object(self.worker, "update_job") as update_job,
+        ):
+            self.worker.reconcile_playlist_job_after_manual_item("request-1")
+
+        update_job.assert_called_once()
+        self.assertEqual(update_job.call_args.args[0], "playlist-job")
+        self.assertEqual(update_job.call_args.kwargs["status"], "done")
+        self.assertEqual(update_job.call_args.kwargs["total"], 2)
+        self.assertEqual(update_job.call_args.kwargs["completed"], 2)
+        self.assertEqual(update_job.call_args.kwargs["failed"], 0)
+        self.assertIsNone(update_job.call_args.kwargs["error_code"])
 
     def test_spotify_failure_resumes_from_validated_request_snapshot(self):
         snapshot = [
