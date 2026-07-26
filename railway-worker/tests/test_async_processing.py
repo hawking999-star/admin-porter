@@ -71,11 +71,17 @@ class AsyncTrackProcessingTests(unittest.TestCase):
                 "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
                 "request-1",
                 "job-new",
+                "playlist-1",
             )
 
         self.assertEqual(entries, snapshot)
         self.assertEqual(skipped, [])
-        list_snapshot.assert_called_once_with("request-1", "job-new")
+        list_snapshot.assert_called_once_with(
+            "request-1",
+            "job-new",
+            "playlist-1",
+            "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+        )
 
     def test_request_snapshot_prefers_the_most_complete_previous_job(self):
         query = Mock()
@@ -128,6 +134,60 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         )
         self.assertTrue(
             all(entry["match_method"] == "playlist_request_snapshot" for entry in entries)
+        )
+
+    def test_request_snapshot_falls_back_to_previous_equivalent_request(self):
+        current_tracks = Mock()
+        current_tracks.select.return_value = current_tracks
+        current_tracks.eq.return_value = current_tracks
+        current_tracks.execute.return_value = Mock(data=[])
+
+        previous_requests = Mock()
+        previous_requests.select.return_value = previous_requests
+        previous_requests.eq.return_value = previous_requests
+        previous_requests.neq.return_value = previous_requests
+        previous_requests.order.return_value = previous_requests
+        previous_requests.limit.return_value = previous_requests
+        previous_requests.execute.return_value = Mock(data=[{"id": "request-old"}])
+
+        previous_tracks = Mock()
+        previous_tracks.select.return_value = previous_tracks
+        previous_tracks.in_.return_value = previous_tracks
+        previous_tracks.execute.return_value = Mock(
+            data=[
+                {
+                    "download_job_id": "job-old",
+                    "position": 1,
+                    "youtube_video_id": "abcdefghijk",
+                    "title": "Faixa preservada",
+                    "artists": ["Artista"],
+                    "duration_ms": 180000,
+                    "updated_at": "2026-07-26T09:00:00+00:00",
+                }
+            ]
+        )
+
+        with patch.object(
+            self.worker.supabase,
+            "table",
+            side_effect=[current_tracks, previous_requests, previous_tracks],
+        ):
+            entries = self.worker.list_request_snapshot_entries(
+                "request-new",
+                "job-new",
+                "playlist-1",
+                "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+            )
+
+        self.assertEqual([entry["id"] for entry in entries], ["abcdefghijk"])
+        previous_requests.eq.assert_any_call("playlist_id", "playlist-1")
+        previous_requests.eq.assert_any_call(
+            "source_url",
+            "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+        )
+        previous_tracks.in_.assert_called_once_with(
+            "playlist_request_id",
+            ["request-old"],
         )
 
     def test_transient_track_failure_stops_after_two_claims(self):
