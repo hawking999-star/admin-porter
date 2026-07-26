@@ -1161,10 +1161,40 @@ def set_request_item_status_by_youtube_id(request_id: str | None, youtube_id: st
     """Atualiza uma troca manual, que não possui a posição da lista original."""
     if not request_id or not youtube_id:
         return
+    matches = (
+        supabase.table("playlist_request_tracks")
+        .select("id,item_status,track_id,updated_at")
+        .eq("playlist_request_id", request_id)
+        .eq("youtube_video_id", youtube_id)
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    rows = matches.data or []
+    target = next(
+        (row for row in rows if row.get("item_status") == "processing"),
+        rows[0] if rows else None,
+    )
+    if not target:
+        return
+
     payload = {"item_status": status, "updated_at": now_iso(), **fields}
+    track_id = payload.get("track_id")
+    represented_elsewhere = bool(
+        track_id
+        and any(
+            row.get("id") != target.get("id") and row.get("track_id") == track_id
+            for row in rows
+        )
+    )
+    if represented_elsewhere:
+        payload.pop("track_id", None)
+        if status == "completed":
+            payload["item_status"] = "duplicate"
+            payload["error_message"] = "Faixa já vinculada a esta playlist."
+
     supabase.table("playlist_request_tracks").update(payload).eq(
-        "playlist_request_id", request_id
-    ).eq("youtube_video_id", youtube_id).execute()
+        "id", target["id"]
+    ).execute()
 
 
 @dataclass(frozen=True)
