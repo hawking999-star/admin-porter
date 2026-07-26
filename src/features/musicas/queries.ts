@@ -396,6 +396,23 @@ export async function managePlaylistRequestItem(
   if (error) throw error;
 }
 
+export type AcceptPlaylistRequestItemsResult = {
+  queued: number;
+  job_ids: string[];
+};
+
+export async function acceptPlaylistRequestItems(
+  requestId: string,
+  itemIds: string[],
+): Promise<AcceptPlaylistRequestItemsResult> {
+  const { data, error } = await supabase.rpc("admin_accept_playlist_request_items", {
+    p_request_id: requestId,
+    p_item_ids: itemIds,
+  });
+  if (error) throw error;
+  return (data as AcceptPlaylistRequestItemsResult | null) ?? { queued: 0, job_ids: [] };
+}
+
 /** Enfileira a reimportação de UMA faixa (troca manual por outra URL do YouTube). */
 export async function enqueueTrackReplacement(
   playlistId: string,
