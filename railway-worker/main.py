@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -71,7 +72,10 @@ TRACK_CONCURRENCY = min(max(int(env("TRACK_CONCURRENCY", "2")), 1), 5)
 TRACK_MAX_ATTEMPTS = min(max(int(env("TRACK_MAX_ATTEMPTS", "2")), 1), 2)
 STALE_JOB_SECONDS = int(env("STALE_JOB_SECONDS", "1800"))
 STALE_JOB_CHECK_SECONDS = int(env("STALE_JOB_CHECK_SECONDS", "60"))
-GLOBAL_FAILURE_ABORT_THRESHOLD = int(env("GLOBAL_FAILURE_ABORT_THRESHOLD", "3"))
+GLOBAL_FAILURE_ABORT_THRESHOLD = min(
+    max(int(env("GLOBAL_FAILURE_ABORT_THRESHOLD", "3")), 2),
+    10,
+)
 YOUTUBE_CIRCUIT_OPEN_SECONDS = min(
     max(int(env("YOUTUBE_CIRCUIT_OPEN_SECONDS", "900")), 60),
     3600,
@@ -94,14 +98,32 @@ POT_PROVIDER_BASE_URL = env("POT_PROVIDER_BASE_URL", "").rstrip("/")
 # Ordem dos "player clients" do YouTube que o yt-dlp tenta ao baixar. Alguns
 # clients ficam bloqueados de tempos em tempos; tentar vários em cascata aumenta
 # muito a chance de sucesso. Dá para mudar via env sem alterar o código.
-YT_PLAYER_CLIENTS = [
+_CONFIGURED_YT_PLAYER_CLIENTS = [
     c.strip()
     for c in env(
         "YT_PLAYER_CLIENTS",
-        "mweb,web_safari,default" if POT_PROVIDER_BASE_URL else "default,web_safari,tv,ios,mweb,android,web",
+        "mweb,default,android_vr,web_safari"
+        if POT_PROVIDER_BASE_URL
+        else "default,android_vr,mweb,web_safari,tv,ios,android,web",
     ).split(",")
     if c.strip()
 ]
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+# Mesmo que o Railway ainda tenha a ordem antiga gravada como variável, os dois
+# fallbacks independentes permanecem garantidos e antes do web_safari.
+YT_PLAYER_CLIENTS = _ordered_unique(
+    (
+        ["mweb", "default", "android_vr", "web_safari"]
+        if POT_PROVIDER_BASE_URL
+        else ["default", "android_vr", "mweb", "web_safari"]
+    )
+    + _CONFIGURED_YT_PLAYER_CLIENTS
+)
 # Substituição automática: quando uma faixa é INDISPONÍVEL de forma permanente
 # (geo-bloqueio, sem formato, removida), procurar outra versão da mesma música.
 ENABLE_AUTO_SUBSTITUTE = env("ENABLE_AUTO_SUBSTITUTE", "true").lower() in ("1", "true", "yes", "on")
@@ -124,6 +146,7 @@ JOB_ABORT_CODES = {
     "YOUTUBE_COOKIES_MISSING",
     "YOUTUBE_COOKIES_INVALID",
     "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
+    "YOUTUBE_EXTRACTION_DEGRADED",
     "WORKER_ENV_MISSING",
     "SUPABASE_PERMISSION_DENIED",
     "SUPABASE_ERROR",
@@ -146,6 +169,7 @@ YOUTUBE_CIRCUIT_CODES = {
     "YOUTUBE_COOKIES_MISSING",
     "YOUTUBE_COOKIES_INVALID",
     "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
+    "YOUTUBE_EXTRACTION_DEGRADED",
 }
 # Dos permanentes, quais vale tentar substituir por outra versão (mesma música).
 SUBSTITUTABLE_CODES = {
@@ -188,6 +212,7 @@ SECRET_VALUES = (
     R2_SECRET_ACCESS_KEY,
     env("SPOTIFY_RESOLVER_TOKEN", ""),
     YOUTUBE_COOKIES,
+    POT_PROVIDER_BASE_URL,
 )
 
 s3 = boto3.client(
@@ -286,6 +311,29 @@ def heartbeat_loop() -> None:
 _YOUTUBE_CIRCUIT_LOCK = threading.Lock()
 _YOUTUBE_CIRCUIT_OPEN_UNTIL = 0.0
 _YOUTUBE_CIRCUIT_REASON: str | None = None
+_YOUTUBE_FORMAT_FAILURE_LOCK = threading.Lock()
+_YOUTUBE_FORMAT_FAILURE_IDS: set[str] = set()
+
+
+def record_youtube_format_failure(video_id: str) -> bool:
+    """Retorna True quando vídeos distintos comprovam degradação do ambiente."""
+    if not video_id:
+        return False
+    with _YOUTUBE_FORMAT_FAILURE_LOCK:
+        _YOUTUBE_FORMAT_FAILURE_IDS.add(video_id)
+        failure_count = len(_YOUTUBE_FORMAT_FAILURE_IDS)
+    if failure_count >= GLOBAL_FAILURE_ABORT_THRESHOLD:
+        log(
+            "Falha global de formatos detectada: "
+            f"{failure_count} vídeo(s) distinto(s) sem um download bem-sucedido."
+        )
+        return True
+    return False
+
+
+def reset_youtube_format_failures() -> None:
+    with _YOUTUBE_FORMAT_FAILURE_LOCK:
+        _YOUTUBE_FORMAT_FAILURE_IDS.clear()
 
 
 def open_youtube_circuit(reason: str) -> None:
@@ -314,6 +362,7 @@ def close_youtube_circuit() -> None:
     with _YOUTUBE_CIRCUIT_LOCK:
         _YOUTUBE_CIRCUIT_OPEN_UNTIL = 0.0
         _YOUTUBE_CIRCUIT_REASON = None
+    reset_youtube_format_failures()
 
 
 def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str]:
@@ -334,6 +383,16 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return (
             "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
             "O importador do YouTube está se recuperando automaticamente.",
+        )
+    if "YOUTUBE_EXTRACTION_DEGRADED" in raw:
+        return (
+            "YOUTUBE_EXTRACTION_DEGRADED",
+            "O importador do YouTube detectou uma falha global e vai retomar automaticamente.",
+        )
+    if "YOUTUBE_FORMAT_UNAVAILABLE" in raw:
+        return (
+            "YOUTUBE_FORMAT_UNAVAILABLE",
+            "Falha no YouTube: nenhum formato de áudio disponível para download no ambiente do importador.",
         )
     if "TRACK_DURATION_LIMIT_EXCEEDED" in raw:
         return "TRACK_DURATION_LIMIT_EXCEEDED", "A música ultrapassa a duração máxima de 16 minutos."
@@ -833,59 +892,69 @@ def set_request_item_status_by_youtube_id(request_id: str | None, youtube_id: st
     ).eq("youtube_video_id", youtube_id).execute()
 
 
-def download_one(entry: dict, workdir: str, *, deadline: float | None = None) -> str:
-    """Baixa uma faixa como mp3 (bitrate fixo AUDIO_BITRATE) e devolve o caminho.
+@dataclass(frozen=True)
+class YoutubeDownloadStrategy:
+    client: str
+    use_pot_provider: bool = False
+    use_cookie: bool = False
 
-    Tenta cada "player client" do YouTube em cascata (e, se houver cookies, com e
-    sem cookie). O YouTube bloqueia clients de forma intermitente, então insistir
-    em outro client costuma resolver o "playlist privada ou indisponível" quando o
-    vídeo é, na verdade, público."""
+    @property
+    def label(self) -> str:
+        return (
+            f"client={self.client} "
+            f"pot={'on' if self.use_pot_provider else 'off'} "
+            f"cookie={'on' if self.use_cookie else 'off'}"
+        )
+
+
+_POT_COMPATIBLE_CLIENTS = {"mweb", "web_safari"}
+_COOKIE_INCOMPATIBLE_CLIENTS = {
+    "android",
+    "android_vr",
+    "ios",
+    "visionos",
+    "tv",
+    "tv_simply",
+}
+
+
+def youtube_download_strategies() -> list[YoutubeDownloadStrategy]:
+    """Monta fallbacks públicos primeiro e cookies apenas no fim."""
+    strategies = [
+        YoutubeDownloadStrategy(
+            client=client,
+            use_pot_provider=bool(
+                POT_PROVIDER_BASE_URL and client in _POT_COMPATIBLE_CLIENTS
+            ),
+        )
+        for client in YT_PLAYER_CLIENTS
+    ]
+    if YOUTUBE_COOKIEFILE:
+        strategies.extend(
+            YoutubeDownloadStrategy(
+                client=client,
+                use_pot_provider=bool(
+                    POT_PROVIDER_BASE_URL and client in _POT_COMPATIBLE_CLIENTS
+                ),
+                use_cookie=True,
+            )
+            for client in YT_PLAYER_CLIENTS
+            if client not in _COOKIE_INCOMPATIBLE_CLIENTS
+        )
+    return strategies
+
+
+def download_one(entry: dict, workdir: str, *, deadline: float | None = None) -> str:
+    """Baixa uma faixa com fallbacks independentes de client, PO Token e cookie."""
     vid = entry["id"]
     kbps = AUDIO_BITRATE
     out_tmpl = os.path.join(workdir, f"{vid}.%(ext)s")
+    safe_video = require_youtube_video_url(
+        entry.get("youtube_url") or f"https://www.youtube.com/watch?v={vid}"
+    )
+    errors: list[tuple[YoutubeDownloadStrategy, Exception]] = []
 
-    def build_opts(client: str, use_cookie: bool) -> dict:
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "format": "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
-            "outtmpl": out_tmpl,
-            "max_filesize": MAX_FILE_BYTES * 4,  # corta downloads absurdos na fonte
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": str(kbps),
-                }
-            ],
-        }
-        # "default" = NÃO força player_client: deixa o yt-dlp fazer a extração nativa
-        # (escolhe os clients certos sozinho, com fallback e PO token). É o que mais
-        # resolve o "Requested format is not available". Só força um client específico
-        # quando pedido explicitamente.
-        if client and client.lower() != "default":
-            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
-        # PO token (bgutil): só entra se o provedor estiver configurado.
-        if POT_PROVIDER_BASE_URL:
-            ea = opts.setdefault("extractor_args", {})
-            ea["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_BASE_URL]}
-        if use_cookie and YOUTUBE_COOKIEFILE:
-            opts["cookiefile"] = YOUTUBE_COOKIEFILE
-        return opts
-
-    # Para conteúdo público, PO Token sem conta é o caminho principal. Cookies
-    # são fallback apenas para conteúdo que realmente exige sessão.
-    if POT_PROVIDER_BASE_URL and YOUTUBE_COOKIEFILE:
-        cookie_modes = [False, True]
-    elif YOUTUBE_COOKIEFILE:
-        cookie_modes = [True, False]
-    else:
-        cookie_modes = [False]
-    attempts = [(client, cookie) for cookie in cookie_modes for client in YT_PLAYER_CLIENTS]
-
-    last_exc: Exception | None = None
-    for client, use_cookie in attempts:
+    for strategy in youtube_download_strategies():
         # Limpa restos de tentativas anteriores para não confundir a checagem do mp3.
         for leftover in (f"{vid}.mp3", f"{vid}.webm", f"{vid}.m4a", f"{vid}.part"):
             p = os.path.join(workdir, leftover)
@@ -903,20 +972,24 @@ def download_one(entry: dict, workdir: str, *, deadline: float | None = None) ->
                 "--socket-timeout", str(YTDLP_NETWORK_TIMEOUT_SECONDS),
                 "--retries", "2", "--fragment-retries", "2",
             ]
-            if client and client.lower() != "default":
-                command.extend(["--extractor-args", f"youtube:player_client={client}"])
-            if POT_PROVIDER_BASE_URL:
+            if strategy.client.lower() != "default":
+                command.extend(
+                    ["--extractor-args", f"youtube:player_client={strategy.client}"]
+                )
+            if strategy.use_pot_provider:
                 command.extend(["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_PROVIDER_BASE_URL}"])
-            if use_cookie and YOUTUBE_COOKIEFILE:
+            if strategy.use_cookie:
                 command.extend(["--cookies", YOUTUBE_COOKIEFILE])
-            safe_video = require_youtube_video_url(
-                entry.get("youtube_url") or f"https://www.youtube.com/watch?v={vid}"
-            )
             command.append(safe_video.normalized_url)
+            log(f"  > {vid} tentando {strategy.label}")
             run_ytdlp_command(command, deadline=deadline)
             mp3 = os.path.join(workdir, f"{vid}.mp3")
             if not os.path.exists(mp3):
-                last_exc = FileNotFoundError(f"yt-dlp não gerou o mp3 para {vid} (client={client})")
+                missing_mp3 = FileNotFoundError(
+                    f"yt-dlp não gerou o mp3 para {vid} ({strategy.label})"
+                )
+                errors.append((strategy, missing_mp3))
+                log(f"  ! {vid} {strategy.label}: {missing_mp3}")
                 continue
             size = os.path.getsize(mp3)
             if size > MAX_FILE_BYTES:
@@ -931,12 +1004,45 @@ def download_one(entry: dict, workdir: str, *, deadline: float | None = None) ->
         except ValueError:
             raise  # limites internos (tamanho) — propaga sem tentar outro client
         except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            log(f"  ! {vid} client={client} cookie={use_cookie}: {exc}")
+            errors.append((strategy, exc))
+            safe_error = redact_sensitive(
+                exc,
+                SECRET_VALUES + (POT_PROVIDER_BASE_URL,),
+            )
+            log(f"  ! {vid} {strategy.label}: {safe_error}")
             continue
 
+    last_exc = errors[-1][1] if errors else RuntimeError("nenhuma estratégia disponível")
+    independent_errors = [
+        exc
+        for strategy, exc in errors
+        if strategy.client in {"default", "android_vr"}
+        and not strategy.use_pot_provider
+        and not strategy.use_cookie
+    ]
+    format_exc = (
+        independent_errors[-1]
+        if independent_errors
+        and all(
+            classify_error(exc)[0] == "YOUTUBE_FORMAT_UNAVAILABLE"
+            for exc in independent_errors
+        )
+        else None
+    )
+    if format_exc is not None:
+        if record_youtube_format_failure(vid):
+            raise RuntimeError(
+                "YOUTUBE_EXTRACTION_DEGRADED: "
+                f"{GLOBAL_FAILURE_ABORT_THRESHOLD} vídeos distintos falharam sem um download bem-sucedido."
+            ) from format_exc
+        raise RuntimeError(
+            f"YOUTUBE_FORMAT_UNAVAILABLE: nenhum formato utilizável para {vid}."
+        ) from format_exc
+
     raise RuntimeError(
-        f"yt-dlp falhou ao baixar {vid} em todos os clients ({', '.join(YT_PLAYER_CLIENTS)}): {last_exc}"
+        "yt-dlp falhou ao baixar "
+        f"{vid} em todas as estratégias: "
+        f"{redact_sensitive(last_exc, SECRET_VALUES + (POT_PROVIDER_BASE_URL,))}"
     ) from last_exc
 
 
@@ -1809,6 +1915,10 @@ def main():
     log(
         "  PO Token automático: "
         + ("ativo (cookies como fallback)" if POT_PROVIDER_BASE_URL else "desativado")
+    )
+    log(
+        "  estratégias YouTube: "
+        + ", ".join(strategy.label for strategy in youtube_download_strategies())
     )
     next_stale_job_check_at = 0.0
     next_storage_deletion_check_at = 0.0

@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -10,7 +11,7 @@ WORKER_DIR = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, WORKER_DIR)
 
 
-def load_worker_module():
+def load_worker_module(**overrides):
     environment = {
         "SUPABASE_URL": "https://example.supabase.co",
         "SUPABASE_SERVICE_ROLE_KEY": "test-service-role",
@@ -24,6 +25,7 @@ def load_worker_module():
         "YOUTUBE_COOKIES": "",
         "YOUTUBE_COOKIES_FILE": "",
     }
+    environment.update(overrides)
     with (
         patch.dict(os.environ, environment, clear=False),
         patch("supabase.create_client", return_value=Mock()),
@@ -37,6 +39,9 @@ class AsyncTrackProcessingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.worker = load_worker_module()
+
+    def setUp(self):
+        self.worker.reset_youtube_format_failures()
 
     def test_track_configuration_is_centralized_and_bounded(self):
         self.assertEqual(self.worker.TRACK_CONCURRENCY, 2)
@@ -194,6 +199,240 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertEqual(fields["attempts"], 1)
         self.assertIsNone(fields["locked_at"])
         self.assertEqual(fields["error_code"], "YOUTUBE_COOKIES_INVALID")
+
+    def test_old_railway_client_order_gains_independent_fallbacks(self):
+        worker = load_worker_module(
+            POT_PROVIDER_BASE_URL="http://pot-provider.internal:4416",
+            YT_PLAYER_CLIENTS="mweb,web_safari,default",
+        )
+        self.assertEqual(
+            worker.YT_PLAYER_CLIENTS[:4],
+            ["mweb", "default", "android_vr", "web_safari"],
+        )
+
+        with patch.object(worker, "YOUTUBE_COOKIEFILE", "cookies.txt"):
+            strategies = worker.youtube_download_strategies()
+
+        public = strategies[:4]
+        self.assertEqual(
+            [strategy.client for strategy in public],
+            ["mweb", "default", "android_vr", "web_safari"],
+        )
+        self.assertEqual(
+            [strategy.use_pot_provider for strategy in public],
+            [True, False, False, True],
+        )
+        self.assertTrue(all(not strategy.use_cookie for strategy in public))
+        self.assertTrue(any(strategy.use_cookie for strategy in strategies[4:]))
+        self.assertTrue(
+            all(
+                strategy.client != "android_vr"
+                for strategy in strategies
+                if strategy.use_cookie
+            )
+        )
+
+    def test_download_falls_back_from_tokenized_mweb_to_clean_default(self):
+        video_id = "abcdefghijk"
+        commands: list[list[str]] = []
+        strategies = [
+            self.worker.YoutubeDownloadStrategy("mweb", use_pot_provider=True),
+            self.worker.YoutubeDownloadStrategy("default"),
+        ]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            def fake_run(command, **_kwargs):
+                commands.append(command)
+                if len(commands) == 1:
+                    raise RuntimeError(
+                        "Requested format is not available via "
+                        "http://pot-provider.internal:4416"
+                    )
+                with open(os.path.join(workdir, f"{video_id}.mp3"), "wb") as output:
+                    output.write(b"mp3")
+
+            with (
+                patch.object(
+                    self.worker,
+                    "POT_PROVIDER_BASE_URL",
+                    "http://pot-provider.internal:4416",
+                ),
+                patch.object(
+                    self.worker,
+                    "youtube_download_strategies",
+                    return_value=strategies,
+                ),
+                patch.object(
+                    self.worker,
+                    "run_ytdlp_command",
+                    side_effect=fake_run,
+                ),
+                patch.object(self.worker, "log") as worker_log,
+            ):
+                result = self.worker.download_one(
+                    {"id": video_id},
+                    workdir,
+                    deadline=self.worker.time.monotonic() + 30,
+                )
+
+        self.assertTrue(result.endswith(f"{video_id}.mp3"))
+        self.assertIn("youtube:player_client=mweb", commands[0])
+        self.assertTrue(
+            any("youtubepot-bgutilhttp:base_url=" in arg for arg in commands[0])
+        )
+        self.assertFalse(
+            any("youtubepot-bgutilhttp:base_url=" in arg for arg in commands[1])
+        )
+        self.assertFalse(any("youtube:player_client=" in arg for arg in commands[1]))
+        self.assertNotIn(
+            "http://pot-provider.internal:4416",
+            "\n".join(str(call) for call in worker_log.call_args_list),
+        )
+
+    def test_download_reaches_android_vr_without_provider_or_cookie(self):
+        video_id = "abcdefghijk"
+        commands: list[list[str]] = []
+        strategies = [
+            self.worker.YoutubeDownloadStrategy("mweb", use_pot_provider=True),
+            self.worker.YoutubeDownloadStrategy("default"),
+            self.worker.YoutubeDownloadStrategy("android_vr"),
+            self.worker.YoutubeDownloadStrategy(
+                "web_safari",
+                use_pot_provider=True,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            def fake_run(command, **_kwargs):
+                commands.append(command)
+                if len(commands) < 3:
+                    raise RuntimeError("Requested format is not available")
+                with open(os.path.join(workdir, f"{video_id}.mp3"), "wb") as output:
+                    output.write(b"mp3")
+
+            with (
+                patch.object(
+                    self.worker,
+                    "POT_PROVIDER_BASE_URL",
+                    "http://pot-provider.internal:4416",
+                ),
+                patch.object(self.worker, "YOUTUBE_COOKIEFILE", "cookies.txt"),
+                patch.object(
+                    self.worker,
+                    "youtube_download_strategies",
+                    return_value=strategies,
+                ),
+                patch.object(
+                    self.worker,
+                    "run_ytdlp_command",
+                    side_effect=fake_run,
+                ),
+            ):
+                self.worker.download_one(
+                    {"id": video_id},
+                    workdir,
+                    deadline=self.worker.time.monotonic() + 30,
+                )
+
+        android_command = commands[2]
+        self.assertIn("youtube:player_client=android_vr", android_command)
+        self.assertFalse(
+            any("youtubepot-bgutilhttp:base_url=" in arg for arg in android_command)
+        )
+        self.assertNotIn("--cookies", android_command)
+        self.assertEqual(len(commands), 3)
+
+    def test_independent_format_failures_remain_a_track_error(self):
+        video_id = "abcdefghijk"
+        strategies = [
+            self.worker.YoutubeDownloadStrategy("mweb", use_pot_provider=True),
+            self.worker.YoutubeDownloadStrategy("default"),
+            self.worker.YoutubeDownloadStrategy("android_vr"),
+            self.worker.YoutubeDownloadStrategy("web_safari", use_pot_provider=True),
+        ]
+
+        with (
+            tempfile.TemporaryDirectory() as workdir,
+            patch.object(
+                self.worker,
+                "youtube_download_strategies",
+                return_value=strategies,
+            ),
+            patch.object(
+                self.worker,
+                "run_ytdlp_command",
+                side_effect=RuntimeError("Requested format is not available"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "YOUTUBE_FORMAT_UNAVAILABLE"):
+                self.worker.download_one(
+                    {"id": video_id},
+                    workdir,
+                    deadline=self.worker.time.monotonic() + 30,
+                )
+
+        self.assertEqual(
+            self.worker._YOUTUBE_FORMAT_FAILURE_IDS,
+            {video_id},
+        )
+
+    def test_one_format_failure_remains_track_scoped(self):
+        self.assertFalse(self.worker.record_youtube_format_failure("video-one"))
+        code, _message = self.worker.classify_error(
+            RuntimeError("YOUTUBE_FORMAT_UNAVAILABLE: sem formato")
+        )
+        self.assertEqual(code, "YOUTUBE_FORMAT_UNAVAILABLE")
+
+    def test_three_distinct_format_failures_promote_global_degradation(self):
+        self.assertFalse(self.worker.record_youtube_format_failure("video-one"))
+        self.assertFalse(self.worker.record_youtube_format_failure("video-two"))
+        self.assertTrue(self.worker.record_youtube_format_failure("video-three"))
+        code, _message = self.worker.classify_error(
+            RuntimeError("YOUTUBE_EXTRACTION_DEGRADED")
+        )
+        self.assertEqual(code, "YOUTUBE_EXTRACTION_DEGRADED")
+
+    def test_success_resets_format_failure_streak(self):
+        self.assertFalse(self.worker.record_youtube_format_failure("video-one"))
+        self.assertFalse(self.worker.record_youtube_format_failure("video-two"))
+        self.worker.close_youtube_circuit()
+        self.assertFalse(self.worker.record_youtube_format_failure("video-three"))
+
+    def test_global_extraction_degradation_defers_without_consuming_attempt(self):
+        entry = {
+            "id": "abcdefghijk",
+            "title": "Faixa teste",
+            "duration": 180,
+            "request_position": 1,
+        }
+        with (
+            patch.object(
+                self.worker,
+                "claim_request_item",
+                return_value={"id": "item-1", "attempts": 1},
+            ),
+            patch.object(self.worker, "set_request_item_status") as set_status,
+            patch.object(self.worker, "open_youtube_circuit") as open_circuit,
+            patch.object(
+                self.worker.supabase,
+                "table",
+                side_effect=RuntimeError("YOUTUBE_EXTRACTION_DEGRADED"),
+            ),
+        ):
+            result = self.worker.process_playlist_entry(
+                job_id="job-1",
+                playlist_id="playlist-1",
+                playlist_request_id="request-1",
+                entry=entry,
+                source_url="https://www.youtube.com/watch?v=abcdefghijk",
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertTrue(result["abort"])
+        open_circuit.assert_called_once_with("YOUTUBE_EXTRACTION_DEGRADED")
+        self.assertEqual(set_status.call_args.args[2], "resolved")
+        self.assertEqual(set_status.call_args.kwargs["attempts"], 0)
 
 
 if __name__ == "__main__":

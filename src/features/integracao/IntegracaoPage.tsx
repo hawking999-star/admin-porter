@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorState, RetryButton, StatCard, UpdatedAt } from "@/components/shared";
 import { cn } from "@/lib/utils";
+import { parseMusicUrl } from "@/lib/music-url";
 import {
   acknowledgeImportError,
   getIntegrationStatus,
@@ -42,7 +43,8 @@ function errorMessage(error: unknown) {
 }
 
 function isRetryable(error: PendingImportError) {
-  return error.approval_status === "approved" && /(^|\.)youtube\.com|youtu\.be/i.test(error.source_url ?? "");
+  return error.approval_status === "approved"
+    && Boolean(error.source_url && parseMusicUrl(error.source_url));
 }
 
 function buildErrorReport(errors: PendingImportError[]) {
