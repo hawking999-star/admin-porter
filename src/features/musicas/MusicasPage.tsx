@@ -37,6 +37,7 @@ import { unitLabel } from "@/lib/unit-label";
 import { errorMessage } from "@/lib/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
@@ -57,6 +58,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import {
+  acceptPlaylistRequestItems,
   archiveSecondaryPlaylist,
   acknowledgePlaylistImportError,
   countPlaylistStats,
@@ -2913,6 +2915,7 @@ function ImportPill({ p }: { p: Playlist }) {
 function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => void }) {
   const qc = useQueryClient();
   const [reviewOnly, setReviewOnly] = useState(false);
+  const [selectedReviewItemIds, setSelectedReviewItemIds] = useState<string[]>([]);
   const [replacement, setReplacement] = useState<PlaylistRequestDetailItem | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const detailQuery = useQuery({
@@ -2934,6 +2937,25 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
     onError: (error: unknown) => toast.error("Não foi possível atualizar a faixa", { description: errorMessage(error) }),
   });
 
+  const acceptMutation = useMutation({
+    mutationFn: (itemIds: string[]) =>
+      acceptPlaylistRequestItems(detailQuery.data!.request.id, itemIds),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["playlist-request-detail", p.id] });
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      setSelectedReviewItemIds([]);
+      toast.success(
+        result.queued === 1
+          ? "Música aceita e adicionada à fila"
+          : `${result.queued} músicas aceitas e adicionadas à fila`,
+      );
+    },
+    onError: (error: unknown) =>
+      toast.error("Não foi possível usar as músicas selecionadas", {
+        description: errorMessage(error),
+      }),
+  });
+
   if (detectPlatform(p.source_url) !== "spotify") return null;
   if (detailQuery.isLoading) return <Skeleton className="mt-5 h-36 w-full" />;
   if (detailQuery.isError || !detailQuery.data) {
@@ -2942,6 +2964,12 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
 
   const detail = detailQuery.data;
   const items = reviewOnly ? detail.items.filter((item) => item.status === "review_recommended") : detail.items;
+  const selectableReviewItems = detail.items.filter(
+    (item) => item.status === "review_recommended" && Boolean(item.youtube_url),
+  );
+  const allReviewItemsSelected =
+    selectableReviewItems.length > 0
+    && selectableReviewItems.every((item) => selectedReviewItemIds.includes(item.id));
   const summary = detail.summary;
   const metric = (label: string, value: number) => (
     <div key={label} className="rounded-md border border-border bg-muted/30 px-2 py-1.5 text-center">
@@ -3012,16 +3040,62 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
           <AlertTriangle className="h-4 w-4" /> Revisar sinalizadas
         </Button>
       </div>
+      {selectableReviewItems.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 p-3">
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+            <Checkbox
+              checked={allReviewItemsSelected}
+              onCheckedChange={(checked) =>
+                setSelectedReviewItemIds(
+                  checked ? selectableReviewItems.map((item) => item.id) : [],
+                )
+              }
+              disabled={acceptMutation.isPending}
+              aria-label="Selecionar todas as músicas sinalizadas"
+            />
+            Selecionar todas as sinalizadas
+          </label>
+          <Button
+            size="sm"
+            onClick={() => acceptMutation.mutate(selectedReviewItemIds)}
+            disabled={selectedReviewItemIds.length === 0 || acceptMutation.isPending}
+          >
+            {acceptMutation.isPending
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <Check className="h-4 w-4" />}
+            Usar selecionadas ({selectedReviewItemIds.length})
+          </Button>
+        </div>
+      )}
       <div className="space-y-2">
         {items.map((item) => {
           const review = item.status === "review_recommended";
-          const canRetry = Boolean(item.youtube_url) && !itemMutation.isPending;
+          const canUseCurrentResult =
+            Boolean(item.youtube_url) && !itemMutation.isPending && !acceptMutation.isPending;
+          const selectedForReview = selectedReviewItemIds.includes(item.id);
           return (
             <div key={item.id} className={cn("rounded-lg border p-3", review ? "border-warning/40 bg-warning/5" : "border-border bg-muted/20")}>
               <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="font-medium">{item.position}. {item.title ?? "Faixa sem título"}</p>
-                  <p className="text-xs text-muted-foreground">{item.artists.join(", ") || "Artista não informado"} · {fmtDuration(item.duration_ms)}</p>
+                <div className="flex min-w-0 items-start gap-2">
+                  {review && item.youtube_url && (
+                    <Checkbox
+                      className="mt-1"
+                      checked={selectedForReview}
+                      onCheckedChange={(checked) =>
+                        setSelectedReviewItemIds((current) =>
+                          checked
+                            ? [...new Set([...current, item.id])]
+                            : current.filter((id) => id !== item.id),
+                        )
+                      }
+                      disabled={acceptMutation.isPending}
+                      aria-label={`Selecionar ${item.title ?? "faixa sem título"}`}
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <p className="font-medium">{item.position}. {item.title ?? "Faixa sem título"}</p>
+                    <p className="text-xs text-muted-foreground">{item.artists.join(", ") || "Artista não informado"} · {fmtDuration(item.duration_ms)}</p>
+                  </div>
                 </div>
                 <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", review ? "bg-warning/15 text-warning-foreground" : "bg-muted text-muted-foreground")}>
                   {review ? "Revisão recomendada" : item.status}
@@ -3040,9 +3114,19 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
                 <Button size="sm" variant="outline" onClick={() => { setReplacement(item); setYoutubeUrl(item.youtube_url ?? ""); }} disabled={itemMutation.isPending}>
                   <Pencil className="h-3.5 w-3.5" /> Substituir resultado
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => itemMutation.mutate({ action: "retry", item })} disabled={!canRetry}>
-                  <RefreshCw className="h-3.5 w-3.5" /> Tentar novamente
-                </Button>
+                {review ? (
+                  <Button
+                    size="sm"
+                    onClick={() => acceptMutation.mutate([item.id])}
+                    disabled={!canUseCurrentResult}
+                  >
+                    <Check className="h-3.5 w-3.5" /> Usar esta música
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => itemMutation.mutate({ action: "retry", item })} disabled={!canUseCurrentResult}>
+                    <RefreshCw className="h-3.5 w-3.5" /> Tentar novamente
+                  </Button>
+                )}
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => itemMutation.mutate({ action: "ignore", item })} disabled={itemMutation.isPending}>
                   <X className="h-3.5 w-3.5" /> Ignorar faixa
                 </Button>
