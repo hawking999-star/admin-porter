@@ -47,6 +47,76 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertEqual(self.worker.TRACK_CONCURRENCY, 2)
         self.assertEqual(self.worker.TRACK_MAX_ATTEMPTS, 2)
 
+    def test_single_track_reuses_existing_audio_without_unbound_video_id(self):
+        tracks_query = MagicMock()
+        tracks_query.select.return_value = tracks_query
+        tracks_query.eq.return_value = tracks_query
+        tracks_query.limit.return_value = tracks_query
+        tracks_query.execute.return_value = Mock(data=[{"id": "track-existing"}])
+
+        playlist_tracks_query = MagicMock()
+        playlist_tracks_query.select.return_value = playlist_tracks_query
+        playlist_tracks_query.eq.return_value = playlist_tracks_query
+        playlist_tracks_query.order.return_value = playlist_tracks_query
+        playlist_tracks_query.limit.return_value = playlist_tracks_query
+        playlist_tracks_query.upsert.return_value = playlist_tracks_query
+        playlist_tracks_query.execute.side_effect = [
+            Mock(data=[{"position": 5}]),
+            Mock(data=[]),
+        ]
+
+        def table_for_existing_audio(name):
+            if name == "tracks":
+                return tracks_query
+            if name == "playlist_tracks":
+                return playlist_tracks_query
+            raise AssertionError(f"unexpected table: {name}")
+
+        with (
+            patch.object(
+                self.worker,
+                "_extract_single_video",
+                return_value={
+                    "id": "e_TAAedy0Y4",
+                    "title": "Faixa existente",
+                    "artist": "Artista",
+                    "duration": 180,
+                },
+            ),
+            patch.object(
+                self.worker.supabase,
+                "table",
+                side_effect=table_for_existing_audio,
+            ),
+            patch.object(self.worker, "download_with_fallback") as download,
+            patch.object(self.worker, "_remove_skipped_from_playlist"),
+            patch.object(self.worker, "update_job") as update_job,
+            patch.object(
+                self.worker,
+                "set_request_item_status_by_youtube_id",
+            ) as set_item_status,
+        ):
+            self.worker.process_single_track_job(
+                {
+                    "id": "job-1",
+                    "playlist_id": "playlist-1",
+                    "playlist_request_id": "request-1",
+                    "replace_youtube_id": "e_TAAedy0Y4",
+                },
+                "https://www.youtube.com/watch?v=e_TAAedy0Y4",
+            )
+
+        download.assert_not_called()
+        update_job.assert_called_once()
+        self.assertEqual(update_job.call_args.kwargs["status"], "done")
+        set_item_status.assert_called_once_with(
+            "request-1",
+            "e_TAAedy0Y4",
+            "completed",
+            track_id="track-existing",
+            error_message=None,
+        )
+
     def test_spotify_failure_resumes_from_validated_request_snapshot(self):
         snapshot = [
             {

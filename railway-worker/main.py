@@ -1776,6 +1776,7 @@ def process_single_track_job(job: dict, url: str):
                 raise ValueError("TRACK_DURATION_LIMIT_EXCEEDED")
 
             vid = entry["id"]
+            used_vid = vid
             key = f"tracks/{vid}.mp3"
             found = supabase.table("tracks").select("id").eq("storage_object_key", key).limit(1).execute()
             if found.data:
