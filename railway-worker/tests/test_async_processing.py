@@ -5,7 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 WORKER_DIR = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, WORKER_DIR)
@@ -71,124 +71,279 @@ class AsyncTrackProcessingTests(unittest.TestCase):
                 "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
                 "request-1",
                 "job-new",
-                "playlist-1",
             )
 
         self.assertEqual(entries, snapshot)
         self.assertEqual(skipped, [])
-        list_snapshot.assert_called_once_with(
-            "request-1",
-            "job-new",
-            "playlist-1",
-            "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+        list_snapshot.assert_called_once_with("request-1", "job-new")
+
+    def test_request_snapshot_requires_matching_hash_and_total_from_same_request(self):
+        snapshot_rows = [
+            {
+                "download_job_id": "job-complete",
+                "position": 1,
+                "source_track_id": "0000000000000000000001",
+                "youtube_video_id": "abcdefghijk",
+                "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
+                "title": "Faixa um",
+                "artists": ["Artista"],
+                "duration_ms": 180000,
+                "updated_at": "2026-07-24T09:00:00+00:00",
+            },
+            {
+                "download_job_id": "job-complete",
+                "position": 2,
+                "source_track_id": "0000000000000000000002",
+                "youtube_video_id": None,
+                "title": "Faixa dois",
+                "artists": ["Artista"],
+                "duration_ms": 190000,
+                "updated_at": "2026-07-24T09:00:00+00:00",
+            },
+        ]
+        digest = self.worker.spotify_snapshot_digest(snapshot_rows)
+
+        request_query = Mock()
+        request_query.select.return_value = request_query
+        request_query.eq.return_value = request_query
+        request_query.limit.return_value = request_query
+        request_query.execute.return_value = Mock(
+            data=[
+                {
+                    "source_metadata": {
+                        "spotify_snapshot": {
+                            "track_count": 2,
+                            "ordered_track_ids_sha256": digest,
+                        }
+                    }
+                }
+            ]
         )
 
-    def test_request_snapshot_prefers_the_most_complete_previous_job(self):
-        query = Mock()
-        query.select.return_value = query
-        query.eq.return_value = query
-        query.execute.return_value = Mock(
+        tracks_query = Mock()
+        tracks_query.select.return_value = tracks_query
+        tracks_query.eq.return_value = tracks_query
+        tracks_query.execute.return_value = Mock(
             data=[
                 {
                     "download_job_id": "job-new",
                     "position": 1,
                     "youtube_video_id": "zzzzzzzzzzz",
                 },
-                {
-                    "download_job_id": "job-recent",
-                    "position": 1,
-                    "youtube_video_id": "yyyyyyyyyyy",
-                    "updated_at": "2026-07-26T09:00:00+00:00",
-                },
-                {
-                    "download_job_id": "job-complete",
-                    "position": 1,
-                    "youtube_video_id": "abcdefghijk",
-                    "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
-                    "title": "Faixa um",
-                    "artists": ["Artista"],
-                    "duration_ms": 180000,
-                    "updated_at": "2026-07-24T09:00:00+00:00",
-                },
-                {
-                    "download_job_id": "job-complete",
-                    "position": 2,
-                    "youtube_video_id": "lmnopqrstuv",
-                    "title": "Faixa dois",
-                    "artists": ["Artista"],
-                    "duration_ms": 190000,
-                    "updated_at": "2026-07-24T09:00:00+00:00",
-                },
-            ]
-        )
-
-        with patch.object(self.worker.supabase, "table", return_value=query):
-            entries = self.worker.list_request_snapshot_entries(
-                "request-1",
-                "job-new",
-            )
-
-        self.assertEqual(
-            [entry["id"] for entry in entries],
-            ["abcdefghijk", "lmnopqrstuv"],
-        )
-        self.assertTrue(
-            all(entry["match_method"] == "playlist_request_snapshot" for entry in entries)
-        )
-
-    def test_request_snapshot_falls_back_to_previous_equivalent_request(self):
-        current_tracks = Mock()
-        current_tracks.select.return_value = current_tracks
-        current_tracks.eq.return_value = current_tracks
-        current_tracks.execute.return_value = Mock(data=[])
-
-        previous_requests = Mock()
-        previous_requests.select.return_value = previous_requests
-        previous_requests.eq.return_value = previous_requests
-        previous_requests.neq.return_value = previous_requests
-        previous_requests.order.return_value = previous_requests
-        previous_requests.limit.return_value = previous_requests
-        previous_requests.execute.return_value = Mock(data=[{"id": "request-old"}])
-
-        previous_tracks = Mock()
-        previous_tracks.select.return_value = previous_tracks
-        previous_tracks.in_.return_value = previous_tracks
-        previous_tracks.execute.return_value = Mock(
-            data=[
-                {
-                    "download_job_id": "job-old",
-                    "position": 1,
-                    "youtube_video_id": "abcdefghijk",
-                    "title": "Faixa preservada",
-                    "artists": ["Artista"],
-                    "duration_ms": 180000,
-                    "updated_at": "2026-07-26T09:00:00+00:00",
-                }
+                *snapshot_rows,
             ]
         )
 
         with patch.object(
             self.worker.supabase,
             "table",
-            side_effect=[current_tracks, previous_requests, previous_tracks],
+            side_effect=[request_query, tracks_query],
         ):
+            entries = self.worker.list_request_snapshot_entries(
+                "request-1",
+                "job-new",
+            )
+
+        self.assertEqual([entry["id"] for entry in entries], ["abcdefghijk", None])
+        self.assertEqual(entries[1]["spotify_match_status"], "resolving")
+        self.assertTrue(
+            all(entry["match_method"] == "playlist_request_snapshot" for entry in entries)
+        )
+
+    def test_new_request_never_uses_snapshot_from_another_request(self):
+        request_query = Mock()
+        request_query.select.return_value = request_query
+        request_query.eq.return_value = request_query
+        request_query.limit.return_value = request_query
+        request_query.execute.return_value = Mock(data=[{"source_metadata": {}}])
+
+        with patch.object(
+            self.worker.supabase,
+            "table",
+            return_value=request_query,
+        ) as table:
             entries = self.worker.list_request_snapshot_entries(
                 "request-new",
                 "job-new",
-                "playlist-1",
-                "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
             )
 
-        self.assertEqual([entry["id"] for entry in entries], ["abcdefghijk"])
-        previous_requests.eq.assert_any_call("playlist_id", "playlist-1")
-        previous_requests.eq.assert_any_call(
-            "source_url",
-            "https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+        self.assertEqual(entries, [])
+        table.assert_called_once_with("playlist_requests")
+
+    def test_fresh_spotify_items_are_all_persisted_as_resolving(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.execute.return_value = Mock(data=[])
+        query.upsert.return_value = query
+        entries = [
+            {
+                "id": None,
+                "request_position": position,
+                "spotify_id": f"{position:022d}",
+                "spotify_url": f"https://open.spotify.com/track/{position:022d}",
+                "title": f"Faixa {position}",
+                "artists": ["Artista"],
+                "artist": "Artista",
+                "duration": 180,
+                "spotify_match_status": "resolving",
+            }
+            for position in range(1, 12)
+        ]
+
+        with patch.object(self.worker.supabase, "table", return_value=query):
+            self.worker.sync_request_items("request-1", "job-1", entries, [])
+
+        payload = query.upsert.call_args.args[0]
+        self.assertEqual(len(payload), 11)
+        self.assertTrue(all(item["item_status"] == "resolving" for item in payload))
+        self.assertEqual(
+            [item["source_track_id"] for item in payload],
+            [f"{position:022d}" for position in range(1, 12)],
         )
-        previous_tracks.in_.assert_called_once_with(
-            "playlist_request_id",
-            ["request-old"],
+
+    def test_spotify_youtube_search_ranks_exact_audio_above_live_version(self):
+        ydl = MagicMock()
+        ydl.__enter__.return_value = ydl
+        ydl.extract_info.return_value = {
+            "entries": [
+                {
+                    "id": "livevideo01",
+                    "title": "Artista Teste - Faixa Teste (Live)",
+                    "uploader": "Artista Teste",
+                    "duration": 240,
+                },
+                {
+                    "id": "exactvideo1",
+                    "title": "Artista Teste - Faixa Teste (Official Audio)",
+                    "uploader": "Artista Teste",
+                    "duration": 201,
+                },
+            ]
+        }
+        with patch.object(self.worker, "YoutubeDL", return_value=ydl):
+            resolved = self.worker.resolve_spotify_youtube_entry(
+                {
+                    "title": "Faixa Teste",
+                    "artists": ["Artista Teste"],
+                    "artist": "Artista Teste",
+                    "duration": 201.5,
+                },
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
+        self.assertEqual(resolved["id"], "exactvideo1")
+        self.assertEqual(resolved["spotify_match_status"], "resolved")
+        self.assertEqual(
+            resolved["_match_metadata"]["youtube_channel"],
+            "Artista Teste",
         )
+
+    def test_spotify_youtube_search_recommends_live_candidate_for_review(self):
+        ydl = MagicMock()
+        ydl.__enter__.return_value = ydl
+        ydl.extract_info.return_value = {
+            "entries": [
+                {
+                    "id": "livevideo01",
+                    "title": "Artista Teste - Faixa Teste (Live)",
+                    "uploader": "Artista Teste",
+                    "duration": 240,
+                }
+            ]
+        }
+        with patch.object(self.worker, "YoutubeDL", return_value=ydl):
+            resolved = self.worker.resolve_spotify_youtube_entry(
+                {
+                    "title": "Faixa Teste",
+                    "artists": ["Artista Teste"],
+                    "artist": "Artista Teste",
+                    "duration": 201.5,
+                },
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
+        self.assertEqual(resolved["spotify_match_status"], "review_recommended")
+        self.assertIn("live", resolved["spotify_review_reason"])
+
+    def test_spotify_youtube_search_without_candidate_has_stable_failure(self):
+        ydl = MagicMock()
+        ydl.__enter__.return_value = ydl
+        ydl.extract_info.return_value = {"entries": []}
+        with patch.object(self.worker, "YoutubeDL", return_value=ydl):
+            with self.assertRaisesRegex(RuntimeError, "SPOTIFY_MATCH_NOT_FOUND"):
+                self.worker.resolve_spotify_youtube_entry(
+                    {
+                        "title": "Faixa sem candidato",
+                        "artists": ["Artista"],
+                        "duration": 180,
+                    },
+                    deadline=self.worker.time.monotonic() + 30,
+                )
+
+    def test_existing_spotify_track_is_reused_without_duplicate_download(self):
+        existing_track = Mock()
+        existing_track.select.return_value = existing_track
+        existing_track.eq.return_value = existing_track
+        existing_track.limit.return_value = existing_track
+        existing_track.execute.return_value = Mock(data=[{"id": "track-existing"}])
+
+        existing_link = Mock()
+        existing_link.select.return_value = existing_link
+        existing_link.eq.return_value = existing_link
+        existing_link.limit.return_value = existing_link
+        existing_link.execute.return_value = Mock(data=[{"track_id": "track-existing"}])
+
+        resolved = {
+            "id": "exactvideo1",
+            "source": "spotify",
+            "spotify_id": "0000000000000000000001",
+            "spotify_url": "https://open.spotify.com/track/0000000000000000000001",
+            "request_position": 1,
+            "title": "Faixa existente",
+            "artists": ["Artista"],
+            "artist": "Artista",
+            "duration": 180,
+            "spotify_match_status": "resolved",
+            "match_method": "yt_dlp_search",
+        }
+        with (
+            patch.object(
+                self.worker,
+                "claim_request_item",
+                return_value={"id": "item-1", "attempts": 1},
+            ),
+            patch.object(
+                self.worker,
+                "resolve_spotify_youtube_entry",
+                return_value=resolved,
+            ),
+            patch.object(self.worker, "persist_request_item_match"),
+            patch.object(self.worker, "set_request_item_status") as set_status,
+            patch.object(self.worker, "download_with_fallback") as download,
+            patch.object(
+                self.worker.supabase,
+                "table",
+                side_effect=[existing_track, existing_link],
+            ),
+        ):
+            result = self.worker.process_playlist_entry(
+                job_id="job-1",
+                playlist_id="playlist-1",
+                playlist_request_id="request-1",
+                entry={
+                    **resolved,
+                    "id": None,
+                    "spotify_match_status": "resolving",
+                },
+                source_url="https://open.spotify.com/playlist/0AS2QQdymdLg7BHeCs0ech",
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
+        self.assertEqual(result["status"], "duplicate")
+        self.assertTrue(result["reused"])
+        download.assert_not_called()
+        self.assertEqual(set_status.call_args.args[2], "duplicate")
 
     def test_transient_track_failure_stops_after_two_claims(self):
         entry = {
@@ -339,9 +494,59 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         open_circuit.assert_called_once_with("YOUTUBE_COOKIES_INVALID")
         fields = update_job.call_args.kwargs
         self.assertEqual(fields["status"], "queued")
-        self.assertEqual(fields["attempts"], 1)
+        self.assertEqual(fields["attempts"], 2)
         self.assertIsNone(fields["locked_at"])
+        self.assertIn("next_attempt_at", fields)
         self.assertEqual(fields["error_code"], "YOUTUBE_COOKIES_INVALID")
+
+    def test_spotify_transient_failures_wait_one_then_five_minutes(self):
+        for attempts, expected_delay in ((1, 60), (2, 300)):
+            with (
+                self.subTest(attempts=attempts),
+                patch.object(self.worker, "update_job") as update_job,
+                patch.object(
+                    self.worker,
+                    "datetime",
+                    wraps=self.worker.datetime,
+                ),
+            ):
+                before = self.worker.datetime.now(self.worker.timezone.utc)
+                self.worker.fail_job(
+                    {
+                        "id": "job-spotify",
+                        "playlist_id": "playlist-1",
+                        "attempts": attempts,
+                    },
+                    RuntimeError("SPOTIFY_METADATA_ERROR"),
+                )
+                after = self.worker.datetime.now(self.worker.timezone.utc)
+
+            fields = update_job.call_args.kwargs
+            scheduled = self.worker.datetime.fromisoformat(fields["next_attempt_at"])
+            self.assertEqual(fields["status"], "queued")
+            self.assertGreaterEqual(
+                (scheduled - before).total_seconds(),
+                expected_delay - 1,
+            )
+            self.assertLessEqual(
+                (scheduled - after).total_seconds(),
+                expected_delay + 1,
+            )
+
+    def test_third_spotify_failure_is_terminal(self):
+        with patch.object(self.worker, "update_job") as update_job:
+            self.worker.fail_job(
+                {
+                    "id": "job-spotify",
+                    "playlist_id": "playlist-1",
+                    "attempts": 3,
+                },
+                RuntimeError("SPOTIFY_RESOLVER_UNAVAILABLE"),
+            )
+
+        fields = update_job.call_args.kwargs
+        self.assertEqual(fields["status"], "error")
+        self.assertEqual(fields["error_code"], "SPOTIFY_RESOLVER_UNAVAILABLE")
 
     def test_old_railway_client_order_gains_independent_fallbacks(self):
         worker = load_worker_module(
