@@ -136,6 +136,8 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
   independentes, e cookies só entram depois das tentativas públicas compatíveis.
 - a imagem inclui Deno fixado, runtime recomendado pelo `yt-dlp` para resolver os
   desafios JavaScript do YouTube e disponibilizar os formatos de áudio completos.
+- uma retomada é aditiva e, se a leitura do Spotify falhar, reutiliza o snapshot
+  validado do mesmo envio; vínculos existentes em `playlist_tracks` não são apagados.
 
 ## Como ele respeita os limites
 
