@@ -98,6 +98,19 @@ begin
     raise exception 'expected partially_completed, got %', v_actual;
   end if;
 
+  -- Uma retentativa manual pode resolver a última falha sem reescrever o
+  -- histórico do job original. Os itens atuais passam a ser a fonte da verdade.
+  update public.playlist_request_tracks
+     set item_status = 'duplicate'
+   where id = v_item_failed;
+  update public.download_jobs
+     set failed = 0
+   where id = v_job;
+  v_actual := public.playlist_request_general_status(v_request);
+  if v_actual <> 'completed' then
+    raise exception 'expected completed after manual remediation, got %', v_actual;
+  end if;
+
   update public.playlist_request_tracks
      set item_status = 'review_recommended'
    where id = v_item_failed;
