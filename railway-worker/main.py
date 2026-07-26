@@ -755,31 +755,65 @@ def list_source_entries(url: str) -> tuple[list[dict], list[dict]]:
 def list_request_snapshot_entries(
     playlist_request_id: str | None,
     current_job_id: str,
+    playlist_id: str | None = None,
+    source_url: str | None = None,
 ) -> list[dict]:
-    """Recupera o snapshot mais completo de uma tentativa anterior do envio."""
+    """Recupera o snapshot mais completo deste envio ou de um envio equivalente."""
     if not playlist_request_id:
         return []
+    fields = (
+        "download_job_id,position,item_status,source_track_id,source_url,"
+        "youtube_url,youtube_video_id,title,artists,album,duration_ms,"
+        "match_confidence,error_message,updated_at"
+    )
     result = (
         supabase.table("playlist_request_tracks")
-        .select(
-            "download_job_id,position,item_status,source_track_id,source_url,"
-            "youtube_url,youtube_video_id,title,artists,album,duration_ms,"
-            "match_confidence,error_message,updated_at"
-        )
+        .select(fields)
         .eq("playlist_request_id", playlist_request_id)
         .execute()
     )
-    snapshots: dict[str, list[dict]] = {}
-    for row in result.data or []:
-        snapshot_job_id = str(row.get("download_job_id") or "")
-        if (
-            not snapshot_job_id
-            or snapshot_job_id == current_job_id
-            or not row.get("youtube_video_id")
-            or row.get("position") is None
-        ):
-            continue
-        snapshots.setdefault(snapshot_job_id, []).append(row)
+    rows = list(result.data or [])
+
+    def collect_snapshots(snapshot_rows: list[dict]) -> dict[str, list[dict]]:
+        collected: dict[str, list[dict]] = {}
+        for row in snapshot_rows:
+            snapshot_job_id = str(row.get("download_job_id") or "")
+            if (
+                not snapshot_job_id
+                or snapshot_job_id == current_job_id
+                or not row.get("youtube_video_id")
+                or row.get("position") is None
+            ):
+                continue
+            collected.setdefault(snapshot_job_id, []).append(row)
+        return collected
+
+    snapshots = collect_snapshots(rows)
+    if not snapshots and playlist_id and source_url:
+        previous_requests = (
+            supabase.table("playlist_requests")
+            .select("id")
+            .eq("playlist_id", playlist_id)
+            .eq("source_url", source_url)
+            .neq("id", playlist_request_id)
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+        previous_request_ids = [
+            str(row["id"])
+            for row in previous_requests.data or []
+            if row.get("id")
+        ]
+        if previous_request_ids:
+            previous_rows = (
+                supabase.table("playlist_request_tracks")
+                .select(fields)
+                .in_("playlist_request_id", previous_request_ids)
+                .execute()
+            )
+            snapshots = collect_snapshots(list(previous_rows.data or []))
+
     if not snapshots:
         return []
     rows = max(
@@ -828,6 +862,7 @@ def list_source_entries_resumable(
     url: str,
     playlist_request_id: str | None,
     job_id: str,
+    playlist_id: str | None = None,
 ) -> tuple[list[dict], list[dict]]:
     try:
         return list_source_entries(url)
@@ -839,7 +874,12 @@ def list_source_entries_resumable(
             "SPOTIFY_RESOLVE_TIMEOUT",
             "SPOTIFY_RESOLVER_UNAVAILABLE",
         }:
-            snapshot = list_request_snapshot_entries(playlist_request_id, job_id)
+            snapshot = list_request_snapshot_entries(
+                playlist_request_id,
+                job_id,
+                playlist_id,
+                url,
+            )
             if snapshot:
                 log(
                     f"  Spotify indisponível [{code}]; retomando snapshot "
@@ -1782,6 +1822,7 @@ def process_job(job: dict):
         url,
         playlist_request_id,
         job_id,
+        playlist_id,
     )
     remaining_request_seconds(deadline)
     sync_request_items(playlist_request_id, job_id, entries, skipped)
