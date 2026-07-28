@@ -4,7 +4,7 @@ Este é o "robô" que baixa as músicas. Ele fica ligado 24h no Railway, de olho
 fila do Supabase. Quando você **aprova** um link do YouTube ou Spotify no admin, o admin
 coloca um pedido na fila (`download_jobs`) e este worker faz o resto sozinho:
 
-1. Lê o link do YouTube ou os metadados do Spotify (até **170** faixas).
+1. Lê o link do YouTube ou os metadados do Spotify (até `MAX_TRACKS` faixas).
 2. Para Spotify, usa o cliente leve SpotipyFree apenas para ler metadados atuais.
 3. Encaminha a URL canônica resolvida para o mesmo downloader do YouTube usado por links diretos.
 4. Baixa cada música do YouTube em mp3, garantindo **no máximo 15 MB** por faixa.
@@ -103,6 +103,7 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 | Variável | Padrão | O que faz |
 |---|---|---|
 | `MAX_TRACKS` | 170 | Máx. de faixas por playlist |
+| `PRINCIPAL_TRACK_LIMIT` | 170 | Teto da playlist principal; o Worker para de baixar quando as vagas acabam |
 | `MAX_TRACK_DURATION_SECONDS` | 960 | Duração máxima de cada faixa, em segundos |
 | `MAX_FILE_MB` | 15 | Tamanho máximo de cada mp3 |
 | `AUDIO_BITRATE` | 128 | Qualidade do mp3, em kbps |
@@ -144,7 +145,8 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 
 ## Como ele respeita os limites
 
-- **170 faixas:** processa no máximo as primeiras 170; as demais são contabilizadas no relatório.
+- **170 faixas na principal:** consulta a ocupação atual, baixa somente enquanto
+  houver vagas e encerra o restante como limite atingido. Duplicadas não consomem vaga.
 - **960 segundos/faixa:** descarta faixas sem duração confirmada ou acima desse teto.
 - **Spotify sem áudio:** SpotipyFree fornece somente metadados; busca e MP3 continuam vindo do YouTube.
 - **Um só importador:** Spotify e YouTube usam a mesma validação de duração, conversão MP3,
@@ -159,8 +161,9 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 Um álbum ou playlist continua sendo uma única solicitação. O worker registra em
 `playlist_request_tracks` uma linha por faixa encontrada, com estados como
 `resolved`, `processing`, `completed`, `not_found`, `duration_exceeded` e
-`playlist_limit_exceeded`. Se houver mais de 170 faixas, somente as primeiras
-170 entram no download; as demais ficam registradas como fora do limite e o
+`playlist_limit_exceeded`. O Worker agenda um pequeno lote por vez e reconta a
+ocupação da playlist principal após cada inclusão. Ao chegar a 170, nenhuma nova
+faixa chega ao downloader; as demais ficam registradas como fora do limite e o
 relatório exibido no Admin informa a quantidade excluída. Isso não falha a
 solicitação inteira.
 - **Qualidade 128 kbps:** todo mp3 sai em 128 kbps (mude em `AUDIO_BITRATE` se quiser).
