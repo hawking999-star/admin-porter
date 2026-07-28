@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -68,6 +68,7 @@ R2_BUCKET = env("R2_BUCKET", required=True)
 R2_PUBLIC_BASE_URL = env("R2_PUBLIC_BASE_URL", "").rstrip("/")
 
 MAX_TRACKS = int(env("MAX_TRACKS", "170"))
+PRINCIPAL_TRACK_LIMIT = int(env("PRINCIPAL_TRACK_LIMIT", "170"))
 MAX_TRACK_DURATION_SECONDS = int(env("MAX_TRACK_DURATION_SECONDS", "960"))
 MAX_FILE_MB = float(env("MAX_FILE_MB", "15"))
 MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
@@ -158,6 +159,7 @@ PERMANENT_SKIP_CODES = {
     "TRACK_DURATION_LIMIT_EXCEEDED",
     "TRACK_DURATION_UNKNOWN",
     "SPOTIFY_MATCH_NOT_FOUND",
+    "PLAYLIST_LIMIT_EXCEEDED",
 }
 # Estes erros afetam o importador inteiro, não apenas uma faixa. Continuar
 # percorrendo a playlist só repete a mesma falha e deixa o job parecendo travado.
@@ -427,6 +429,11 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         )
     if "TRACK_DURATION_UNKNOWN" in raw:
         return "TRACK_DURATION_UNKNOWN", "Faixa ignorada: não foi possível confirmar a duração da faixa."
+    if "PRINCIPAL_TRACK_LIMIT_REACHED" in raw:
+        return (
+            "PLAYLIST_LIMIT_EXCEEDED",
+            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist principal do operador atingido.",
+        )
 
     if "SPOTIFY_MATCH_NOT_FOUND" in raw:
         return "SPOTIFY_MATCH_NOT_FOUND", "Não foi possível localizar esta música no YouTube."
@@ -1996,6 +2003,95 @@ def existing_track_for_spotify_id(spotify_id: str | None) -> dict | None:
     return result.data[0] if result.data else None
 
 
+def principal_playlist_remaining_slots(playlist_id: str) -> int | None:
+    """Retorna as vagas da playlist principal; secundarias nao usam esse teto."""
+    playlist_result = (
+        supabase.table("playlists")
+        .select("type")
+        .eq("id", playlist_id)
+        .limit(1)
+        .execute()
+    )
+    if not playlist_result.data:
+        raise RuntimeError("PLAYLIST_NOT_FOUND")
+    if playlist_result.data[0].get("type") != "principal":
+        return None
+
+    count_result = (
+        supabase.table("playlist_tracks")
+        .select("track_id", count="exact", head=True)
+        .eq("playlist_id", playlist_id)
+        .execute()
+    )
+    current_count = int(count_result.count or 0)
+    return max(PRINCIPAL_TRACK_LIMIT - current_count, 0)
+
+
+def playlist_limit_skip(entry: dict) -> dict:
+    return {
+        "youtube_id": entry.get("id"),
+        "spotify_id": entry.get("spotify_id"),
+        "spotify_url": entry.get("spotify_url"),
+        "title": (entry.get("title") or entry.get("id") or "")[:200],
+        "duration_seconds": entry.get("duration"),
+        "code": "PLAYLIST_LIMIT_EXCEEDED",
+        "reason": (
+            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist "
+            "principal do operador atingido."
+        ),
+    }
+
+
+def mark_entries_outside_principal_limit(
+    job_id: str,
+    entries: list[dict],
+) -> list[dict]:
+    """Fecha em lote os itens que nao devem mais chegar ao downloader."""
+    if not entries:
+        return []
+
+    positions = [
+        int(entry.get("request_position") or 0)
+        for entry in entries
+        if int(entry.get("request_position") or 0) > 0
+    ]
+    payload = {
+        "item_status": "playlist_limit_exceeded",
+        "locked_at": None,
+        "last_error_code": "PLAYLIST_LIMIT_EXCEEDED",
+        "error_message": (
+            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist "
+            "principal do operador atingido."
+        ),
+        "updated_at": now_iso(),
+    }
+    for offset in range(0, len(positions), 100):
+        (
+            supabase.table("playlist_request_tracks")
+            .update(payload)
+            .eq("download_job_id", job_id)
+            .in_("position", positions[offset : offset + 100])
+            .execute()
+        )
+    return [playlist_limit_skip(entry) for entry in entries]
+
+
+def current_job_request_item_statuses(job_id: str) -> dict[int, str]:
+    result = (
+        supabase.table("playlist_request_tracks")
+        .select("position,item_status")
+        .eq("download_job_id", job_id)
+        .execute()
+    )
+    if not isinstance(result.data, list):
+        return {}
+    return {
+        int(row["position"]): str(row.get("item_status") or "")
+        for row in result.data
+        if row.get("position") is not None
+    }
+
+
 def process_playlist_entry(
     *,
     job_id: str,
@@ -2425,58 +2521,145 @@ def process_job(job: dict):
     first_error_message = skipped[0].get("reason") if skipped else None
     first_error_details = {"source_url": url, "track": skipped[0]} if skipped else None
     reused = 0
+    item_statuses = (
+        current_job_request_item_statuses(job_id)
+        if playlist_request_id
+        else {}
+    )
+    completed_positions = {
+        position
+        for position, status in item_statuses.items()
+        if status in ("completed", "duplicate")
+    }
+    completed = len(completed_positions)
+    already_limited_entries = [
+        entry
+        for entry in entries
+        if item_statuses.get(int(entry.get("request_position") or 0))
+        == "playlist_limit_exceeded"
+    ]
+    if already_limited_entries:
+        resumed_limit_skips = [
+            playlist_limit_skip(entry)
+            for entry in already_limited_entries
+        ]
+        skipped.extend(resumed_limit_skips)
+        failed += len(resumed_limit_skips)
+    non_processable_statuses = {
+        "completed",
+        "duplicate",
+        "not_found",
+        "duration_exceeded",
+        "playlist_limit_exceeded",
+        "skipped",
+        "review_recommended",
+    }
     eligible_entries = [
         entry for entry in entries
         if entry.get("spotify_match_status") != "review_recommended"
+        and item_statuses.get(
+            int(entry.get("request_position") or 0)
+        ) not in non_processable_statuses
     ]
+    remaining_slots = principal_playlist_remaining_slots(playlist_id)
+    if remaining_slots is not None:
+        log(
+            f"  playlist principal com {remaining_slots} vaga(s) restante(s) "
+            f"de {PRINCIPAL_TRACK_LIMIT}"
+        )
     abort_result = None
+    next_entry_index = 0
     with ThreadPoolExecutor(
         max_workers=TRACK_CONCURRENCY,
         thread_name_prefix="ptm-track",
     ) as executor:
-        futures = {
-            executor.submit(
-                process_playlist_entry,
-                job_id=job_id,
-                playlist_id=playlist_id,
-                playlist_request_id=playlist_request_id,
-                entry=entry,
-                source_url=url,
-                deadline=deadline,
-            ): entry
-            for entry in eligible_entries
-        }
-        for future in as_completed(futures):
-            if future.cancelled():
-                continue
-            result = future.result()
-            status = result.get("status")
-            if status in ("completed", "duplicate"):
-                completed += 1
-                reused += int(bool(result.get("reused")))
-            elif status == "review_recommended":
-                review_pending += 1
-            elif status not in ("review_recommended", "deferred"):
-                failed += 1
-            if result.get("skipped"):
-                skipped.append(result["skipped"])
-            if first_error_code is None and result.get("code"):
-                first_error_code = result["code"]
-                first_error_message = result.get("reason")
-                first_error_details = result.get("technical")
-            update_job(job_id, completed=completed, failed=failed, locked_at=now_iso())
-            log(
-                f"  progresso {completed + failed}/{total}: "
-                f"{completed} concluída(s), {failed} não concluída(s)"
-            )
-            if result.get("abort") and abort_result is None:
-                abort_result = result
-                for pending in futures:
-                    pending.cancel()
+        futures: dict = {}
+
+        def schedule_available_entries() -> None:
+            nonlocal next_entry_index
+            available_workers = TRACK_CONCURRENCY - len(futures)
+            if remaining_slots is not None:
+                # Cada tarefa em andamento pode ocupar uma vaga. Reservar esse
+                # espaço impede baixar além do teto mesmo com concorrência > 1.
+                available_workers = min(
+                    available_workers,
+                    max(remaining_slots - len(futures), 0),
+                )
+            while (
+                available_workers > 0
+                and next_entry_index < len(eligible_entries)
+                and abort_result is None
+            ):
+                entry = eligible_entries[next_entry_index]
+                next_entry_index += 1
+                future = executor.submit(
+                    process_playlist_entry,
+                    job_id=job_id,
+                    playlist_id=playlist_id,
+                    playlist_request_id=playlist_request_id,
+                    entry=entry,
+                    source_url=url,
+                    deadline=deadline,
+                )
+                futures[future] = entry
+                available_workers -= 1
+
+        schedule_available_entries()
+        while futures:
+            done, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
+            for future in done:
+                futures.pop(future, None)
+                if future.cancelled():
+                    continue
+                result = future.result()
+                status = result.get("status")
+                if status in ("completed", "duplicate"):
+                    completed += 1
+                    reused += int(bool(result.get("reused")))
+                elif status == "review_recommended":
+                    review_pending += 1
+                elif status not in ("review_recommended", "deferred"):
+                    failed += 1
+                if remaining_slots is not None:
+                    if status == "completed":
+                        # Recontar evita consumir vaga duas vezes ao retomar um
+                        # item que já estava concluído antes do restart.
+                        remaining_slots = principal_playlist_remaining_slots(
+                            playlist_id
+                        )
+                    elif result.get("code") == "PLAYLIST_LIMIT_EXCEEDED":
+                        remaining_slots = 0
+                if result.get("skipped"):
+                    skipped.append(result["skipped"])
+                if first_error_code is None and result.get("code"):
+                    first_error_code = result["code"]
+                    first_error_message = result.get("reason")
+                    first_error_details = result.get("technical")
+                update_job(job_id, completed=completed, failed=failed, locked_at=now_iso())
+                log(
+                    f"  progresso {completed + failed}/{total}: "
+                    f"{completed} concluída(s), {failed} não concluída(s)"
+                )
+                if result.get("abort") and abort_result is None:
+                    abort_result = result
+                    for pending in futures:
+                        pending.cancel()
+            schedule_available_entries()
 
     if abort_result:
         raise RuntimeError(
             f"{abort_result.get('code')}: {abort_result.get('reason')}"
+        )
+
+    if remaining_slots == 0 and next_entry_index < len(eligible_entries):
+        outside_limit = eligible_entries[next_entry_index:]
+        limit_skips = mark_entries_outside_principal_limit(job_id, outside_limit)
+        skipped.extend(limit_skips)
+        failed += len(limit_skips)
+        update_job(job_id, completed=completed, failed=failed, locked_at=now_iso())
+        log(
+            f"  limite de {PRINCIPAL_TRACK_LIMIT} atingido; "
+            f"{len(limit_skips)} faixa(s) encerrada(s) sem download"
         )
 
     # Falha permanente ("indisponível") NÃO é erro de sistema. Se o que dava pra
@@ -2491,7 +2674,7 @@ def process_job(job: dict):
         final_status = "partial"
     elif failed == 0:
         final_status = "done"
-    elif completed > 0 and only_unavailable:
+    elif only_unavailable:
         final_status = "done"      # importou tudo que era possível; resto é indisponível
     elif completed > 0:
         final_status = "partial"   # erro real de sistema + algo importado
@@ -2511,6 +2694,12 @@ def process_job(job: dict):
             f"A solicitação foi concluída parcialmente: {completed} músicas concluídas e {failed} não concluídas."
             if completed > 0
             else (first_error_message or "Nenhuma música foi baixada da playlist.")
+        )
+    elif final_status == "done" and excluded_by_limit == failed:
+        final_error_code = "PLAYLIST_LIMIT_REACHED"
+        final_error_message = (
+            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist principal "
+            "do operador atingido; nenhuma faixa adicional será baixada."
         )
     elif final_status == "done" and failed > 0:
         # Sucesso COM indisponíveis: informativo, não é falha.

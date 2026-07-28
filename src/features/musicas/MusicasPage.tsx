@@ -281,7 +281,8 @@ const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
   IMPORTED_WITH_UNAVAILABLE: "Não foi possível localizar algumas músicas no YouTube.",
   REVIEW_RECOMMENDED: "Esta música parece ser uma versão diferente e precisa de revisão.",
   TRACK_DURATION_LIMIT_EXCEEDED: "A música ultrapassa a duração máxima de 16 minutos.",
-  PLAYLIST_LIMIT_EXCEEDED: "A playlist ultrapassa o limite de 170 músicas.",
+  PLAYLIST_LIMIT_EXCEEDED: "O limite de 170 músicas da playlist principal do operador foi atingido.",
+  PLAYLIST_LIMIT_REACHED: "O limite de 170 músicas da playlist principal do operador foi atingido.",
   SPOTIFY_RESOLVER_UNAVAILABLE: "O serviço de importação está temporariamente indisponível.",
   SPOTIFY_RESOLVE_TIMEOUT: "O serviço de importação está temporariamente indisponível.",
   IMPORT_TIMEOUT: "O serviço de importação está temporariamente indisponível.",
@@ -500,7 +501,7 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
       <p className={`mb-1.5 font-semibold ${hasErrors ? "text-destructive" : "text-warning-foreground"}`}>
         Relatório de importação
         {summary ? ` — ${summary.completed ?? 0} de ${summary.total ?? "?"} importadas` : ""}
-        {summary?.excluded_by_limit ? ` · ${summary.excluded_by_limit} fora do limite de 170` : ""}
+        {summary?.excluded_by_limit ? ` · ${summary.excluded_by_limit} fora do limite da principal (170)` : ""}
         {unavailable.length ? ` · ${unavailable.length} indisponível(is)` : ""}
         {errors.length ? ` · ${errors.length} com falha` : ""}
       </p>
@@ -3008,7 +3009,7 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
         {metric("Não encontradas", summary.not_found)}
         {metric("Duplicadas", summary.duplicate)}
         {metric("> 16 min", summary.duration_exceeded)}
-        {metric("> 170", summary.playlist_limit_exceeded)}
+        {metric("Limite 170", summary.playlist_limit_exceeded)}
         {metric("Falhas", summary.failed)}
       </div>
 

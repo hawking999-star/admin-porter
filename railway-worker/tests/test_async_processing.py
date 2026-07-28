@@ -577,6 +577,11 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             patch.object(self.worker, "list_source_entries", return_value=(entries, [])),
             patch.object(self.worker, "sync_request_items"),
             patch.object(self.worker, "update_job"),
+            patch.object(
+                self.worker,
+                "principal_playlist_remaining_slots",
+                return_value=None,
+            ),
             patch.object(self.worker, "process_playlist_entry", side_effect=fake_process),
         ):
             self.worker.process_job(
@@ -592,6 +597,70 @@ class AsyncTrackProcessingTests(unittest.TestCase):
 
         self.assertEqual(maximum_active, self.worker.TRACK_CONCURRENCY)
         self.assertLessEqual(maximum_active, 2)
+
+    def test_principal_playlist_stops_downloading_when_last_slot_is_filled(self):
+        entries = [
+            {
+                "id": f"video00000{i}",
+                "title": f"Faixa {i}",
+                "duration": 180,
+                "request_position": i,
+            }
+            for i in range(1, 5)
+        ]
+
+        def limit_skips(_job_id, outside_limit):
+            return [
+                self.worker.playlist_limit_skip(entry)
+                for entry in outside_limit
+            ]
+
+        with (
+            patch.object(self.worker, "list_source_entries", return_value=(entries, [])),
+            patch.object(self.worker, "sync_request_items"),
+            patch.object(self.worker, "update_job") as update_job,
+            patch.object(
+                self.worker,
+                "principal_playlist_remaining_slots",
+                side_effect=[1, 0],
+            ),
+            patch.object(
+                self.worker,
+                "process_playlist_entry",
+                return_value={
+                    "status": "completed",
+                    "reused": False,
+                    "abort": False,
+                },
+            ) as process_entry,
+            patch.object(
+                self.worker,
+                "mark_entries_outside_principal_limit",
+                side_effect=limit_skips,
+            ) as mark_limit,
+        ):
+            self.worker.process_job(
+                {
+                    "id": "job-limit",
+                    "playlist_id": "playlist-principal",
+                    "playlist_request_id": "request-limit",
+                    "source_url": "https://www.youtube.com/watch?v=abcdefghijk",
+                    "attempts": 1,
+                    "mode": "playlist",
+                }
+            )
+
+        process_entry.assert_called_once()
+        outside_limit = mark_limit.call_args.args[1]
+        self.assertEqual(
+            [entry["request_position"] for entry in outside_limit],
+            [2, 3, 4],
+        )
+        final_fields = update_job.call_args.kwargs
+        self.assertEqual(final_fields["status"], "done")
+        self.assertEqual(final_fields["completed"], 1)
+        self.assertEqual(final_fields["failed"], 3)
+        self.assertEqual(final_fields["error_code"], "PLAYLIST_LIMIT_REACHED")
 
     def test_global_youtube_block_defers_track_without_consuming_attempt(self):
         entry = {
