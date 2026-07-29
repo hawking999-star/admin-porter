@@ -1,5 +1,6 @@
 -- Regression contract: an authenticated operator outside the effective shift
--- must remain outside_shift and must not receive or display challenges.
+-- stays logged in on the player, remains outside_shift operationally, and does
+-- not receive or display challenges.
 
 begin;
 
@@ -174,8 +175,11 @@ begin
     pg_catalog.jsonb_build_object('session_id', v_session_id)
   );
 
-  if v_payload->>'next_screen' <> 'outside_shift'
-     or v_payload#>>'{operator_state,status}' <> 'outside_shift' then
+  if v_payload->>'next_screen' <> 'player'
+     or v_payload#>>'{operator_state,status}' <> 'outside_shift'
+     or (v_payload->>'outside_shift')::boolean is distinct from true
+     or v_payload->>'challenge_mode' <> 'disabled'
+     or v_payload ? 'challenge' then
     raise exception 'outside_shift_state_contract_failed: %', v_payload;
   end if;
 
@@ -214,7 +218,11 @@ begin
 
   v_payload := public.operator_challenge_displayed(v_pending_log_id);
 
-  if v_payload->>'next_screen' <> 'outside_shift'
+  if v_payload->>'next_screen' <> 'player'
+     or v_payload#>>'{operator_state,status}' <> 'outside_shift'
+     or (v_payload->>'outside_shift')::boolean is distinct from true
+     or v_payload->>'challenge_mode' <> 'disabled'
+     or v_payload ? 'challenge'
      or not exists (
        select 1
        from public.challenge_logs challenge_log
@@ -260,8 +268,11 @@ begin
     pg_catalog.jsonb_build_object('session_id', v_session_id)
   );
 
-  if v_payload->>'next_screen' <> 'outside_shift'
+  if v_payload->>'next_screen' <> 'player'
      or v_payload#>>'{operator_state,status}' <> 'outside_shift'
+     or (v_payload->>'outside_shift')::boolean is distinct from true
+     or v_payload->>'challenge_mode' <> 'disabled'
+     or v_payload ? 'challenge'
      or not exists (
        select 1
        from public.operator_states operator_state

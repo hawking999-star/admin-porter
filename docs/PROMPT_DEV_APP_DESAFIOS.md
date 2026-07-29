@@ -8,7 +8,9 @@ As RPCs de estado dos desafios retornam um objeto plano. Para essas RPCs, aceite
 
 ```ts
 type ChallengeSnapshot = {
-  next_screen: "player" | "challenge" | "paused_by_call" | "blocked" | "idle"
+  next_screen: "player" | "challenge" | "paused_by_call" | "blocked" | "idle" | "outside_shift"
+  outside_shift?: boolean
+  challenge_mode?: "enabled" | "disabled"
   server_now: string
   next_challenge_at?: string
   blocked_until?: string
@@ -46,6 +48,9 @@ Use `next_screen` retornado:
 - `paused_by_call`: mostre a tela de pausa por ligação e não permita resposta.
 - `blocked`: mostre o bloqueio até `blocked_until`.
 - `idle`: mostre a tela de ociosidade sem acesso ao player.
+- `outside_shift`: estado válido de uma sessão autenticada. Normalize para o
+  player, mantenha o status `Fora do turno`, descarte desafio local e continue
+  reconciliando. Nunca mostre erro de verificação nem encerre a sessão.
 
 ## Correção obrigatória: `P0001 / sessao_invalida`
 
@@ -76,7 +81,7 @@ Quando o snapshot tiver `next_challenge_at`:
 3. quando o despertador disparar, consulte o servidor e renderize o novo `next_screen`;
 4. nunca abra o desafio apenas porque o horário local chegou: a nova RPC é obrigatória e o servidor continua decidindo o estado.
 
-Além do despertador exato, mantenha uma reconciliação de segurança a cada 10 segundos enquanto `next_screen === "player"`. Ela cobre suspensão do Windows, atraso de timer do Electron e perda momentânea de conexão.
+Além do despertador exato, mantenha uma reconciliação de segurança a cada 10 segundos enquanto `next_screen === "player"` ou durante a compatibilidade legada com `next_screen === "outside_shift"`. Ela cobre suspensão do Windows, atraso de timer do Electron e perda momentânea de conexão.
 
 Regras de concorrência:
 
@@ -228,7 +233,7 @@ O retorno normal contém:
 
 Depois de renderizar a nova tela, chame `operator_challenge_displayed` uma única vez para o novo `log_id`, seguindo o mesmo fluxo de exibição já descrito acima. Um clique repetido em **Voltar** pode devolver a mesma ocorrência aberta e não deve gerar outra tela nem outra confirmação duplicada.
 
-Se o retorno for `blocked`, `in_call` ou `outside_shift`, respeite o estado devolvido; não force `active` localmente.
+Se o estado operacional for `blocked`, `in_call` ou `outside_shift`, respeite o estado devolvido; não force `active` localmente. `outside_shift` mantém a sessão e o player ativos, mas desabilita completamente os desafios até o servidor informar a entrada no turno.
 
 ## Ligações e encerramento
 
