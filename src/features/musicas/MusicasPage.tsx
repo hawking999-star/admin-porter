@@ -2920,10 +2920,34 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
   const [replacement, setReplacement] = useState<PlaylistRequestDetailItem | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const detailQuery = useQuery({
-    queryKey: ["playlist-request-detail", p.id],
+    // A lista de playlists acompanha o job vigente, mas este detalhe ficava
+    // preso no cache de uma tentativa anterior. Os campos do job tornam a
+    // tentativa terminal parte da chave e atualizam os IDs/links dos itens.
+    queryKey: [
+      "playlist-request-detail",
+      p.id,
+      p.download?.status ?? null,
+      p.download?.completed ?? 0,
+      p.download?.failed ?? 0,
+      p.download?.finished_at ?? null,
+    ],
     queryFn: () => getPlaylistRequestDetail(p.id),
     enabled: detectPlatform(p.source_url) === "spotify",
     staleTime: 10_000,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchInterval: (query) => {
+      const detail = query.state.data;
+      const candidateStillMissing = detail?.items.some(
+        (item) =>
+          item.status === "review_recommended"
+          && (!item.youtube_url || !item.youtube_video_id),
+      );
+      const jobIsActive =
+        p.download?.status === "queued" || p.download?.status === "running";
+      return candidateStillMissing || jobIsActive ? 5000 : false;
+    },
   });
 
   const itemMutation = useMutation({
