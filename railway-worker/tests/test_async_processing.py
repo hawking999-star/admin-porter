@@ -565,6 +565,24 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         download.assert_not_called()
         self.assertEqual(set_status.call_args.args[2], "duplicate")
 
+    def test_storage_key_reuse_only_accepts_available_track(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = Mock(data=[])
+
+        with patch.object(self.worker.supabase, "table", return_value=query):
+            result = self.worker.existing_available_track_by_storage_key(
+                "tracks/AoIkvrgiPQg.mp3"
+            )
+
+        self.assertIsNone(result)
+        self.assertIn(
+            ("status", "available"),
+            [call.args for call in query.eq.call_args_list],
+        )
+
     def test_transient_track_failure_defers_without_consuming_attempt(self):
         entry = {
             "id": "abcdefghijk",

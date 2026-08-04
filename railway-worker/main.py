@@ -2101,6 +2101,20 @@ def existing_track_for_spotify_id(spotify_id: str | None) -> dict | None:
     return result.data[0] if result.data else None
 
 
+def existing_available_track_by_storage_key(storage_object_key: str) -> dict | None:
+    if not storage_object_key:
+        return None
+    result = (
+        supabase.table("tracks")
+        .select("id")
+        .eq("storage_object_key", storage_object_key)
+        .eq("status", "available")
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
 def principal_playlist_remaining_slots(playlist_id: str) -> int | None:
     """Retorna as vagas da playlist principal; secundarias nao usam esse teto."""
     playlist_result = (
@@ -2361,16 +2375,12 @@ def process_playlist_entry(
                     .execute()
                 )
             if not found or not found.data:
-                found = (
-                    supabase.table("tracks")
-                    .select("id")
-                    .eq("storage_object_key", key)
-                    .limit(1)
-                    .execute()
-                )
-            reused = bool(found.data)
-            if found.data:
-                track_id = found.data[0]["id"]
+                found_by_key = existing_available_track_by_storage_key(key)
+            else:
+                found_by_key = found.data[0]
+            reused = bool(found_by_key)
+            if found_by_key:
+                track_id = found_by_key["id"]
             else:
                 with tempfile.TemporaryDirectory(prefix=f"ptm-{vid}-") as workdir:
                     mp3, used_vid, substituted = download_with_fallback(
@@ -2381,16 +2391,12 @@ def process_playlist_entry(
                     dl_key = f"tracks/{used_vid}.mp3"
                     try:
                         alt_found = (
-                            supabase.table("tracks")
-                            .select("id")
-                            .eq("storage_object_key", dl_key)
-                            .limit(1)
-                            .execute()
+                            existing_available_track_by_storage_key(dl_key)
                             if used_vid != vid
                             else None
                         )
-                        if alt_found and alt_found.data:
-                            track_id = alt_found.data[0]["id"]
+                        if alt_found:
+                            track_id = alt_found["id"]
                             reused = True
                         else:
                             digest = sha256_of(mp3)
