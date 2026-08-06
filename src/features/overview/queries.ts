@@ -103,6 +103,7 @@ export const STATUS_BAR: Record<string, string> = {
 export type OperatorStatusRow = {
   operator_id: string;
   status: string;
+  revision: number;
   registered_name: string;
   username: string | null;
   unit_id: string | null;
@@ -126,7 +127,7 @@ export type OperatorStatesResult = {
 export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   const { data, error } = await supabase
     .from("operator_states")
-    .select("operator_id, status, effective_at, updated_at, call_started_at, operators(registered_name, username, unit_id, units(id, name, city, state))")
+    .select("operator_id, status, revision, effective_at, updated_at, call_started_at, operators(registered_name, username, unit_id, units(id, name, city, state))")
     .order("effective_at", { ascending: false, nullsFirst: false })
     .limit(100);
   if (error) throw error;
@@ -134,6 +135,7 @@ export async function fetchOperatorStates(): Promise<OperatorStatesResult> {
   const rows: OperatorStatusRow[] = (data ?? []).map((r: any) => ({
     operator_id: r.operator_id,
     status: r.status,
+    revision: Number(r.revision ?? 0),
     registered_name: r.operators?.registered_name ?? "Operador",
     username: r.operators?.username ?? null,
     unit_id: r.operators?.unit_id ?? r.operators?.units?.id ?? null,
@@ -202,6 +204,7 @@ export type AttentionReason =
 
 export type AttentionOperator = {
   operator_id: string;
+  state_revision: number;
   registered_name: string;
   username: string | null;
   unit_name: string | null;
@@ -234,6 +237,7 @@ export function deriveAttention(rows: OperatorStatusRow[]): AttentionOperator[] 
     const severity = reasons.includes("long_call") ? 1 : reasons.includes("idle") ? 2 : 3;
     out.push({
       operator_id: r.operator_id,
+      state_revision: r.revision,
       registered_name: r.registered_name,
       username: r.username,
       unit_name: r.unit_name,
@@ -267,6 +271,30 @@ export function attentionReasonLabel(a: AttentionOperator): string {
       }
     })
     .join(" · ");
+}
+
+export type StuckCallRecoveryResult = {
+  result: "resolved" | "already_resolved";
+  operator_id: string;
+  status: string;
+  revision: number;
+  session_id?: string | null;
+  session_status?: string | null;
+  expired_challenges?: number;
+  abandoned_challenges?: number;
+  resolved_at?: string;
+};
+
+export async function recoverStuckOperatorCall(
+  operatorId: string,
+  expectedRevision: number,
+): Promise<StuckCallRecoveryResult> {
+  const { data, error } = await supabase.rpc("admin_recover_stuck_operator_call", {
+    p_operator_id: operatorId,
+    p_expected_revision: expectedRevision,
+  });
+  if (error) throw error;
+  return data as StuckCallRecoveryResult;
 }
 
 /* ------------------------------- Contagens ------------------------------- */

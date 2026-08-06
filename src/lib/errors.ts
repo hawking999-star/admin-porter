@@ -38,6 +38,16 @@ const RPC_MESSAGES: Record<string, string> = {
   playlist_not_found: "Playlist não encontrada. Atualize a lista e tente novamente.",
   playlist_not_approved: "A playlist precisa estar aprovada antes de ser importada.",
   import_already_running: "Esta playlist já está sendo importada.",
+  // recuperação de atendimento travado
+  OPERATOR_ID_REQUIRED: "Operador inválido. Atualize a página e tente novamente.",
+  EXPECTED_REVISION_REQUIRED: "O estado do operador está incompleto. Atualize a página e tente novamente.",
+  OPERATOR_NOT_FOUND: "Operador não encontrado. Atualize a página e tente novamente.",
+  OPERATOR_STATE_NOT_FOUND: "O operador ainda não possui um estado operacional para corrigir.",
+  OPERATOR_STATE_CHANGED: "O estado do operador mudou enquanto a confirmação estava aberta. Os dados foram atualizados; confira antes de tentar novamente.",
+  CALL_NOT_OVERDUE: "Este atendimento ainda não ultrapassou 10 minutos e não pode ser destravado pelo painel.",
+  acesso_negado: "Você precisa de um acesso administrativo ativo para executar esta ação.",
+  permissao_insuficiente: "Seu perfil não tem permissão para destravar atendimentos.",
+  fora_do_escopo_da_unidade: "Seu perfil não pode destravar operadores deste condomínio.",
   // permissões / genéricos
   forbidden: "Você não tem permissão para executar esta ação.",
   unauthorized: "Sessão expirada. Entre novamente para continuar.",

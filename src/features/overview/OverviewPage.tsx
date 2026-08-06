@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   Bell,
@@ -15,6 +16,8 @@ import {
   Headphones,
   Inbox,
   ListFilter,
+  Loader2,
+  LockOpen,
   MessageSquare,
   Music,
   Play,
@@ -30,6 +33,16 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -45,6 +58,8 @@ import { effectiveStatisticsStart, fetchStatisticsResetInfo } from "@/lib/statis
 import { listUnitOptions } from "@/features/usuarios/queries";
 import { unitLabel } from "@/lib/unit-label";
 import { useUrlFilterState } from "@/hooks/useUrlFilterState";
+import { useAuth } from "@/features/auth/AuthProvider";
+import { errorMessage } from "@/lib/errors";
 import { ActionCenter } from "./ActionCenter";
 import {
   STATUS_BAR,
@@ -59,10 +74,12 @@ import {
   fetchRecentActivity,
   fmtRelative,
   minutesSince,
+  recoverStuckOperatorCall,
   statusLabel,
   type ActivityKind,
   type DailyMetric,
   type OperatorStatusRow,
+  type AttentionOperator,
   type RecentActivity,
   type StatusGroup,
 } from "./queries";
@@ -260,7 +277,19 @@ function initials(name: string) {
     .toUpperCase();
 }
 
-function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading: boolean }) {
+function AttentionPanel({
+  rows,
+  loading,
+  canRecoverCalls,
+  recoveringOperatorId,
+  onRecoverCall,
+}: {
+  rows: OperatorStatusRow[];
+  loading: boolean;
+  canRecoverCalls: boolean;
+  recoveringOperatorId: string | null;
+  onRecoverCall: (operator: AttentionOperator) => void;
+}) {
   const attention = useMemo(() => deriveAttention(rows), [rows]);
 
   return (
@@ -292,26 +321,47 @@ function AttentionPanel({ rows, loading }: { rows: OperatorStatusRow[]; loading:
             <p className="text-sm text-white/70">Nenhum Operador ultrapassou os limites de atenção.</p>
           </div>
         ) : (
-          attention.map((a) => (
-            <Link
-              key={a.operator_id}
-              to="/usuarios"
-              className="flex items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 transition-colors hover:border-white/15 hover:bg-white/8"
-            >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary font-display text-xs font-bold text-primary-foreground shadow-[0_0_0_1px_rgba(255,255,255,.16)]">
-                {initials(a.registered_name)}
+          attention.map((a) => {
+            const canRecoverThisCall = canRecoverCalls && a.reasons.includes("long_call");
+            const isRecovering = recoveringOperatorId === a.operator_id;
+
+            return (
+              <div
+                key={a.operator_id}
+                className="flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 transition-colors hover:border-white/15 hover:bg-white/8"
+              >
+                <Link to="/usuarios" className="flex min-w-0 flex-1 items-center gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary font-display text-xs font-bold text-primary-foreground shadow-[0_0_0_1px_rgba(255,255,255,.16)]">
+                    {initials(a.registered_name)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{a.registered_name}</div>
+                    <div className="truncate text-xs text-white/55">
+                      {a.username ? `@${a.username}` : "Sem usuário"}
+                      {a.unit_label ? ` · ${a.unit_label}` : ""}
+                    </div>
+                    <div className="truncate text-xs font-medium text-warning">{attentionReasonLabel(a)}</div>
+                  </div>
+                  {!canRecoverThisCall && <ChevronRight className="h-4 w-4 shrink-0 text-white/45" />}
+                </Link>
+
+                {canRecoverThisCall && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 shrink-0 border border-white/15 bg-white/10 px-2.5 text-xs text-white hover:bg-white/20 hover:text-white"
+                    disabled={isRecovering}
+                    aria-label={`Destravar atendimento de ${a.registered_name}`}
+                    onClick={() => onRecoverCall(a)}
+                  >
+                    {isRecovering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LockOpen className="h-3.5 w-3.5" />}
+                    Destravar
+                  </Button>
+                )}
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">{a.registered_name}</div>
-                <div className="truncate text-xs text-white/55">
-                  {a.username ? `@${a.username}` : "Sem usuário"}
-                  {a.unit_label ? ` · ${a.unit_label}` : ""}
-                </div>
-                <div className="truncate text-xs font-medium text-warning">{attentionReasonLabel(a)}</div>
-              </div>
-              <ChevronRight className="h-4 w-4 shrink-0 text-white/45" />
-            </Link>
-          ))
+            );
+          })
         )}
       </CardContent>
     </Card>
@@ -524,8 +574,12 @@ function OverviewFilters({
 
 /* -------------------------------- Página --------------------------------- */
 
+const CALL_RECOVERY_ROLES = new Set(["superadmin", "unit_manager", "operations_manager"]);
+
 export function OverviewPage() {
   const queryClient = useQueryClient();
+  const { adminUser } = useAuth();
+  const [recoverTarget, setRecoverTarget] = useState<AttentionOperator | null>(null);
   const [unitFilter, setUnitFilter] = useUrlFilterState("unit", "all");
   const [statusFilter, setStatusFilter] = useUrlFilterState("status", "all");
   const [period, setPeriod] = useUrlFilterState<PeriodPreset>("period", "7d", ["7d", "30d", "90d", "custom"]);
@@ -551,6 +605,32 @@ export function OverviewPage() {
     queryFn: () => fetchOverviewActionCenter(scopedUnitId),
     staleTime: 15_000,
     refetchInterval: 30_000,
+  });
+  const recoverMutation = useMutation({
+    mutationFn: (operator: AttentionOperator) =>
+      recoverStuckOperatorCall(operator.operator_id, operator.state_revision),
+    onSuccess: (result, operator) => {
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+      setRecoverTarget(null);
+
+      if (result.result === "already_resolved") {
+        toast.info("Atendimento já encerrado", {
+          description: `${operator.registered_name} não estava mais em atendimento. Os dados foram atualizados.`,
+        });
+        return;
+      }
+
+      toast.success("Operador destravado", {
+        description: `${operator.registered_name} foi desconectado e precisará entrar novamente no app.`,
+      });
+    },
+    onError: (error: unknown) => {
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+      setRecoverTarget(null);
+      toast.error("Não foi possível destravar o atendimento", {
+        description: errorMessage(error),
+      });
+    },
   });
 
   const isFetching = resetInfo.isFetching || counts.isFetching || states.isFetching || units.isFetching || activity.isFetching || daily.isFetching || actionCenter.isFetching;
@@ -603,6 +683,7 @@ export function OverviewPage() {
     () => new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "long", year: "numeric" }).format(new Date()),
     [],
   );
+  const canRecoverCalls = Boolean(adminUser?.role && CALL_RECOVERY_ROLES.has(adminUser.role));
 
   return (
     <>
@@ -707,7 +788,13 @@ export function OverviewPage() {
       </div>
 
       <div className="mb-5 grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)]">
-        <AttentionPanel rows={filteredRows} loading={states.isLoading} />
+        <AttentionPanel
+          rows={filteredRows}
+          loading={states.isLoading}
+          canRecoverCalls={canRecoverCalls}
+          recoveringOperatorId={recoverMutation.isPending ? recoverMutation.variables?.operator_id ?? null : null}
+          onRecoverCall={setRecoverTarget}
+        />
         <StatusPanel groups={filteredGroups} total={visibleTotal} loading={states.isLoading} />
       </div>
 
@@ -716,6 +803,44 @@ export function OverviewPage() {
       </div>
 
       <ActivityPanel items={activity.data ?? []} loading={activity.isLoading} />
+
+      <AlertDialog
+        open={Boolean(recoverTarget)}
+        onOpenChange={(open) => {
+          if (!open && !recoverMutation.isPending) setRecoverTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Destravar atendimento de {recoverTarget?.registered_name ?? "Operador"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>Use esta ação apenas se o atendimento já terminou e o app permaneceu preso nesse estado.</p>
+                <p>
+                  A sessão operacional será revogada, o atendimento será encerrado no painel e o operador precisará entrar novamente no app.
+                </p>
+                <p className="font-medium text-foreground">O histórico e a auditoria da intervenção serão preservados.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={recoverMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={recoverMutation.isPending || !recoverTarget}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                if (recoverTarget) recoverMutation.mutate(recoverTarget);
+              }}
+            >
+              {recoverMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <LockOpen className="h-4 w-4" />}
+              Destravar e desconectar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
