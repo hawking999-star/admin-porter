@@ -11,6 +11,7 @@ Não precisa mexer no código para operar. Tudo é controlado por variáveis de 
 """
 
 import hashlib
+import json
 import os
 import re
 import signal
@@ -19,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -75,8 +77,9 @@ MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
 AUDIO_BITRATE = int(env("AUDIO_BITRATE", "128"))  # kbps do mp3
 POLL_SECONDS = int(env("POLL_SECONDS", "10"))
 MAX_ATTEMPTS = min(max(int(env("MAX_ATTEMPTS", "3")), 1), 10)
-MAX_CONCURRENT_JOBS = min(max(int(env("MAX_CONCURRENT_JOBS", "1")), 1), 10)
-TRACK_CONCURRENCY = min(max(int(env("TRACK_CONCURRENCY", "2")), 1), 5)
+MAX_CONCURRENT_JOBS = min(max(int(env("MAX_CONCURRENT_JOBS", "10")), 1), 10)
+LOCAL_CONCURRENT_JOBS = min(max(int(env("LOCAL_CONCURRENT_JOBS", "5")), 1), 10)
+TRACK_CONCURRENCY = min(max(int(env("TRACK_CONCURRENCY", "1")), 1), 1)
 TRACK_MAX_ATTEMPTS = min(max(int(env("TRACK_MAX_ATTEMPTS", "2")), 1), 2)
 STALE_JOB_SECONDS = int(env("STALE_JOB_SECONDS", "1800"))
 STALE_JOB_CHECK_SECONDS = int(env("STALE_JOB_CHECK_SECONDS", "60"))
@@ -94,6 +97,10 @@ STORAGE_DELETION_POLL_SECONDS = max(int(env("STORAGE_DELETION_POLL_SECONDS", "30
 WORKER_HEARTBEAT_SECONDS = min(max(int(env("WORKER_HEARTBEAT_SECONDS", "30")), 10), 60)
 R2_HEALTHCHECK_SECONDS = min(max(int(env("R2_HEALTHCHECK_SECONDS", "300")), 60), 1800)
 WORKER_VERSION = env("RAILWAY_GIT_COMMIT_SHA", env("WORKER_VERSION", "local"))[:64]
+WORKER_INSTANCE_ID = env(
+    "RAILWAY_REPLICA_ID",
+    env("HOSTNAME", f"worker-{WORKER_VERSION[:12]}"),
+)[:200]
 DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS = min(max(int(env("DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS", "120")), 10), 600)
 YTDLP_NETWORK_TIMEOUT_SECONDS = min(max(int(env("YTDLP_NETWORK_TIMEOUT_SECONDS", "30")), 5), 120)
 SPOTIFY_METADATA_TIMEOUT_SECONDS = min(
@@ -112,6 +119,7 @@ SPOTIFY_SEARCH_LIMIT = min(max(int(env("SPOTIFY_SEARCH_LIMIT", "5")), 1), 10)
 REQUEST_TIMEOUT_SECONDS = min(max(int(env("REQUEST_TIMEOUT_SECONDS", "3600")), 60), 7200)
 YOUTUBE_COOKIES = env("YOUTUBE_COOKIES", "")
 YOUTUBE_COOKIES_FILE = env("YOUTUBE_COOKIES_FILE", "")
+YOUTUBE_CANARY_URL = env("YOUTUBE_CANARY_URL", "")
 # URL interna do provedor de PO Token (bgutil). Quando configurado, links
 # públicos usam o token automático primeiro; cookies ficam apenas como fallback.
 POT_PROVIDER_BASE_URL = env("POT_PROVIDER_BASE_URL", "").rstrip("/")
@@ -312,6 +320,7 @@ def heartbeat_loop() -> None:
         state = worker_state_snapshot()
         details = {
             "version": WORKER_VERSION,
+            "instance_id": WORKER_INSTANCE_ID,
             "current_job_id": state.get("current_job_id"),
             "activity": state.get("activity"),
             "activity_at": state.get("activity_at"),
@@ -362,17 +371,18 @@ def reset_youtube_format_failures() -> None:
         _YOUTUBE_FORMAT_FAILURE_IDS.clear()
 
 
-def open_youtube_circuit(reason: str) -> None:
+def open_youtube_circuit(reason: str, seconds: int | None = None) -> None:
     """Pausa novos downloads quando o bloqueio afeta todo o IP/worker."""
     global _YOUTUBE_CIRCUIT_OPEN_UNTIL, _YOUTUBE_CIRCUIT_REASON
+    open_seconds = min(max(int(seconds or YOUTUBE_CIRCUIT_OPEN_SECONDS), 60), 3600)
     with _YOUTUBE_CIRCUIT_LOCK:
         _YOUTUBE_CIRCUIT_OPEN_UNTIL = max(
             _YOUTUBE_CIRCUIT_OPEN_UNTIL,
-            time.monotonic() + YOUTUBE_CIRCUIT_OPEN_SECONDS,
+            time.monotonic() + open_seconds,
         )
         _YOUTUBE_CIRCUIT_REASON = reason
     log(
-        f"Circuit breaker do YouTube aberto por {YOUTUBE_CIRCUIT_OPEN_SECONDS}s "
+        f"Circuit breaker do YouTube aberto por {open_seconds}s "
         f"[{reason}]."
     )
 
@@ -578,8 +588,117 @@ def claim_next_job() -> dict | None:
 
 
 def update_job(job_id: str, **fields):
+    status = fields.get("status")
+    if status and "operational_status" not in fields:
+        fields["operational_status"] = {
+            "queued": "queued",
+            "running": "processing",
+            "done": "completed",
+            "partial": "completed_with_issues",
+            "error": "failed",
+        }.get(status, "queued")
     fields["updated_at"] = now_iso()
     supabase.table("download_jobs").update(fields).eq("id", job_id).execute()
+
+
+def defer_youtube_job(job: dict, code: str, friendly: str, exc: Exception) -> dict:
+    """Adia no banco sem gastar tentativas e compartilha o circuito entre réplicas."""
+    result = supabase.rpc(
+        "worker_defer_youtube_job",
+        {
+            "p_job_id": job["id"],
+            "p_error_code": code,
+            "p_error_message": friendly,
+            "p_error_details": error_details(
+                exc,
+                job_id=job.get("id"),
+                playlist_id=job.get("playlist_id"),
+            ),
+        },
+    ).execute()
+    data = result.data or {}
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    return data if isinstance(data, dict) else {}
+
+
+def acquire_music_operation_slot(
+    operation_kind: str,
+    playlist_id: str,
+    *,
+    deadline: float,
+    lease_seconds: int = 180,
+) -> str:
+    """Semáforo global no Postgres; funciona com duas ou mais réplicas."""
+    owner_id = str(uuid.uuid4())
+    while True:
+        remaining_request_seconds(deadline)
+        result = supabase.rpc(
+            "worker_acquire_music_import_slot",
+            {
+                "p_operation_kind": operation_kind,
+                "p_owner_id": owner_id,
+                "p_playlist_id": playlist_id,
+                "p_worker_id": WORKER_INSTANCE_ID,
+                "p_lease_seconds": lease_seconds,
+            },
+        ).execute()
+        data = result.data or {}
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, dict) and data.get("acquired"):
+            return owner_id
+        retry_after = max(1, min(int((data or {}).get("retry_after_seconds") or 5), 15))
+        time.sleep(min(retry_after, remaining_request_seconds(deadline)))
+
+
+def release_music_operation_slot(owner_id: str | None) -> None:
+    if not owner_id:
+        return
+    try:
+        supabase.rpc(
+            "worker_release_music_import_slot",
+            {"p_owner_id": owner_id},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        log(f"Lease global {owner_id[:8]} será liberado por expiração: {exc}")
+
+
+def claim_music_upload_task() -> dict | None:
+    result = supabase.rpc(
+        "worker_claim_music_upload_task",
+        {"p_worker_id": WORKER_INSTANCE_ID, "p_lease_seconds": 900},
+    ).execute()
+    data = result.data
+    if isinstance(data, list):
+        data = data[0] if data else None
+    return data if isinstance(data, dict) else None
+
+
+def finish_music_upload_task(
+    task_id: str,
+    success: bool,
+    *,
+    track_id: str | None = None,
+    content_sha256: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict:
+    result = supabase.rpc(
+        "worker_finish_music_upload_task",
+        {
+            "p_task_id": task_id,
+            "p_success": success,
+            "p_track_id": track_id,
+            "p_content_sha256": content_sha256,
+            "p_error_code": error_code,
+            "p_error_message": error_message,
+        },
+    ).execute()
+    data = result.data or {}
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    return data if isinstance(data, dict) else {}
 
 
 def recover_stale_running_jobs():
@@ -632,6 +751,28 @@ def complete_storage_deletion_job(job_id: str, success: bool, error: str | None 
     return supabase.rpc(
         "complete_storage_deletion_job",
         {"p_job_id": job_id, "p_success": success, "p_error": error},
+    ).execute()
+
+
+def claim_expired_music_upload_session() -> dict | None:
+    result = supabase.rpc("worker_claim_expired_music_upload_session").execute()
+    if not result.data:
+        return None
+    return result.data[0] if isinstance(result.data, list) else result.data
+
+
+def complete_expired_music_upload_cleanup(
+    session_id: str,
+    success: bool,
+    error: str | None = None,
+):
+    return supabase.rpc(
+        "worker_complete_expired_music_upload_cleanup",
+        {
+            "p_session_id": session_id,
+            "p_success": success,
+            "p_error": sanitize_text(error, 1000) if error else None,
+        },
     ).execute()
 
 
@@ -1713,6 +1854,26 @@ def download_with_fallback(
         raise exc  # nenhuma alternativa serviu — propaga o erro original (indisponível)
 
 
+def download_with_global_slot(
+    entry: dict,
+    workdir: str,
+    *,
+    playlist_id: str,
+    deadline: float,
+) -> tuple[str, str, bool]:
+    """Limita o YouTube globalmente e espaça inícios entre todas as réplicas."""
+    owner_id = acquire_music_operation_slot(
+        "youtube",
+        playlist_id,
+        deadline=deadline,
+        lease_seconds=min(DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS + 60, 900),
+    )
+    try:
+        return download_with_fallback(entry, workdir, deadline=deadline)
+    finally:
+        release_music_operation_slot(owner_id)
+
+
 def sha256_of(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -1736,6 +1897,27 @@ def process_storage_deletion(job: dict):
             complete_storage_deletion_job(job["job_id"], False, str(exc))
         except Exception:  # noqa: BLE001
             # Se a confirmação falhar, o lock expira e o delete idempotente é repetido.
+            pass
+        raise
+
+
+def process_expired_music_upload_cleanup(session: dict) -> None:
+    """Remove staging expirado com confirmação e retry idempotente no banco."""
+    try:
+        s3.delete_object(
+            Bucket=R2_BUCKET,
+            Key=session["staging_object_key"],
+        )
+        complete_expired_music_upload_cleanup(session["session_id"], True)
+        log(f"Staging expirado {session['session_id']} removido com segurança.")
+    except Exception as exc:  # noqa: BLE001
+        try:
+            complete_expired_music_upload_cleanup(
+                session["session_id"],
+                False,
+                str(exc),
+            )
+        except Exception:  # noqa: BLE001
             pass
         raise
 
@@ -1870,7 +2052,12 @@ def process_single_track_job(job: dict, url: str):
             if found.data:
                 track_id = found.data[0]["id"]
             else:
-                mp3, used_vid, substituted = download_with_fallback(entry, workdir, deadline=deadline)
+                mp3, used_vid, substituted = download_with_global_slot(
+                    entry,
+                    workdir,
+                    playlist_id=playlist_id,
+                    deadline=deadline,
+                )
                 dl_key = f"tracks/{used_vid}.mp3"
                 try:
                     alt_found = (
@@ -1955,6 +2142,15 @@ def process_single_track_job(job: dict, url: str):
             log(f"Job {job_id} — faixa trocada com sucesso ({entry['title'][:60]})")
     except Exception as exc:  # noqa: BLE001
         code, friendly = classify_error(exc)
+        if code in YOUTUBE_CIRCUIT_CODES:
+            set_request_item_status_by_youtube_id(
+                playlist_request_id,
+                require_youtube_video_url(safe_url).resource_id,
+                "resolved",
+                error_message=friendly[:1000],
+                last_error_code=code,
+            )
+            raise
         update_job(
             job_id,
             status="error",
@@ -2269,9 +2465,10 @@ def process_playlist_entry(
                 track_id = found.data[0]["id"]
             else:
                 with tempfile.TemporaryDirectory(prefix=f"ptm-{vid}-") as workdir:
-                    mp3, used_vid, substituted = download_with_fallback(
+                    mp3, used_vid, substituted = download_with_global_slot(
                         work_entry,
                         workdir,
+                        playlist_id=playlist_id,
                         deadline=deadline,
                     )
                     dl_key = f"tracks/{used_vid}.mp3"
@@ -2754,27 +2951,21 @@ def fail_job(job: dict, exc: Exception):
     attempts = job.get("attempts") or 1
     code, friendly = classify_error(exc)
     if code in YOUTUBE_CIRCUIT_CODES:
-        open_youtube_circuit(code)
-        next_attempt_at = (
-            datetime.now(timezone.utc)
-            + timedelta(seconds=YOUTUBE_CIRCUIT_OPEN_SECONDS)
-        ).isoformat()
-        update_job(
-            job["id"],
-            status="queued",
-            next_attempt_at=next_attempt_at,
-            # Pausas globais não consomem a tentativa do job.
-            attempts=max(attempts - 1, 0),
-            started_at=job.get("started_at"),
-            finished_at=None,
-            locked_at=None,
-            error=f"paused: {redact_sensitive(exc, SECRET_VALUES)}",
-            error_code=code,
-            error_message=friendly,
-            error_details=error_details(exc, job_id=job.get("id"), playlist_id=job.get("playlist_id")),
-            last_error_at=now_iso(),
+        deferred = defer_youtube_job(job, code, friendly, exc)
+        delay_seconds = int(
+            deferred.get("delay_seconds") or YOUTUBE_CIRCUIT_OPEN_SECONDS
         )
-        log(f"Job {job['id']} pausado por bloqueio global do YouTube [{code}].")
+        open_youtube_circuit(code, delay_seconds)
+        if deferred.get("blocked"):
+            log(
+                f"Job {job['id']} saiu da fila quente após "
+                f"{deferred.get('defer_count', 3)} bloqueios do YouTube [{code}]."
+            )
+        else:
+            log(
+                f"Job {job['id']} aguarda canário do YouTube em "
+                f"{delay_seconds}s [{code}]."
+            )
         return
     if code in SPOTIFY_TRANSIENT_JOB_CODES and attempts < 3:
         retry_delay_seconds = 60 if attempts == 1 else 300
@@ -2836,6 +3027,227 @@ def fail_job(job: dict, exc: Exception):
         log(f"Job {job['id']} falhou definitivamente: {exc}")
 
 
+def detect_uploaded_audio_container(path: str) -> str:
+    """Valida magic bytes; extensão e MIME declarados nunca são suficientes."""
+    with open(path, "rb") as source:
+        header = source.read(16)
+    if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0):
+        return "mp3"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "m4a"
+    if header.startswith(b"OggS"):
+        return "ogg"
+    if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+        return "wav"
+    raise ValueError("MUSIC_UPLOAD_MAGIC_BYTES_INVALID")
+
+
+def uploaded_audio_duration_seconds(path: str) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "json", path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    payload = json.loads(result.stdout or "{}")
+    duration = float((payload.get("format") or {}).get("duration") or 0)
+    if duration <= 0:
+        raise ValueError("TRACK_DURATION_UNKNOWN")
+    if duration > MAX_TRACK_DURATION_SECONDS:
+        raise ValueError("TRACK_DURATION_LIMIT_EXCEEDED")
+    return duration
+
+
+def transcode_uploaded_audio(source_path: str, output_path: str) -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error", "-i", source_path,
+            "-vn", "-codec:a", "libmp3lame", "-b:a", f"{AUDIO_BITRATE}k",
+            "-map_metadata", "-1", output_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+    )
+    if not os.path.exists(output_path):
+        raise RuntimeError("MUSIC_UPLOAD_TRANSCODE_OUTPUT_MISSING")
+    if os.path.getsize(output_path) > MAX_FILE_BYTES:
+        raise ValueError("TRACK_SIZE_LIMIT_EXCEEDED")
+
+
+def process_music_upload_task(task: dict) -> None:
+    task_id = task["task_id"]
+    playlist_id = task["playlist_id"]
+    staging_key = task["staging_object_key"]
+    deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+    lease_id: str | None = None
+    cleanup_staging = False
+    try:
+        lease_id = acquire_music_operation_slot(
+            "upload", playlist_id, deadline=deadline, lease_seconds=900
+        )
+        with tempfile.TemporaryDirectory(prefix="ptm-upload-") as workdir:
+            source_path = os.path.join(workdir, "source")
+            output_path = os.path.join(workdir, "output.mp3")
+            s3.download_file(R2_BUCKET, staging_key, source_path)
+            actual_size = os.path.getsize(source_path)
+            if actual_size != int(task["declared_size_bytes"]):
+                raise ValueError("MUSIC_UPLOAD_SIZE_MISMATCH")
+            detect_uploaded_audio_container(source_path)
+            duration_seconds = uploaded_audio_duration_seconds(source_path)
+            transcode_uploaded_audio(source_path, output_path)
+            digest = sha256_of(output_path)
+
+            found = (
+                supabase.table("tracks")
+                .select("id,storage_object_key")
+                .eq("content_hash", digest)
+                .eq("status", "available")
+                .limit(1)
+                .execute()
+            )
+            if found.data:
+                track_id = found.data[0]["id"]
+            else:
+                final_key = f"tracks/upload-{digest[:32]}.mp3"
+                existing_key = (
+                    supabase.table("tracks")
+                    .select("id")
+                    .eq("storage_object_key", final_key)
+                    .limit(1)
+                    .execute()
+                )
+                if existing_key.data:
+                    track_id = existing_key.data[0]["id"]
+                else:
+                    upload_to_r2(output_path, final_key)
+                    artists = task.get("artists") or []
+                    artist = ", ".join(artists) if isinstance(artists, list) else str(artists)
+                    metadata = {
+                        "source": "admin_upload",
+                        "size_bytes": os.path.getsize(output_path),
+                        "storage_checked_at": now_iso(),
+                        "content_sha256": digest,
+                        "rights_attested": True,
+                        "upload_session_id": task.get("session_id"),
+                    }
+                    if R2_PUBLIC_BASE_URL:
+                        metadata["public_url"] = f"{R2_PUBLIC_BASE_URL}/{final_key}"
+                    inserted = (
+                        supabase.table("tracks")
+                        .upsert(
+                            {
+                                "title": sanitize_text(task.get("title") or task.get("original_filename"), 300),
+                                "artist": sanitize_text(artist, 300) or None,
+                                "duration_ms": int(duration_seconds * 1000),
+                                "storage_object_key": final_key,
+                                "content_hash": digest,
+                                "mime_type": "audio/mpeg",
+                                "status": "available",
+                                "metadata": sanitize_json(metadata),
+                            },
+                            on_conflict="storage_object_key",
+                        )
+                        .execute()
+                    )
+                    track_id = inserted.data[0]["id"]
+
+            supabase.table("playlist_tracks").upsert(
+                {
+                    "playlist_id": playlist_id,
+                    "track_id": track_id,
+                    "position": max(int(task.get("position") or 0), 0),
+                    "added_by_type": "admin_upload",
+                },
+                on_conflict="playlist_id,track_id",
+            ).execute()
+            finish_music_upload_task(
+                task_id,
+                True,
+                track_id=track_id,
+                content_sha256=digest,
+            )
+            cleanup_staging = True
+            log(f"Upload administrativo {task_id} concluído e vinculado idempotentemente.")
+    except Exception as exc:  # noqa: BLE001
+        code, friendly = classify_error(exc)
+        if code == "IMPORTER_ERROR" and "MUSIC_UPLOAD" in str(exc):
+            code = str(exc).split(":", 1)[0][:120]
+            friendly = "O arquivo enviado não passou pela validação de áudio."
+        outcome = finish_music_upload_task(
+            task_id,
+            False,
+            error_code=code,
+            error_message=friendly,
+        )
+        cleanup_staging = bool(outcome.get("terminal"))
+        log(f"Upload administrativo {task_id} falhou [{code}]; retry finito registrado.")
+    finally:
+        release_music_operation_slot(lease_id)
+        if cleanup_staging:
+            try:
+                s3.delete_object(Bucket=R2_BUCKET, Key=staging_key)
+            except Exception as exc:  # noqa: BLE001
+                log(f"Staging {staging_key} aguardará limpeza posterior: {exc}")
+
+
+def maybe_probe_youtube_provider() -> bool:
+    """Executa o canário autorizado com lease compartilhado antes de retomar jobs."""
+    if not YOUTUBE_CANARY_URL:
+        return False
+    result = supabase.rpc(
+        "worker_claim_youtube_probe",
+        {"p_lease_seconds": min(DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS + 60, 600)},
+    ).execute()
+    data = result.data or {}
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict) or not data.get("claimed"):
+        return False
+
+    operation_lease_id: str | None = None
+    try:
+        deadline = time.monotonic() + DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS
+        probe_playlist_id = data.get("probe_playlist_id")
+        if probe_playlist_id:
+            operation_lease_id = acquire_music_operation_slot(
+                "youtube",
+                probe_playlist_id,
+                deadline=deadline,
+                lease_seconds=min(DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS + 60, 900),
+            )
+        entry = _extract_single_video(YOUTUBE_CANARY_URL, deadline=deadline)
+        if not entry.get("id"):
+            raise RuntimeError("YOUTUBE_CANARY_INVALID")
+        with tempfile.TemporaryDirectory(prefix="ptm-canary-") as workdir:
+            probe_file = download_one(entry, workdir, deadline=deadline)
+            if not os.path.exists(probe_file):
+                raise RuntimeError("YOUTUBE_CANARY_DOWNLOAD_MISSING")
+        supabase.rpc(
+            "worker_record_youtube_probe_result",
+            {"p_success": True, "p_error_code": None, "p_error_message": None},
+        ).execute()
+        close_youtube_circuit()
+        log("Canário autorizado validou o YouTube; jobs aguardando voltaram à fila.")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        code, friendly = classify_error(exc)
+        supabase.rpc(
+            "worker_record_youtube_probe_result",
+            {"p_success": False, "p_error_code": code, "p_error_message": friendly},
+        ).execute()
+        open_youtube_circuit(code, 3600)
+        log(f"Canário do YouTube falhou [{code}]; nova verificação em 60 minutos.")
+        return False
+    finally:
+        release_music_operation_slot(operation_lease_id)
+
+
 # --------------------------------------------------------------------------- #
 # Loop principal
 # --------------------------------------------------------------------------- #
@@ -2848,6 +3260,14 @@ def check_ffmpeg():
         sys.exit(1)
 
 
+def run_download_job(job: dict) -> None:
+    try:
+        process_job(job)
+    except Exception as exc:  # noqa: BLE001
+        log(f"Job {job.get('id')} falhou: {exc.__class__.__name__}")
+        fail_job(job, exc)
+
+
 def main():
     check_ffmpeg()
     set_worker_state("starting", "Validacoes de inicializacao concluidas")
@@ -2856,12 +3276,21 @@ def main():
     log("Worker iniciado. Aguardando jobs...")
     log(
         f"  limites: {MAX_TRACKS} faixas/playlist, {MAX_FILE_MB} MB/faixa, "
-        f"{MAX_CONCURRENT_JOBS} job(s), {TRACK_CONCURRENCY} faixa(s)/job, "
+        f"{MAX_CONCURRENT_JOBS} jobs globais, {LOCAL_CONCURRENT_JOBS} por réplica, "
+        f"{TRACK_CONCURRENCY} faixa(s)/playlist, "
         f"{TRACK_MAX_ATTEMPTS} tentativa(s)/faixa, {REQUEST_TIMEOUT_SECONDS}s/solicitação"
     )
     log(
         "  PO Token automático: "
         + ("ativo (cookies como fallback)" if POT_PROVIDER_BASE_URL else "desativado")
+    )
+    log(
+        "  canário autorizado do YouTube: "
+        + (
+            "configurado"
+            if YOUTUBE_CANARY_URL
+            else "não configurado; retomada automática bloqueada"
+        )
     )
     log(
         "  estratégias YouTube: "
@@ -2870,9 +3299,29 @@ def main():
     next_stale_job_check_at = 0.0
     next_storage_deletion_check_at = 0.0
     next_circuit_log_at = 0.0
+    job_executor = ThreadPoolExecutor(
+        max_workers=LOCAL_CONCURRENT_JOBS,
+        thread_name_prefix="playlist-job",
+    )
+    active_jobs: dict = {}
     set_worker_state("idle", "Aguardando jobs")
     while True:
         try:
+            for future in list(active_jobs):
+                if not future.done():
+                    continue
+                job_id = active_jobs.pop(future)
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001
+                    log(f"Job concorrente {job_id} encerrou com falha inesperada: {exc}")
+            if active_jobs:
+                current_id = next(iter(active_jobs.values())) if len(active_jobs) == 1 else None
+                set_worker_state(
+                    "working",
+                    f"Processando {len(active_jobs)} playlist(s)",
+                    current_id,
+                )
             if time.monotonic() >= next_stale_job_check_at:
                 try:
                     recover_stale_running_jobs()
@@ -2881,6 +3330,17 @@ def main():
                 next_stale_job_check_at = time.monotonic() + STALE_JOB_CHECK_SECONDS
             if time.monotonic() >= next_storage_deletion_check_at:
                 next_storage_deletion_check_at = time.monotonic() + STORAGE_DELETION_POLL_SECONDS
+                expired_upload = claim_expired_music_upload_session()
+                if expired_upload:
+                    set_worker_state("working", "Removendo upload expirado do R2")
+                    try:
+                        process_expired_music_upload_cleanup(expired_upload)
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"Falha ao limpar upload expirado; retry agendado: {exc}")
+                    finally:
+                        set_worker_state("idle", "Aguardando jobs")
+                    next_storage_deletion_check_at = 0.0
+                    continue
                 deletion_job = claim_storage_deletion_job()
                 if deletion_job:
                     set_worker_state("working", "Removendo objeto orfao do R2")
@@ -2892,7 +3352,22 @@ def main():
                         set_worker_state("idle", "Aguardando jobs")
                     next_storage_deletion_check_at = 0.0
                     continue
+            upload_task = claim_music_upload_task()
+            if upload_task:
+                set_worker_state(
+                    "working",
+                    "Validando upload administrativo",
+                    upload_task.get("task_id"),
+                )
+                process_music_upload_task(upload_task)
+                set_worker_state("idle", "Aguardando jobs")
+                continue
             circuit_remaining, circuit_reason = youtube_circuit_remaining()
+            probe_succeeded = maybe_probe_youtube_provider()
+            if probe_succeeded:
+                circuit_remaining = 0
+                circuit_reason = None
+                next_circuit_log_at = 0.0
             if circuit_remaining > 0:
                 set_worker_state("degraded", f"YouTube pausado: {circuit_reason or 'circuit breaker'}")
                 if time.monotonic() >= next_circuit_log_at:
@@ -2903,19 +3378,22 @@ def main():
                     next_circuit_log_at = time.monotonic() + 60
                 time.sleep(min(POLL_SECONDS, max(circuit_remaining, 1)))
                 continue
+            if len(active_jobs) >= LOCAL_CONCURRENT_JOBS:
+                time.sleep(1)
+                continue
             job = claim_next_job()
             if not job:
-                set_worker_state("idle", "Aguardando jobs")
-                time.sleep(POLL_SECONDS)
+                if not active_jobs:
+                    set_worker_state("idle", "Aguardando jobs")
+                time.sleep(1 if active_jobs else POLL_SECONDS)
                 continue
-            set_worker_state("working", "Processando importacao", job.get("id"))
-            try:
-                process_job(job)
-            except Exception as exc:  # noqa: BLE001
-                log(f"Job {job.get('id')} falhou: {exc.__class__.__name__}")
-                fail_job(job, exc)
-            finally:
-                set_worker_state("idle", "Aguardando jobs")
+            future = job_executor.submit(run_download_job, job)
+            active_jobs[future] = job.get("id")
+            set_worker_state(
+                "working",
+                f"Processando {len(active_jobs)} playlist(s)",
+                job.get("id") if len(active_jobs) == 1 else None,
+            )
         except Exception as exc:  # noqa: BLE001
             set_worker_state("degraded", "Falha inesperada no loop principal")
             log(f"[loop] erro inesperado: {exc}")

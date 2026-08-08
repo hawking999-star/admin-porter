@@ -13,6 +13,7 @@ export type OperationalHealth = {
     started_at: string | null;
     details: {
       version?: string;
+      instance_id?: string;
       current_job_id?: string | null;
       activity?: string;
       activity_at?: string;

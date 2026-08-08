@@ -41,6 +41,15 @@ export type DownloadStatus = "queued" | "running" | "done" | "partial" | "error"
 
 export type DownloadJob = {
   status: DownloadStatus;
+  operational_status:
+    | "queued"
+    | "processing"
+    | "waiting_provider"
+    | "waiting_review"
+    | "completed"
+    | "completed_with_issues"
+    | "failed"
+    | "cancelled";
   total: number;
   completed: number;
   failed: number;
@@ -51,6 +60,11 @@ export type DownloadJob = {
   last_error_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+  next_attempt_at: string | null;
+  provider_defer_count: number;
+  provider_first_deferred_at: string | null;
+  provider_deferred_seconds: number;
+  provider_resume_at: string | null;
 };
 
 export type Playlist = {
@@ -128,7 +142,7 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
   let query = supabase
     .from("playlists")
     .select(
-      "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_error_acknowledged_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(mode, status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, created_at)",
+      "id, name, type, approval_status, import_status, source_url, submitted_at, reviewed_at, reviewed_by_admin_id, rejection_reason, error_message, error_code, error_details, last_error_at, import_error_acknowledged_at, import_started_at, import_finished_at, created_at, operators(display_name), units(name, city, state), reviewed_by:admin_users!playlists_reviewed_by_admin_id_fkey(display_name), download_jobs(mode, status, operational_status, total, completed, failed, error, error_code, error_message, error_details, last_error_at, started_at, finished_at, next_attempt_at, provider_defer_count, provider_first_deferred_at, provider_deferred_seconds, provider_resume_at, created_at)",
       { count: "exact" },
     )
     .order("submitted_at", { ascending: false, nullsFirst: false })
@@ -161,6 +175,20 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
   const { data, error, count } = await query.range(from, to);
   if (error) throw error;
 
+  const playlistIds = (data ?? []).map((playlist: any) => playlist.id as string);
+  const snapshotsByPlaylist = new Map<string, PlaylistRequestDetail["operational"]>();
+  if (playlistIds.length > 0) {
+    const { data: snapshots, error: snapshotError } = await supabase.rpc(
+      "admin_playlist_import_snapshots",
+      { p_playlist_ids: playlistIds },
+    );
+    if (snapshotError) throw snapshotError;
+    for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+      const typed = snapshot as PlaylistRequestDetail["operational"];
+      snapshotsByPlaylist.set(typed.playlist_id, typed);
+    }
+  }
+
   const rows = (data ?? []).map((p: any) => {
     // Trocas manuais criam jobs single_track. Uma falha pontual nelas não pode
     // substituir o resultado nem o selo da importação da playlist inteira.
@@ -170,6 +198,29 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
     const latest = jobs
       .slice()
       .sort((a: any, b: any) => (a.created_at < b.created_at ? 1 : -1))[0];
+    const snapshot = snapshotsByPlaylist.get(p.id);
+    const effectiveDownload = latest
+      ? {
+          ...latest,
+          status: snapshot?.legacy_status ?? latest.status,
+          operational_status: snapshot?.state ?? latest.operational_status,
+          total: snapshot?.progress.total ?? latest.total,
+          completed: snapshot
+            ? snapshot.state === "waiting_provider"
+              ? snapshot.progress.processed
+              : snapshot.progress.completed
+            : latest.completed,
+          failed: snapshot ? snapshot.summary.failed + snapshot.summary.not_found : latest.failed,
+          next_attempt_at: snapshot ? snapshot.next_attempt_at : latest.next_attempt_at,
+          provider_defer_count: snapshot?.defer_count ?? latest.provider_defer_count,
+          provider_first_deferred_at: snapshot?.first_deferred_at ?? latest.provider_first_deferred_at,
+          provider_deferred_seconds: snapshot?.deferred_seconds ?? latest.provider_deferred_seconds,
+          error_details: {
+            ...(latest.error_details ?? {}),
+            ...(snapshot ? { effective_summary: snapshot.summary } : {}),
+          },
+        }
+      : null;
     return {
       id: p.id,
       name: p.name,
@@ -191,25 +242,41 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
       unit_name: p.units?.name ?? null,
       unit_city: p.units?.city ?? null,
       unit_state: p.units?.state ?? null,
-      download: latest
+      download: effectiveDownload
         ? {
-            status: latest.status,
-            total: latest.total ?? 0,
-            completed: latest.completed ?? 0,
-            failed: latest.failed ?? 0,
-            error: latest.error ?? null,
-            error_code: latest.error_code ?? null,
-            error_message: latest.error_message ?? null,
-            error_details: latest.error_details ?? null,
-            last_error_at: latest.last_error_at ?? null,
-            started_at: latest.started_at ?? null,
-            finished_at: latest.finished_at ?? null,
+            status: effectiveDownload.status,
+            operational_status: effectiveDownload.operational_status ?? (
+              effectiveDownload.status === "running" ? "processing"
+                : effectiveDownload.status === "done" ? "completed"
+                  : effectiveDownload.status === "partial" ? "completed_with_issues"
+                    : effectiveDownload.status === "error" ? "failed" : "queued"
+            ),
+            total: effectiveDownload.total ?? 0,
+            completed: effectiveDownload.completed ?? 0,
+            failed: effectiveDownload.failed ?? 0,
+            error: effectiveDownload.error ?? null,
+            error_code: effectiveDownload.error_code ?? null,
+            error_message: effectiveDownload.error_message ?? null,
+            error_details: effectiveDownload.error_details ?? null,
+            last_error_at: effectiveDownload.last_error_at ?? null,
+            started_at: effectiveDownload.started_at ?? null,
+            finished_at: effectiveDownload.finished_at ?? null,
+            next_attempt_at: effectiveDownload.next_attempt_at ?? null,
+            provider_defer_count: effectiveDownload.provider_defer_count ?? 0,
+            provider_first_deferred_at: effectiveDownload.provider_first_deferred_at ?? null,
+            provider_deferred_seconds: effectiveDownload.provider_deferred_seconds ?? 0,
+            provider_resume_at: effectiveDownload.provider_resume_at ?? null,
           }
         : null,
-      import_status: p.import_status ?? importStatusFromDownload(
+      import_status: snapshot
+        ? snapshot.state === "completed" ? "success"
+          : snapshot.state === "completed_with_issues" || snapshot.state === "failed" ? "failed"
+            : "processing"
+        : p.import_status ?? importStatusFromDownload(
         latest
           ? {
               status: latest.status,
+              operational_status: latest.operational_status ?? "queued",
               total: latest.total ?? 0,
               completed: latest.completed ?? 0,
               failed: latest.failed ?? 0,
@@ -220,6 +287,11 @@ export async function listPlaylists(filters: PlaylistFilters): Promise<Paginated
               last_error_at: latest.last_error_at ?? null,
               started_at: latest.started_at ?? null,
               finished_at: latest.finished_at ?? null,
+              next_attempt_at: latest.next_attempt_at ?? null,
+              provider_defer_count: latest.provider_defer_count ?? 0,
+              provider_first_deferred_at: latest.provider_first_deferred_at ?? null,
+              provider_deferred_seconds: latest.provider_deferred_seconds ?? 0,
+              provider_resume_at: latest.provider_resume_at ?? null,
             }
           : null,
       ),
@@ -373,12 +445,81 @@ export type PlaylistRequestDetail = {
   unit: { name: string | null; city: string | null; state: string | null };
   summary: Record<"total" | "resolved" | "review_recommended" | "not_found" | "duplicate" | "duration_exceeded" | "playlist_limit_exceeded" | "failed", number>;
   items: PlaylistRequestDetailItem[];
+  operational: {
+    playlist_id: string;
+    request_id: string | null;
+    job_id: string | null;
+    state: DownloadJob["operational_status"];
+    legacy_status: DownloadStatus | null;
+    progress: { completed: number; processed: number; total: number };
+    summary: {
+      total: number;
+      processed: number;
+      imported: number;
+      failed: number;
+      not_found: number;
+      review: number;
+      skipped: number;
+      active: number;
+    };
+    provider: {
+      name: string;
+      status: "healthy" | "degraded" | "blocked" | "probing";
+      error_code: string | null;
+      message: string | null;
+      next_probe_at: string | null;
+      last_success_at: string | null;
+    };
+    next_attempt_at: string | null;
+    defer_count: number;
+    first_deferred_at: string | null;
+    deferred_seconds: number;
+    permissions: { can_retry: boolean; can_upload: boolean };
+  };
 };
 
 export async function getPlaylistRequestDetail(playlistId: string): Promise<PlaylistRequestDetail | null> {
   const { data, error } = await supabase.rpc("admin_playlist_request_detail", { p_playlist_id: playlistId });
   if (error) throw error;
   return (data as PlaylistRequestDetail | null) ?? null;
+}
+
+type PreparedMusicUpload = {
+  session_id: string;
+  upload_url: string;
+  expires_at: string;
+  required_headers: Record<string, string>;
+};
+
+export async function uploadPlaylistRequestItem(
+  itemId: string,
+  file: File,
+  rightsStatement: string,
+): Promise<void> {
+  const { data, error } = await supabase.functions.invoke<PreparedMusicUpload>("music-upload", {
+    body: {
+      action: "prepare",
+      item_id: itemId,
+      filename: file.name,
+      mime: file.type,
+      size_bytes: file.size,
+      rights_statement: rightsStatement,
+    },
+  });
+  if (error) throw error;
+  if (!data?.session_id || !data.upload_url) throw new Error("MUSIC_UPLOAD_PREPARE_INVALID_RESPONSE");
+
+  const uploaded = await fetch(data.upload_url, {
+    method: "PUT",
+    headers: data.required_headers,
+    body: file,
+  });
+  if (!uploaded.ok) throw new Error(`MUSIC_UPLOAD_R2_${uploaded.status}`);
+
+  const { error: completeError } = await supabase.functions.invoke("music-upload", {
+    body: { action: "complete", session_id: data.session_id },
+  });
+  if (completeError) throw completeError;
 }
 
 export async function managePlaylistRequestItem(
