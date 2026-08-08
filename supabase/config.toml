@@ -8,3 +8,6 @@ verify_jwt = true
 
 [functions.resolve-login-email]
 verify_jwt = false
+
+[functions.music-upload]
+verify_jwt = true

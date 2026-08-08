@@ -44,8 +44,10 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.worker.reset_youtube_format_failures()
 
     def test_track_configuration_is_centralized_and_bounded(self):
-        self.assertEqual(self.worker.TRACK_CONCURRENCY, 2)
+        self.assertEqual(self.worker.TRACK_CONCURRENCY, 1)
         self.assertEqual(self.worker.TRACK_MAX_ATTEMPTS, 2)
+        self.assertEqual(self.worker.MAX_CONCURRENT_JOBS, 10)
+        self.assertEqual(self.worker.LOCAL_CONCURRENT_JOBS, 5)
 
     def test_single_track_reuses_existing_audio_without_unbound_video_id(self):
         tracks_query = MagicMock()
@@ -936,10 +938,19 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertEqual(payload["item_status"], "duplicate")
         self.assertNotIn("track_id", payload)
 
-    def test_global_youtube_block_requeues_job_for_automatic_resume(self):
+    def test_global_youtube_block_uses_finite_shared_deferral(self):
         with (
             patch.object(self.worker, "update_job") as update_job,
             patch.object(self.worker, "open_youtube_circuit") as open_circuit,
+            patch.object(
+                self.worker,
+                "defer_youtube_job",
+                return_value={
+                    "defer_count": 3,
+                    "blocked": True,
+                    "delay_seconds": 3600,
+                },
+            ) as defer_job,
         ):
             self.worker.fail_job(
                 {
@@ -951,13 +962,250 @@ class AsyncTrackProcessingTests(unittest.TestCase):
                 RuntimeError("YOUTUBE_COOKIES_INVALID"),
             )
 
-        open_circuit.assert_called_once_with("YOUTUBE_COOKIES_INVALID")
-        fields = update_job.call_args.kwargs
-        self.assertEqual(fields["status"], "queued")
-        self.assertEqual(fields["attempts"], 2)
-        self.assertIsNone(fields["locked_at"])
-        self.assertIn("next_attempt_at", fields)
-        self.assertEqual(fields["error_code"], "YOUTUBE_COOKIES_INVALID")
+        defer_job.assert_called_once()
+        open_circuit.assert_called_once_with("YOUTUBE_COOKIES_INVALID", 3600)
+        update_job.assert_not_called()
+
+    def test_first_global_youtube_block_waits_fifteen_minutes(self):
+        with (
+            patch.object(
+                self.worker,
+                "defer_youtube_job",
+                return_value={
+                    "defer_count": 1,
+                    "blocked": False,
+                    "delay_seconds": 900,
+                },
+            ),
+            patch.object(self.worker, "open_youtube_circuit") as open_circuit,
+        ):
+            self.worker.fail_job(
+                {"id": "job-1", "playlist_id": "playlist-1", "attempts": 1},
+                RuntimeError("YOUTUBE_COOKIES_INVALID"),
+            )
+
+        open_circuit.assert_called_once_with("YOUTUBE_COOKIES_INVALID", 900)
+
+    def test_global_slot_is_released_when_download_crashes(self):
+        with (
+            tempfile.TemporaryDirectory() as workdir,
+            patch.object(
+                self.worker,
+                "acquire_music_operation_slot",
+                return_value="lease-1",
+            ),
+            patch.object(
+                self.worker,
+                "download_with_fallback",
+                side_effect=RuntimeError("download crashed"),
+            ),
+            patch.object(self.worker, "release_music_operation_slot") as release,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "download crashed"):
+                self.worker.download_with_global_slot(
+                    {"id": "abcdefghijk"},
+                    workdir,
+                    playlist_id="playlist-1",
+                    deadline=self.worker.time.monotonic() + 30,
+                )
+
+        release.assert_called_once_with("lease-1")
+
+    def test_upload_magic_bytes_reject_spoofed_extension(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            path = os.path.join(workdir, "spoofed.mp3")
+            with open(path, "wb") as upload:
+                upload.write(b"not an audio container")
+            with self.assertRaisesRegex(ValueError, "MUSIC_UPLOAD_MAGIC_BYTES_INVALID"):
+                self.worker.detect_uploaded_audio_container(path)
+
+    def test_upload_magic_bytes_accept_supported_containers(self):
+        headers = {
+            "mp3": b"ID3\x04\x00\x00\x00\x00\x00\x00",
+            "m4a": b"\x00\x00\x00\x18ftypM4A ",
+            "ogg": b"OggS\x00\x02\x00\x00\x00\x00\x00\x00",
+            "wav": b"RIFF\x00\x00\x00\x00WAVEfmt ",
+        }
+        for expected, header in headers.items():
+            with self.subTest(container=expected), tempfile.TemporaryDirectory() as workdir:
+                path = os.path.join(workdir, f"audio.{expected}")
+                with open(path, "wb") as upload:
+                    upload.write(header)
+                self.assertEqual(
+                    self.worker.detect_uploaded_audio_container(path),
+                    expected,
+                )
+
+    def test_upload_transcode_is_mp3_128k_without_source_metadata(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as workdir:
+            source_path = os.path.join(workdir, "source.wav")
+            output_path = os.path.join(workdir, "output.mp3")
+
+            def fake_run(command, **_kwargs):
+                commands.append(command)
+                with open(output_path, "wb") as output:
+                    output.write(b"ID3-transcoded")
+                return Mock(returncode=0)
+
+            with patch.object(self.worker.subprocess, "run", side_effect=fake_run):
+                self.worker.transcode_uploaded_audio(source_path, output_path)
+
+        self.assertEqual(len(commands), 1)
+        self.assertIn("128k", commands[0])
+        self.assertIn("-map_metadata", commands[0])
+        self.assertEqual(commands[0][-1], output_path)
+
+    def test_upload_reuses_hash_links_idempotently_and_cleans_staging(self):
+        task = {
+            "task_id": "task-upload",
+            "session_id": "session-upload",
+            "playlist_id": "playlist-upload",
+            "staging_object_key": "music-uploads/staging/source.m4a",
+            "declared_size_bytes": 12,
+            "position": 4,
+            "title": "Faixa autorizada",
+            "artists": ["Artista"],
+        }
+        tracks = MagicMock()
+        tracks.select.return_value = tracks
+        tracks.eq.return_value = tracks
+        tracks.limit.return_value = tracks
+        tracks.execute.return_value = Mock(
+            data=[{"id": "track-existing", "storage_object_key": "tracks/existing.mp3"}]
+        )
+        playlist_tracks = MagicMock()
+        playlist_tracks.upsert.return_value = playlist_tracks
+        playlist_tracks.execute.return_value = Mock(data=[])
+
+        def table(name):
+            return tracks if name == "tracks" else playlist_tracks
+
+        def download_file(_bucket, _key, path):
+            with open(path, "wb") as source:
+                source.write(b"\x00\x00\x00\x18ftypM4A ")
+
+        def transcode(_source, output):
+            with open(output, "wb") as encoded:
+                encoded.write(b"ID3-encoded")
+
+        with (
+            patch.object(self.worker, "acquire_music_operation_slot", return_value="lease-upload"),
+            patch.object(self.worker, "release_music_operation_slot") as release,
+            patch.object(self.worker.s3, "download_file", side_effect=download_file),
+            patch.object(self.worker.s3, "delete_object") as delete_object,
+            patch.object(self.worker, "uploaded_audio_duration_seconds", return_value=180),
+            patch.object(self.worker, "transcode_uploaded_audio", side_effect=transcode),
+            patch.object(self.worker, "sha256_of", return_value="a" * 64),
+            patch.object(self.worker.supabase, "table", side_effect=table),
+            patch.object(self.worker, "finish_music_upload_task", return_value={"terminal": True}) as finish,
+        ):
+            self.worker.process_music_upload_task(task)
+
+        tracks_upserts = tracks.upsert.call_count
+        self.assertEqual(tracks_upserts, 0)
+        playlist_payload = playlist_tracks.upsert.call_args.args[0]
+        self.assertEqual(playlist_payload["track_id"], "track-existing")
+        self.assertEqual(playlist_payload["playlist_id"], "playlist-upload")
+        finish.assert_called_once_with(
+            "task-upload",
+            True,
+            track_id="track-existing",
+            content_sha256="a" * 64,
+        )
+        delete_object.assert_called_once_with(
+            Bucket=self.worker.R2_BUCKET,
+            Key="music-uploads/staging/source.m4a",
+        )
+        release.assert_called_once_with("lease-upload")
+
+    def test_upload_failure_only_cleans_staging_after_terminal_outcome(self):
+        task = {
+            "task_id": "task-upload",
+            "playlist_id": "playlist-upload",
+            "staging_object_key": "music-uploads/staging/source.wav",
+            "declared_size_bytes": 1024,
+        }
+        for terminal in (False, True):
+            with (
+                self.subTest(terminal=terminal),
+                patch.object(self.worker, "acquire_music_operation_slot", return_value="lease-upload"),
+                patch.object(self.worker, "release_music_operation_slot") as release,
+                patch.object(self.worker.s3, "download_file", side_effect=RuntimeError("R2_ERROR")),
+                patch.object(self.worker.s3, "delete_object") as delete_object,
+                patch.object(
+                    self.worker,
+                    "finish_music_upload_task",
+                    return_value={"terminal": terminal},
+                ) as finish,
+            ):
+                self.worker.process_music_upload_task(task)
+
+            finish.assert_called_once()
+            self.assertEqual(delete_object.call_count, 1 if terminal else 0)
+            release.assert_called_once_with("lease-upload")
+
+    def test_expired_upload_cleanup_is_confirmed_and_retried_safely(self):
+        session = {
+            "session_id": "session-expired",
+            "staging_object_key": "music-uploads/staging/expired.wav",
+        }
+        with (
+            patch.object(self.worker.s3, "delete_object") as delete_object,
+            patch.object(self.worker, "complete_expired_music_upload_cleanup") as complete,
+        ):
+            self.worker.process_expired_music_upload_cleanup(session)
+        delete_object.assert_called_once_with(
+            Bucket=self.worker.R2_BUCKET,
+            Key="music-uploads/staging/expired.wav",
+        )
+        complete.assert_called_once_with("session-expired", True)
+
+        with (
+            patch.object(self.worker.s3, "delete_object", side_effect=RuntimeError("R2 unavailable")),
+            patch.object(self.worker, "complete_expired_music_upload_cleanup") as complete,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "R2 unavailable"):
+                self.worker.process_expired_music_upload_cleanup(session)
+        complete.assert_called_once_with("session-expired", False, "R2 unavailable")
+
+    def test_authorized_canary_must_download_before_shared_resume(self):
+        def rpc(name, _params):
+            call = MagicMock()
+            call.execute.return_value = Mock(
+                data={"claimed": True, "probe_playlist_id": "playlist-canary"}
+                if name == "worker_claim_youtube_probe"
+                else {"healthy": True}
+            )
+            return call
+
+        def download_canary(_entry, workdir, **_kwargs):
+            path = os.path.join(workdir, "canary.mp3")
+            with open(path, "wb") as output:
+                output.write(b"ID3-canary")
+            return path
+
+        with (
+            patch.object(self.worker, "YOUTUBE_CANARY_URL", "https://www.youtube.com/watch?v=abcdefghijk"),
+            patch.object(self.worker.supabase, "rpc", side_effect=rpc) as rpc_mock,
+            patch.object(self.worker, "_extract_single_video", return_value={"id": "abcdefghijk"}),
+            patch.object(self.worker, "download_one", side_effect=download_canary) as download_one,
+            patch.object(self.worker, "acquire_music_operation_slot", return_value="lease-canary") as acquire,
+            patch.object(self.worker, "release_music_operation_slot") as release,
+            patch.object(self.worker, "close_youtube_circuit") as close_circuit,
+        ):
+            self.assertTrue(self.worker.maybe_probe_youtube_provider())
+
+        download_one.assert_called_once()
+        acquire.assert_called_once()
+        self.assertEqual(acquire.call_args.args[:2], ("youtube", "playlist-canary"))
+        release.assert_called_once_with("lease-canary")
+        self.assertEqual(
+            [call.args[0] for call in rpc_mock.call_args_list],
+            ["worker_claim_youtube_probe", "worker_record_youtube_probe_result"],
+        )
+        self.assertTrue(rpc_mock.call_args_list[-1].args[1]["p_success"])
+        close_circuit.assert_called_once()
 
     def test_spotify_transient_failures_wait_one_then_five_minutes(self):
         for attempts, expected_delay in ((1, 60), (2, 300)):

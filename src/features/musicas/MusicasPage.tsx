@@ -19,6 +19,7 @@ import {
   Inbox,
   Save,
   Download,
+  Upload,
   Loader2,
   AlertTriangle,
   Users,
@@ -78,6 +79,7 @@ import {
   retryMusicStorageDeletionJobs,
   reimportPlaylistRequest,
   retryPlaylistImport,
+  uploadPlaylistRequestItem,
   reviewPlaylist,
   savePlaylistAdminNote,
   playlistTypeLabel,
@@ -293,9 +295,9 @@ const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
   SUPABASE_ERROR: "O serviço de importação está temporariamente indisponível.",
   R2_ACCESS_DENIED: "O serviço de importação está temporariamente indisponível.",
   R2_ERROR: "O serviço de importação está temporariamente indisponível.",
-  YOUTUBE_COOKIES_MISSING: "O importador do YouTube está se recuperando automaticamente.",
-  YOUTUBE_COOKIES_INVALID: "O importador do YouTube está se recuperando automaticamente.",
-  YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE: "O importador do YouTube está se recuperando automaticamente.",
+  YOUTUBE_COOKIES_MISSING: "O YouTube está indisponível para o importador.",
+  YOUTUBE_COOKIES_INVALID: "O YouTube está indisponível para o importador.",
+  YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE: "O YouTube está indisponível para o importador.",
   IMPORTER_ERROR: "O serviço de importação está temporariamente indisponível.",
 };
 
@@ -313,6 +315,17 @@ function friendlyImportMessage(code?: string | null, fallback?: string | null): 
 }
 
 function playlistImportError(p: Playlist): string | null {
+  const effectiveSummary = (p.download?.error_details as {
+    effective_summary?: { failed?: number; not_found?: number };
+  } | null)?.effective_summary;
+  if (
+    p.download?.operational_status === "completed_with_issues"
+    && ((effectiveSummary?.failed ?? 0) > 0 || (effectiveSummary?.not_found ?? 0) > 0)
+  ) {
+    const failed = effectiveSummary?.failed ?? 0;
+    const notFound = effectiveSummary?.not_found ?? 0;
+    return `Concluída com pendências: ${failed} falha(s) e ${notFound} não encontrada(s).`;
+  }
   return friendlyImportMessage(
     p.error_code || p.download?.error_code,
     p.error_message || p.download?.error_message || null,
@@ -321,8 +334,15 @@ function playlistImportError(p: Playlist): string | null {
 
 function playlistImportPauseMessage(p: Playlist): string | null {
   const code = p.download?.error_code || p.error_code;
-  if (p.download?.status !== "queued" || !code || !YOUTUBE_PAUSE_CODES.has(code)) return null;
-  return "Importação pausada automaticamente. O sistema tentará novamente quando o YouTube responder.";
+  if (p.download?.operational_status !== "waiting_provider" || !code || !YOUTUBE_PAUSE_CODES.has(code)) return null;
+  const effectiveSummary = (p.download.error_details as {
+    effective_summary?: { processed?: number };
+  } | null)?.effective_summary;
+  const progress = `${effectiveSummary?.processed ?? p.download.completed}/${p.download.total || "?"}`;
+  const nextCheck = p.download.next_attempt_at
+    ? ` Próxima verificação: ${fmtDate(p.download.next_attempt_at)}.`
+    : " O trabalho saiu da fila quente até o canário passar ou um administrador retomar.";
+  return `Aguardando recuperação confirmada do YouTube · ${progress}.${nextCheck} Você pode enviar um arquivo próprio autorizado.`;
 }
 
 function isImportErrorAcknowledged(p: Playlist) {
@@ -352,15 +372,22 @@ type SkippedTrack = {
 };
 
 function importReport(p: Playlist): {
-  summary?: { total?: number; completed?: number; failed?: number; excluded_by_limit?: number };
+  summary?: { total?: number; processed?: number; completed?: number; imported?: number; failed?: number; not_found?: number; excluded_by_limit?: number };
   skipped: SkippedTrack[];
 } {
   const d = (p.error_details || p.download?.error_details) as
-    | { summary?: { total?: number; completed?: number; failed?: number; excluded_by_limit?: number }; skipped?: SkippedTrack[] }
+    | {
+        summary?: { total?: number; completed?: number; failed?: number; excluded_by_limit?: number };
+        effective_summary?: { total?: number; processed?: number; imported?: number; failed?: number; not_found?: number };
+        effective_items?: SkippedTrack[];
+        skipped?: SkippedTrack[];
+      }
     | null
     | undefined;
-  const skipped = Array.isArray(d?.skipped) ? (d!.skipped as SkippedTrack[]) : [];
-  return { summary: d?.summary, skipped };
+  const skipped = Array.isArray(d?.effective_items)
+    ? d.effective_items
+    : Array.isArray(d?.skipped) ? d.skipped : [];
+  return { summary: d?.effective_summary ?? d?.summary, skipped };
 }
 
 function fmtDur(s?: number | null): string | null {
@@ -500,10 +527,10 @@ function ImportReport({ playlist }: { playlist: Playlist }) {
     >
       <p className={`mb-1.5 font-semibold ${hasErrors ? "text-destructive" : "text-warning-foreground"}`}>
         Relatório de importação
-        {summary ? ` — ${summary.completed ?? 0} de ${summary.total ?? "?"} importadas` : ""}
+        {summary ? ` — ${summary.imported ?? summary.completed ?? 0} de ${summary.total ?? "?"} importadas` : ""}
         {summary?.excluded_by_limit ? ` · ${summary.excluded_by_limit} fora do limite da principal (170)` : ""}
-        {unavailable.length ? ` · ${unavailable.length} indisponível(is)` : ""}
-        {errors.length ? ` · ${errors.length} com falha` : ""}
+        {(summary?.not_found ?? unavailable.length) ? ` · ${summary?.not_found ?? unavailable.length} não encontrada(s)` : ""}
+        {(summary?.failed ?? errors.length) ? ` · ${summary?.failed ?? errors.length} com falha` : ""}
       </p>
       <ul className="space-y-1">
         {visibleSkipped.map((t, i) => {
@@ -2873,6 +2900,21 @@ function ImportPill({ p }: { p: Playlist }) {
   const base =
     "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1";
 
+  if (download.operational_status === "waiting_provider") {
+    return (
+      <span className={cn(base, "bg-warning/15 text-warning-foreground ring-warning/40")}>
+        <Clock className="h-3.5 w-3.5" /> Aguardando YouTube · {completed}/{total || "?"}
+      </span>
+    );
+  }
+  if (download.operational_status === "waiting_review") {
+    return (
+      <span className={cn(base, "bg-warning/15 text-warning-foreground ring-warning/40")}>
+        <AlertTriangle className="h-3.5 w-3.5" /> Revisão necessária
+      </span>
+    );
+  }
+
   if (status === "queued") {
     return (
       <span className={cn(base, "bg-muted text-muted-foreground ring-border")}>
@@ -2919,6 +2961,9 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
   const [selectedReviewItemIds, setSelectedReviewItemIds] = useState<string[]>([]);
   const [replacement, setReplacement] = useState<PlaylistRequestDetailItem | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [uploadTarget, setUploadTarget] = useState<PlaylistRequestDetailItem | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const detailQuery = useQuery({
     // A lista de playlists acompanha o job vigente, mas este detalhe ficava
     // preso no cache de uma tentativa anterior. Os campos do job tornam a
@@ -2932,7 +2977,7 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
       p.download?.finished_at ?? null,
     ],
     queryFn: () => getPlaylistRequestDetail(p.id),
-    enabled: detectPlatform(p.source_url) === "spotify",
+    enabled: Boolean(p.source_url),
     staleTime: 10_000,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
@@ -2981,7 +3026,26 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
       }),
   });
 
-  if (detectPlatform(p.source_url) !== "spotify") return null;
+  const uploadMutation = useMutation({
+    mutationFn: () => {
+      if (!uploadTarget || !uploadFile || !rightsConfirmed) throw new Error("Confirme o arquivo e a autorização de uso.");
+      return uploadPlaylistRequestItem(
+        uploadTarget.id,
+        uploadFile,
+        "Declaro que possuo autorização para enviar e usar este áudio nesta playlist.",
+      );
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["playlist-request-detail", p.id] });
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      setUploadTarget(null);
+      setUploadFile(null);
+      setRightsConfirmed(false);
+      toast.success("Arquivo recebido", { description: "O worker vai validar e converter o áudio antes de vinculá-lo." });
+    },
+    onError: (error: unknown) => toast.error("Não foi possível enviar o arquivo", { description: errorMessage(error) }),
+  });
+
   if (detailQuery.isLoading) return <Skeleton className="mt-5 h-36 w-full" />;
   if (detailQuery.isError || !detailQuery.data) {
     return <p className="mt-5 text-sm text-muted-foreground">Não foi possível carregar os itens desta solicitação.</p>;
@@ -3006,8 +3070,8 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
     <section className="mt-5 space-y-4 border-t border-border pt-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Solicitação Spotify</p>
-          <p className="text-sm font-medium">Origem: Spotify · Tipo: {detail.request.source_resource_type ?? "—"}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Solicitação de músicas</p>
+          <p className="text-sm font-medium">Origem: {detail.request.source_type === "spotify" ? "Spotify" : "YouTube"} · Tipo: {detail.request.source_resource_type ?? "—"}</p>
         </div>
         {p.approval_status === "pending" && (
           <Button size="sm" onClick={onApprove}>
@@ -3022,6 +3086,17 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
         <InfoRow label="Playlist de destino" value={detail.playlist.name} />
         <InfoRow label="Status geral" value={generalStatusLabel(detail.request.general_status)} />
       </div>
+      {detail.operational?.state === "waiting_provider" && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning-foreground">
+          <p className="font-medium">Aguardando recuperação do YouTube · {detail.operational.progress.processed}/{detail.operational.progress.total || "?"}</p>
+          <p className="mt-1 text-xs">
+            {detail.operational.provider.next_probe_at
+              ? `Próxima verificação: ${fmtDate(detail.operational.provider.next_probe_at)}.`
+              : "O trabalho saiu da fila quente até o canário passar ou um administrador retomar."}
+            {" "}Você pode concluir as faixas pendentes com arquivos próprios autorizados.
+          </p>
+        </div>
+      )}
       <div>
         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Link original</p>
         <p className="break-all text-xs text-muted-foreground">{detail.request.original_url ?? "—"}</p>
@@ -3096,7 +3171,12 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
         {items.map((item) => {
           const review = item.status === "review_recommended";
           const canUseCurrentResult =
-            Boolean(item.youtube_url) && !itemMutation.isPending && !acceptMutation.isPending;
+            Boolean(item.youtube_url)
+            && detail.operational?.provider.status === "healthy"
+            && !itemMutation.isPending
+            && !acceptMutation.isPending;
+          const canUploadItem = Boolean(detail.operational?.permissions.can_upload)
+            && !["completed", "duplicate", "skipped"].includes(item.status);
           const selectedForReview = selectedReviewItemIds.includes(item.id);
           return (
             <div key={item.id} className={cn("rounded-lg border p-3", review ? "border-warning/40 bg-warning/5" : "border-border bg-muted/20")}>
@@ -3140,11 +3220,25 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
                   size="sm"
                   variant={item.status === "failed" || item.status === "not_found" ? "default" : "outline"}
                   onClick={() => { setReplacement(item); setYoutubeUrl(item.youtube_url ?? ""); }}
-                  disabled={itemMutation.isPending}
+                  disabled={itemMutation.isPending || detail.operational?.provider.status !== "healthy"}
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   {item.youtube_url ? "Substituir resultado" : "Escolher música no YouTube"}
                 </Button>
+                {canUploadItem && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setUploadTarget(item);
+                      setUploadFile(null);
+                      setRightsConfirmed(false);
+                    }}
+                    disabled={uploadMutation.isPending}
+                  >
+                    <Upload className="h-3.5 w-3.5" /> Enviar arquivo próprio
+                  </Button>
+                )}
                 {review ? (
                   <Button
                     size="sm"
@@ -3176,6 +3270,62 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
             <Button variant="outline" onClick={() => setReplacement(null)}>Cancelar</Button>
             <Button disabled={!replacement || !youtubeUrl.trim() || itemMutation.isPending} onClick={() => replacement && itemMutation.mutate({ action: "replace_youtube", item: replacement, url: youtubeUrl })}>
               {itemMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />} Validar e reenfileirar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(uploadTarget)}
+        onOpenChange={(open) => {
+          if (!open && !uploadMutation.isPending) {
+            setUploadTarget(null);
+            setUploadFile(null);
+            setRightsConfirmed(false);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Enviar arquivo próprio</DialogTitle>
+            <DialogDescription>
+              {uploadTarget?.title ? `Substituir “${uploadTarget.title}”. ` : ""}
+              Aceita MP3, M4A/AAC, OGG ou WAV de até 50 MB e 16 minutos. O worker valida o conteúdo real e converte para MP3 128 kbps.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <Input
+              type="file"
+              accept=".mp3,.m4a,.aac,.ogg,.wav,audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav"
+              disabled={uploadMutation.isPending}
+              onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                if (file && file.size > 50 * 1024 * 1024) {
+                  event.target.value = "";
+                  setUploadFile(null);
+                  toast.error("Arquivo acima de 50 MB");
+                  return;
+                }
+                setUploadFile(file);
+              }}
+            />
+            <label className="flex items-start gap-2 rounded-lg border border-border bg-muted/20 p-3 text-sm">
+              <Checkbox
+                className="mt-0.5"
+                checked={rightsConfirmed}
+                onCheckedChange={(checked) => setRightsConfirmed(checked === true)}
+                disabled={uploadMutation.isPending}
+              />
+              <span>Declaro que possuo autorização para enviar e usar este áudio nesta playlist. Esta declaração ficará registrada na auditoria.</span>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={uploadMutation.isPending} onClick={() => setUploadTarget(null)}>Cancelar</Button>
+            <Button
+              disabled={!uploadFile || !rightsConfirmed || uploadMutation.isPending}
+              onClick={() => uploadMutation.mutate()}
+            >
+              {uploadMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {uploadMutation.isPending ? "Enviando..." : "Enviar e validar"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3222,7 +3372,9 @@ function DetailPanel({
   // Decisão é definitiva: só uma playlist "pendente" pode ser aprovada/rejeitada.
   const canApprove = p.approval_status === "pending";
   const canReject = p.approval_status === "pending";
-  const canRetry = p.approval_status === "approved" && p.import_status === "failed";
+  const canRetry = p.approval_status === "approved"
+    && p.import_status === "failed"
+    && p.download?.operational_status !== "waiting_provider";
   const canAcknowledgeError = p.import_status === "failed" && !isImportErrorAcknowledged(p);
   const importError = playlistImportError(p);
   const technicalError = technicalErrorText(p);

@@ -22,6 +22,7 @@ import {
   acknowledgeImportError,
   getIntegrationStatus,
   listPendingImportErrors,
+  resumeMusicProvider,
   retryImport,
   type IntegrationQueueStatus,
   type PendingImportError,
@@ -38,12 +39,22 @@ function formatDate(value: string | null) {
   });
 }
 
+function formatDuration(seconds: number | null | undefined) {
+  if (!seconds || seconds < 1) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}min`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}min`;
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Não foi possível concluir a ação.";
 }
 
-function isRetryable(error: PendingImportError) {
+function isRetryable(error: PendingImportError, providerHealthy: boolean) {
   return error.approval_status === "approved"
+    && providerHealthy
     && Boolean(error.source_url && parseMusicUrl(error.source_url));
 }
 
@@ -104,7 +115,7 @@ function QueueCard({ title, description, queue, icon }: {
   );
 }
 
-function QueueMetric({ label, value, danger = false }: { label: string; value: number; danger?: boolean }) {
+function QueueMetric({ label, value, danger = false }: { label: string; value: React.ReactNode; danger?: boolean }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
       <p className="text-xs text-muted-foreground">{label}</p>
@@ -154,7 +165,16 @@ export function IntegracaoPage() {
     },
     onError: (error: unknown) => toast.error("Não foi possível reenfileirar", { description: errorMessage(error) }),
   });
+  const providerMutation = useMutation({
+    mutationFn: resumeMusicProvider,
+    onSuccess: async () => {
+      await invalidate();
+      toast.success("Teste do canário solicitado", { description: "Os jobs só voltarão à fila quando o YouTube for validado." });
+    },
+    onError: (error: unknown) => toast.error("Não foi possível solicitar o teste", { description: errorMessage(error) }),
+  });
   const status = statusQuery.data;
+  const importHealth = status?.music_import;
   const errors = errorsQuery.data ?? [];
   const isRefreshing = statusQuery.isFetching || errorsQuery.isFetching;
 
@@ -200,6 +220,50 @@ export function IntegracaoPage() {
             <StatCard icon={<HardDrive className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Limpeza no R2" value={status?.storage_cleanup.queued ?? 0} hint="Arquivos aguardando remoção segura" loading={statusQuery.isLoading} />
           </div>
 
+          {importHealth && (
+            <Card className="p-5 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold">Importador resiliente</h2>
+                    <span className="rounded-full bg-muted px-2.5 py-1 font-mono text-xs text-muted-foreground">{importHealth.backend}</span>
+                    <span className={cn(
+                      "rounded-full px-2.5 py-1 text-xs font-medium",
+                      importHealth.provider.status === "healthy" ? "bg-success/20 text-success-foreground" : "bg-warning/15 text-warning-foreground",
+                    )}>YouTube: {importHealth.provider.status}</span>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Worker {status.worker.details.version ?? "sem versão"} · réplica {status.worker.details.instance_id ?? "não informada"} · alvo {importHealth.limits.worker_replica_target} réplicas
+                  </p>
+                  {importHealth.provider.error_message && <p className="mt-2 text-sm text-warning-foreground">{importHealth.provider.error_message}</p>}
+                  {importHealth.provider.status !== "healthy" && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Circuito indisponível há {formatDuration(importHealth.provider.circuit_open_seconds)}
+                    </p>
+                  )}
+                </div>
+                {importHealth.provider.status !== "healthy" && (
+                  <Button variant="outline" size="sm" onClick={() => providerMutation.mutate()} disabled={providerMutation.isPending}>
+                    <RefreshCw className={cn("h-4 w-4", providerMutation.isPending && "animate-spin")} /> Testar canário agora
+                  </Button>
+                )}
+              </div>
+              <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+                <QueueMetric label="Playlists ativas" value={importHealth.active_playlists} />
+                <QueueMetric label="Fila controle" value={importHealth.queues.control.queue_length} />
+                <QueueMetric label="Idade controle" value={formatDuration(importHealth.queues.control.oldest_msg_age_sec)} />
+                <QueueMetric label="Fila faixas" value={importHealth.queues.tracks.queue_length} />
+                <QueueMetric label="Idade faixas" value={formatDuration(importHealth.queues.tracks.oldest_msg_age_sec)} />
+                <QueueMetric label="Playlists pausadas" value={importHealth.paused_playlists} danger={importHealth.paused_playlists > 0} />
+                <QueueMetric label="Revisão" value={importHealth.tasks.waiting_review} />
+                <QueueMetric label="Dead letters" value={importHealth.tasks.dead_letter} danger={importHealth.tasks.dead_letter > 0} />
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Limites: {importHealth.limits.active_playlists} playlists · 1 faixa/playlist · {importHealth.limits.youtube_global} YouTube globais · {importHealth.limits.uploads_global} uploads · início a cada {importHealth.limits.youtube_spacing_seconds}s
+              </p>
+            </Card>
+          )}
+
           {status && (
             <div className="grid gap-5 xl:grid-cols-2">
               <QueueCard title="Importação de playlists" description="Jobs enviados para o Worker baixar e registrar músicas." queue={status.imports} icon={<RefreshCw className="h-5 w-5" />} />
@@ -224,7 +288,8 @@ export function IntegracaoPage() {
               </div>
               <div className="divide-y divide-border">
                 {errors.map((error) => {
-                  const retryable = isRetryable(error);
+                  const providerHealthy = importHealth?.provider.status === "healthy";
+                  const retryable = isRetryable(error, providerHealthy);
                   const busy = acknowledgeMutation.isPending || retryMutation.isPending;
                   return (
                     <div key={error.playlist_id} className="p-5">
@@ -240,6 +305,7 @@ export function IntegracaoPage() {
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">
                           {retryable && <Button size="sm" variant="outline" onClick={() => retryMutation.mutate(error.playlist_id)} disabled={busy}><RotateCcw className="h-4 w-4" /> Reenfileirar</Button>}
+                          {!providerHealthy && <span className="self-center text-xs text-warning-foreground">Retry do YouTube bloqueado até o canário passar</span>}
                           <Button size="sm" variant="outline" onClick={() => acknowledgeMutation.mutate(error.playlist_id)} disabled={busy}><Check className="h-4 w-4" /> Marcar como tratado</Button>
                         </div>
                       </div>
