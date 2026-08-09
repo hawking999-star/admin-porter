@@ -170,67 +170,6 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertNotIn("track_id", payload)
         update_query.eq.assert_called_once_with("id", "item-processing")
 
-    def test_storage_key_reuse_only_accepts_available_track(self):
-        query = Mock()
-        query.select.return_value = query
-        query.eq.return_value = query
-        query.limit.return_value = query
-        query.execute.return_value = Mock(data=[])
-
-        with patch.object(self.worker.supabase, "table", return_value=query):
-            result = self.worker.existing_available_track_by_storage_key(
-                "tracks/e_TAAedy0Y4.mp3"
-            )
-
-        self.assertIsNone(result)
-        self.assertIn(
-            ("status", "available"),
-            [call.args for call in query.eq.call_args_list],
-        )
-
-    def test_bound_single_track_uses_atomic_replacement(self):
-        tracks_query = MagicMock()
-        tracks_query.select.return_value = tracks_query
-        tracks_query.eq.return_value = tracks_query
-        tracks_query.limit.return_value = tracks_query
-        tracks_query.execute.return_value = Mock(data=[{"id": "track-existing"}])
-
-        with (
-            patch.object(
-                self.worker,
-                "_extract_single_video",
-                return_value={
-                    "id": "e_TAAedy0Y4",
-                    "title": "Faixa existente",
-                    "artist": "Artista",
-                    "duration": 180,
-                },
-            ),
-            patch.object(self.worker.supabase, "table", return_value=tracks_query),
-            patch.object(self.worker, "replace_playlist_request_track") as replace_track,
-            patch.object(self.worker, "_remove_skipped_from_playlist"),
-            patch.object(self.worker, "update_job"),
-            patch.object(self.worker, "set_request_item_status_by_youtube_id") as legacy_status,
-            patch.object(self.worker, "reconcile_playlist_job_after_manual_item"),
-        ):
-            self.worker.process_single_track_job(
-                {
-                    "id": "job-atomic",
-                    "playlist_id": "playlist-1",
-                    "playlist_request_id": "request-1",
-                    "playlist_request_item_id": "item-1",
-                    "replace_youtube_id": "oldVideo001",
-                },
-                "https://www.youtube.com/watch?v=e_TAAedy0Y4",
-            )
-
-        replace_track.assert_called_once_with(
-            "job-atomic",
-            "track-existing",
-            "e_TAAedy0Y4",
-        )
-        legacy_status.assert_not_called()
-
     def test_manual_retry_reconciles_fully_resolved_playlist_job(self):
         jobs_query = MagicMock()
         jobs_query.select.return_value = jobs_query
@@ -433,6 +372,58 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             [f"{position:022d}" for position in range(1, 12)],
         )
 
+    def test_resume_preserves_resolved_youtube_match_and_diagnostics(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.delete.return_value = query
+        query.is_.return_value = query
+        query.upsert.return_value = query
+        query.execute.side_effect = [
+            Mock(
+                data=[
+                    {
+                        "position": 1,
+                        "item_status": "resolved",
+                        "error_message": "instabilidade anterior",
+                        "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
+                        "youtube_video_id": "abcdefghijk",
+                        "match_confidence": 98.7,
+                        "metadata": {
+                            "last_error_details": {"exception_type": "ConnectError"}
+                        },
+                    }
+                ]
+            ),
+            Mock(data=[]),
+            Mock(data=[]),
+        ]
+        entry = {
+            "id": None,
+            "request_position": 1,
+            "spotify_id": "spotify-track-1",
+            "spotify_url": "https://open.spotify.com/track/spotify-track-1",
+            "title": "Faixa teste",
+            "artists": ["Artista"],
+            "duration": 180,
+            "spotify_match_status": "resolving",
+        }
+
+        with patch.object(self.worker.supabase, "table", return_value=query):
+            self.worker.sync_request_items("request-1", "job-1", [entry], [])
+
+        payload = query.upsert.call_args.args[0][0]
+        self.assertEqual(payload["youtube_video_id"], "abcdefghijk")
+        self.assertEqual(
+            payload["youtube_url"],
+            "https://www.youtube.com/watch?v=abcdefghijk",
+        )
+        self.assertEqual(payload["match_confidence"], 98.7)
+        self.assertEqual(
+            payload["metadata"]["last_error_details"]["exception_type"],
+            "ConnectError",
+        )
+
     def test_spotify_youtube_search_ranks_exact_audio_above_live_version(self):
         ydl = MagicMock()
         ydl.__enter__.return_value = ydl
@@ -576,7 +567,68 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         download.assert_not_called()
         self.assertEqual(set_status.call_args.args[2], "duplicate")
 
-    def test_transient_track_failure_stops_after_two_claims(self):
+    def test_storage_key_reuse_only_accepts_available_track(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = Mock(data=[])
+
+        with patch.object(self.worker.supabase, "table", return_value=query):
+            result = self.worker.existing_available_track_by_storage_key(
+                "tracks/AoIkvrgiPQg.mp3"
+            )
+
+        self.assertIsNone(result)
+        self.assertIn(
+            ("status", "available"),
+            [call.args for call in query.eq.call_args_list],
+        )
+
+    def test_bound_single_track_uses_atomic_replacement(self):
+        tracks_query = MagicMock()
+        tracks_query.select.return_value = tracks_query
+        tracks_query.eq.return_value = tracks_query
+        tracks_query.limit.return_value = tracks_query
+        tracks_query.execute.return_value = Mock(data=[{"id": "track-existing"}])
+
+        with (
+            patch.object(
+                self.worker,
+                "_extract_single_video",
+                return_value={
+                    "id": "e_TAAedy0Y4",
+                    "title": "Faixa existente",
+                    "artist": "Artista",
+                    "duration": 180,
+                },
+            ),
+            patch.object(self.worker.supabase, "table", return_value=tracks_query),
+            patch.object(self.worker, "replace_playlist_request_track") as replace_track,
+            patch.object(self.worker, "_remove_skipped_from_playlist"),
+            patch.object(self.worker, "update_job"),
+            patch.object(self.worker, "set_request_item_status_by_youtube_id") as legacy_status,
+            patch.object(self.worker, "reconcile_playlist_job_after_manual_item"),
+        ):
+            self.worker.process_single_track_job(
+                {
+                    "id": "job-atomic",
+                    "playlist_id": "playlist-1",
+                    "playlist_request_id": "request-1",
+                    "playlist_request_item_id": "item-1",
+                    "replace_youtube_id": "oldVideo001",
+                },
+                "https://www.youtube.com/watch?v=e_TAAedy0Y4",
+            )
+
+        replace_track.assert_called_once_with(
+            "job-atomic",
+            "track-existing",
+            "e_TAAedy0Y4",
+        )
+        legacy_status.assert_not_called()
+
+    def test_transient_track_failure_defers_without_consuming_attempt(self):
         entry = {
             "id": "abcdefghijk",
             "title": "Faixa teste",
@@ -587,12 +639,10 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             patch.object(
                 self.worker,
                 "claim_request_item",
-                side_effect=[
-                    {"id": "item-1", "attempts": 1},
-                    {"id": "item-1", "attempts": 2},
-                ],
+                return_value={"id": "item-1", "attempts": 1, "metadata": {}},
             ) as claim,
-            patch.object(self.worker, "set_request_item_status"),
+            patch.object(self.worker, "set_request_item_status") as set_status,
+            patch.object(self.worker, "open_youtube_circuit") as open_circuit,
             patch.object(
                 self.worker.supabase,
                 "table",
@@ -608,9 +658,164 @@ class AsyncTrackProcessingTests(unittest.TestCase):
                 deadline=self.worker.time.monotonic() + 30,
             )
 
+        self.assertEqual(claim.call_count, 1)
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["code"], "IMPORTER_TRANSIENT")
+        self.assertTrue(result["abort"])
+        self.assertEqual(set_status.call_args.args[2], "resolved")
+        self.assertEqual(set_status.call_args.kwargs["attempts"], 0)
+        self.assertEqual(
+            set_status.call_args.kwargs["youtube_video_id"],
+            "abcdefghijk",
+        )
+        self.assertIn(
+            "temporary transport failure",
+            set_status.call_args.kwargs["metadata"]["last_error_details"][
+                "technical_summary"
+            ],
+        )
+        open_circuit.assert_not_called()
+
+    def test_unknown_track_failure_still_uses_bounded_local_retry(self):
+        entry = {
+            "id": "abcdefghijk",
+            "title": "Faixa teste",
+            "duration": 180,
+            "request_position": 1,
+        }
+        with (
+            patch.object(
+                self.worker,
+                "claim_request_item",
+                side_effect=[
+                    {"id": "item-1", "attempts": 1, "metadata": {}},
+                    {"id": "item-1", "attempts": 2, "metadata": {}},
+                ],
+            ) as claim,
+            patch.object(self.worker, "set_request_item_status") as set_status,
+            patch.object(
+                self.worker.supabase,
+                "table",
+                side_effect=RuntimeError("unexpected parser bug"),
+            ),
+        ):
+            result = self.worker.process_playlist_entry(
+                job_id="job-1",
+                playlist_id="playlist-1",
+                playlist_request_id="request-1",
+                entry=entry,
+                source_url="https://www.youtube.com/watch?v=abcdefghijk",
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
         self.assertEqual(claim.call_count, 2)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["code"], "IMPORTER_ERROR")
+        self.assertEqual(
+            set_status.call_args.kwargs["metadata"]["last_error_details"][
+                "exception_type"
+            ],
+            "RuntimeError",
+        )
+
+    def test_cached_terminal_item_restores_saved_technical_error(self):
+        entry = {
+            "id": "abcdefghijk",
+            "title": "Faixa teste",
+            "duration": 180,
+            "request_position": 1,
+        }
+        saved_details = {
+            "exception_type": "RemoteProtocolError",
+            "technical_summary": "server disconnected",
+        }
+        with (
+            patch.object(self.worker, "claim_request_item", return_value=None),
+            patch.object(
+                self.worker,
+                "current_request_item",
+                return_value={
+                    "item_status": "failed",
+                    "attempts": 2,
+                    "last_error_code": "IMPORTER_ERROR",
+                    "error_message": "O serviço de importação está indisponível.",
+                    "youtube_video_id": "abcdefghijk",
+                    "metadata": {"last_error_details": saved_details},
+                },
+            ),
+        ):
+            result = self.worker.process_playlist_entry(
+                job_id="job-1",
+                playlist_id="playlist-1",
+                playlist_request_id="request-1",
+                entry=entry,
+                source_url="https://www.youtube.com/watch?v=abcdefghijk",
+                deadline=self.worker.time.monotonic() + 30,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["technical"], saved_details)
+        self.assertEqual(result["skipped"]["youtube_id"], "abcdefghijk")
+
+    def test_resumed_job_rebuilds_review_and_completed_counts_from_items(self):
+        entries = [
+            {
+                "id": "abcdefghijk",
+                "title": "Faixa concluída",
+                "duration": 180,
+                "request_position": 1,
+                "spotify_match_status": "matched",
+            },
+            {
+                "id": None,
+                "title": "Faixa para revisão",
+                "duration": 180,
+                "request_position": 2,
+                "spotify_match_status": "resolving",
+            },
+        ]
+        with (
+            patch.object(
+                self.worker,
+                "list_source_entries_resumable",
+                return_value=(entries, []),
+            ),
+            patch.object(self.worker, "sync_request_items"),
+            patch.object(self.worker, "persist_spotify_snapshot"),
+            patch.object(
+                self.worker,
+                "current_job_request_item_statuses",
+                return_value={1: "completed", 2: "review_recommended"},
+            ),
+            patch.object(self.worker, "update_job") as update_job,
+            patch.object(
+                self.worker,
+                "principal_playlist_remaining_slots",
+                return_value=None,
+            ),
+            patch.object(self.worker, "process_playlist_entry") as process_entry,
+        ):
+            self.worker.process_job(
+                {
+                    "id": "job-resume",
+                    "playlist_id": "playlist-1",
+                    "playlist_request_id": "request-1",
+                    "source_url": "https://open.spotify.com/playlist/2UFg68VUkweILTWPUg5sYW",
+                    "attempts": 2,
+                    "mode": "playlist",
+                }
+            )
+
+        process_entry.assert_not_called()
+        final = update_job.call_args.kwargs
+        self.assertEqual(final["status"], "partial")
+        self.assertEqual(final["completed"], 1)
+        self.assertEqual(final["failed"], 0)
+        self.assertEqual(final["error_code"], "REVIEW_RECOMMENDED")
+        self.assertEqual(
+            final["error_details"]["summary"]["review_pending"],
+            1,
+        )
 
     def test_playlist_uses_configured_small_track_pool(self):
         active = 0
@@ -1074,6 +1279,23 @@ class AsyncTrackProcessingTests(unittest.TestCase):
                 expected_delay + 1,
             )
 
+    def test_importer_transport_failure_uses_delayed_job_retry(self):
+        with patch.object(self.worker, "update_job") as update_job:
+            self.worker.fail_job(
+                {
+                    "id": "job-importer",
+                    "playlist_id": "playlist-1",
+                    "attempts": 1,
+                },
+                RuntimeError("IMPORTER_TRANSIENT: connection reset"),
+            )
+
+        fields = update_job.call_args.kwargs
+        self.assertEqual(fields["status"], "queued")
+        self.assertNotIn("attempts", fields)
+        self.assertEqual(fields["error_code"], "IMPORTER_TRANSIENT")
+        self.assertIn("next_attempt_at", fields)
+
     def test_third_spotify_failure_is_terminal(self):
         with patch.object(self.worker, "update_job") as update_job:
             self.worker.fail_job(
@@ -1307,6 +1529,16 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             RuntimeError("YOUTUBE_FORMAT_UNAVAILABLE: sem formato")
         )
         self.assertEqual(code, "YOUTUBE_FORMAT_UNAVAILABLE")
+
+    def test_transport_exception_type_is_classified_as_transient(self):
+        class RemoteProtocolError(Exception):
+            pass
+
+        code, message = self.worker.classify_error(
+            RemoteProtocolError("peer vanished without response")
+        )
+        self.assertEqual(code, "IMPORTER_TRANSIENT")
+        self.assertIn("tentará novamente", message)
 
     def test_three_distinct_format_failures_promote_global_degradation(self):
         self.assertFalse(self.worker.record_youtube_format_failure("video-one"))

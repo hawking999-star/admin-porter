@@ -185,6 +185,7 @@ JOB_ABORT_CODES = {
     "SPOTIFY_RESOLVE_TIMEOUT",
     "SPOTIFY_RESOLVER_UNAVAILABLE",
     "SPOTIFY_LINK_UNAVAILABLE",
+    "IMPORTER_TRANSIENT",
 }
 # Erros de configuração não melhoram com retry automático. O Admin pode
 # reenfileirar depois que a variável/permissão for corrigida.
@@ -199,11 +200,19 @@ SPOTIFY_TRANSIENT_JOB_CODES = {
     "SPOTIFY_RESOLVE_TIMEOUT",
     "SPOTIFY_RESOLVER_UNAVAILABLE",
 }
+DELAYED_TRANSIENT_JOB_CODES = SPOTIFY_TRANSIENT_JOB_CODES | {
+    "IMPORTER_TRANSIENT",
+    "IMPORT_TIMEOUT",
+}
 YOUTUBE_CIRCUIT_CODES = {
     "YOUTUBE_COOKIES_MISSING",
     "YOUTUBE_COOKIES_INVALID",
     "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
     "YOUTUBE_EXTRACTION_DEGRADED",
+}
+TRACK_DEFER_CODES = YOUTUBE_CIRCUIT_CODES | {
+    "IMPORTER_TRANSIENT",
+    "IMPORT_TIMEOUT",
 }
 # Dos permanentes, quais vale tentar substituir por outra versão (mesma música).
 SUBSTITUTABLE_CODES = {
@@ -401,6 +410,52 @@ def close_youtube_circuit() -> None:
     reset_youtube_format_failures()
 
 
+def is_transient_transport_error(exc_or_message) -> bool:
+    """Recognize network failures without conflating functional errors or 403s."""
+    raw = str(exc_or_message or "").strip().lower()
+    exception_names = (
+        {cls.__name__.lower() for cls in type(exc_or_message).mro()}
+        if isinstance(exc_or_message, Exception)
+        else set()
+    )
+    if exception_names & {
+        "connecterror",
+        "networkerror",
+        "readerror",
+        "writeerror",
+        "remoteprotocolerror",
+        "transporterror",
+        "connectionerror",
+        "connectionreseterror",
+        "connectionabortederror",
+        "brokenpipeerror",
+    }:
+        return True
+    return any(
+        marker in raw
+        for marker in (
+            "temporary transport failure",
+            "connection reset",
+            "connection aborted",
+            "connection closed",
+            "connection refused",
+            "server disconnected",
+            "remote protocol error",
+            "network is unreachable",
+            "network error",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "http 520",
+            "http 503",
+            "http 502",
+            "http 504",
+        )
+    )
+
+
 def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str]:
     """Converte erros técnicos em código estável + mensagem operacional."""
     raw = str(exc_or_message or "").strip()
@@ -429,6 +484,11 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return (
             "YOUTUBE_FORMAT_UNAVAILABLE",
             "Falha no YouTube: nenhum formato de áudio disponível para download no ambiente do importador.",
+        )
+    if "IMPORTER_TRANSIENT" in raw:
+        return (
+            "IMPORTER_TRANSIENT",
+            "O serviço de importação teve uma instabilidade de conexão e tentará novamente.",
         )
     if "TRACK_DURATION_LIMIT_EXCEEDED" in raw:
         return "TRACK_DURATION_LIMIT_EXCEEDED", "A música ultrapassa a duração máxima de 16 minutos."
@@ -477,6 +537,12 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         return (
             "YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE",
             "O importador do YouTube está se recuperando automaticamente.",
+        )
+
+    if is_transient_transport_error(exc_or_message):
+        return (
+            "IMPORTER_TRANSIENT",
+            "O serviço de importação teve uma instabilidade de conexão e tentará novamente.",
         )
 
     if "timed out" in msg or "timeout" in msg:
@@ -1176,7 +1242,10 @@ def sync_request_items(
         return
     existing_result = (
         supabase.table("playlist_request_tracks")
-        .select("position,item_status,error_message")
+        .select(
+            "position,item_status,error_message,youtube_url,youtube_video_id,"
+            "match_confidence,metadata"
+        )
         .eq("download_job_id", job_id)
         .execute()
     )
@@ -1189,6 +1258,12 @@ def sync_request_items(
     for entry in entries:
         position = int(entry.get("request_position", len(rows) + 1))
         previous = existing.get(position)
+        match_confidence = entry.get("spotify_match_confidence")
+        if match_confidence is None and previous:
+            match_confidence = previous.get("match_confidence")
+        match_metadata = sanitize_json(entry.get("_match_metadata") or {})
+        if not match_metadata and previous and isinstance(previous.get("metadata"), dict):
+            match_metadata = previous["metadata"]
         rows.append(
             {
                 "playlist_request_id": request_id,
@@ -1205,8 +1280,12 @@ def sync_request_items(
                 ),
                 "source_track_id": entry.get("spotify_id"),
                 "source_url": entry.get("spotify_url"),
-                "youtube_url": entry.get("youtube_url") or entry.get("matched_youtube_url"),
-                "youtube_video_id": entry.get("id"),
+                "youtube_url": (
+                    entry.get("youtube_url")
+                    or entry.get("matched_youtube_url")
+                    or ((previous or {}).get("youtube_url"))
+                ),
+                "youtube_video_id": entry.get("id") or ((previous or {}).get("youtube_video_id")),
                 "title": sanitize_text(entry.get("title")),
                 "artists": sanitize_string_list(
                     entry.get("artists")
@@ -1214,7 +1293,8 @@ def sync_request_items(
                 ),
                 "album": sanitize_text(entry.get("spotify_album"), 300) or None,
                 "duration_ms": int(float(entry["duration"]) * 1000) if entry.get("duration") is not None else None,
-                "match_confidence": entry.get("spotify_match_confidence"),
+                "match_confidence": match_confidence,
+                "metadata": match_metadata,
                 "error_message": (
                     previous.get("error_message")
                     if previous
@@ -1227,6 +1307,12 @@ def sync_request_items(
         code = entry.get("code")
         position = int(entry.get("request_position", len(rows) + 1))
         previous = existing.get(position)
+        match_confidence = entry.get("spotify_match_confidence")
+        if match_confidence is None and previous:
+            match_confidence = previous.get("match_confidence")
+        match_metadata = sanitize_json(entry.get("_match_metadata") or {})
+        if not match_metadata and previous and isinstance(previous.get("metadata"), dict):
+            match_metadata = previous["metadata"]
         rows.append(
             {
                 "playlist_request_id": request_id,
@@ -1235,8 +1321,16 @@ def sync_request_items(
                 "item_status": previous["item_status"] if previous else request_item_status_from_code(code),
                 "source_track_id": entry.get("spotify_id"),
                 "source_url": entry.get("spotify_url"),
-                "youtube_url": entry.get("youtube_url") or entry.get("matched_youtube_url"),
-                "youtube_video_id": entry.get("youtube_id") or entry.get("id"),
+                "youtube_url": (
+                    entry.get("youtube_url")
+                    or entry.get("matched_youtube_url")
+                    or ((previous or {}).get("youtube_url"))
+                ),
+                "youtube_video_id": (
+                    entry.get("youtube_id")
+                    or entry.get("id")
+                    or ((previous or {}).get("youtube_video_id"))
+                ),
                 "title": sanitize_text(entry.get("title")),
                 "artists": sanitize_string_list(
                     entry.get("artists")
@@ -1244,7 +1338,8 @@ def sync_request_items(
                 ),
                 "album": sanitize_text(entry.get("spotify_album"), 300) or None,
                 "duration_ms": int(float(entry["duration"]) * 1000) if entry.get("duration") is not None else None,
-                "match_confidence": entry.get("spotify_match_confidence"),
+                "match_confidence": match_confidence,
+                "metadata": match_metadata,
                 "error_message": (
                     previous.get("error_message")
                     if previous
@@ -2235,7 +2330,10 @@ def process_single_track_job(job: dict, url: str):
 def current_request_item(job_id: str, entry: dict) -> dict | None:
     result = (
         supabase.table("playlist_request_tracks")
-        .select("id,item_status,attempts,last_error_code,error_message,track_id")
+        .select(
+            "id,item_status,attempts,last_error_code,error_message,track_id,"
+            "youtube_url,youtube_video_id,match_confidence,metadata"
+        )
         .eq("download_job_id", job_id)
         .eq("position", int(entry.get("request_position") or 0))
         .limit(1)
@@ -2404,13 +2502,19 @@ def process_playlist_entry(
                 "reused": False,
                 "abort": False,
             }
+            current_metadata = (current or {}).get("metadata")
+            if isinstance(current_metadata, dict) and isinstance(
+                current_metadata.get("last_error_details"),
+                dict,
+            ):
+                result["technical"] = current_metadata["last_error_details"]
             if status not in ("completed", "duplicate", "review_recommended"):
                 result.update(
                     {
                         "code": code,
                         "reason": reason,
                         "skipped": {
-                            "youtube_id": entry.get("id"),
+                            "youtube_id": entry.get("id") or (current or {}).get("youtube_video_id"),
                             "spotify_id": entry.get("spotify_id"),
                             "spotify_url": entry.get("spotify_url"),
                             "title": (entry.get("title") or entry.get("id") or "")[:200],
@@ -2655,32 +2759,51 @@ def process_playlist_entry(
         except Exception as exc:  # noqa: BLE001
             code, friendly = classify_error(exc)
             attempts = int(claimed.get("attempts") or 1)
+            technical = error_details(
+                exc,
+                playlist_id=playlist_id,
+                job_id=job_id,
+                track_id=work_entry.get("id"),
+                url=source_url,
+            )
+            item_metadata = dict(claimed.get("metadata") or {})
+            item_metadata.update(
+                sanitize_json(work_entry.get("_match_metadata") or {})
+            )
+            item_metadata["last_error_details"] = technical
+            status_fields = {
+                "error_message": friendly[:1000],
+                "last_error_code": code,
+                "metadata": sanitize_json(item_metadata),
+            }
+            if work_entry.get("id"):
+                status_fields["youtube_video_id"] = work_entry.get("id")
+                if work_entry.get("youtube_url"):
+                    status_fields["youtube_url"] = work_entry.get("youtube_url")
+                if work_entry.get("spotify_match_confidence") is not None:
+                    status_fields["match_confidence"] = work_entry.get(
+                        "spotify_match_confidence"
+                    )
 
-            # Bloqueios globais do YouTube não são falha da música. Devolve o
-            # item ao estado retomável e não consome sua tentativa.
-            if code in YOUTUBE_CIRCUIT_CODES:
+            # Falhas globais/transitórias não são falha da música. Devolve o
+            # item ao estado retomável, sem consumir tentativa, e adia o job.
+            if code in TRACK_DEFER_CODES:
                 set_request_item_status(
                     playlist_request_id,
                     work_entry,
-                    "resolved",
+                    "resolved" if work_entry.get("id") else "resolving",
                     attempts=max(attempts - 1, 0),
-                    error_message=friendly[:1000],
-                    last_error_code=code,
+                    **status_fields,
                 )
-                open_youtube_circuit(code)
+                if code in YOUTUBE_CIRCUIT_CODES:
+                    open_youtube_circuit(code)
                 return {
                     "status": "deferred",
                     "code": code,
                     "reason": friendly,
                     "abort": True,
                     "reused": False,
-                    "technical": error_details(
-                        exc,
-                        playlist_id=playlist_id,
-                        job_id=job_id,
-                        track_id=work_entry.get("id"),
-                        url=source_url,
-                    ),
+                    "technical": technical,
                 }
 
             item_status = request_item_status_from_code(code)
@@ -2688,12 +2811,15 @@ def process_playlist_entry(
                 playlist_request_id,
                 work_entry,
                 item_status,
-                error_message=friendly[:1000],
-                last_error_code=code,
+                **status_fields,
             )
             abort = code in JOB_ABORT_CODES
             permanent = code in PERMANENT_SKIP_CODES
             if abort or permanent or attempts >= TRACK_MAX_ATTEMPTS:
+                log(
+                    f"  faixa {vid} encerrada [{code}] na tentativa {attempts}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 return {
                     "status": item_status,
                     "code": code,
@@ -2709,17 +2835,11 @@ def process_playlist_entry(
                         "code": code,
                         "reason": friendly,
                     },
-                    "technical": error_details(
-                        exc,
-                        playlist_id=playlist_id,
-                        job_id=job_id,
-                        track_id=work_entry.get("id"),
-                        url=source_url,
-                    ),
+                    "technical": technical,
                 }
             log(
                 f"  retry {vid} falhou [{code}] na tentativa {attempts}; "
-                f"nova tentativa será feita."
+                f"nova tentativa será feita: {type(exc).__name__}: {exc}"
             )
             entry["_local_attempts"] = attempts
 
@@ -2763,11 +2883,33 @@ def process_job(job: dict):
     if safe_source.source == "spotify":
         persist_spotify_snapshot(playlist_request_id, entries + skipped)
     total = len(entries) + len(skipped)
-    review_pending = sum(
-        1 for entry in entries
-        if entry.get("spotify_match_status") == "review_recommended"
+    item_statuses = (
+        current_job_request_item_statuses(job_id)
+        if playlist_request_id
+        else {}
     )
-    update_job(job_id, total=total, completed=0, failed=len(skipped))
+    review_positions = {
+        position
+        for position, status in item_statuses.items()
+        if status == "review_recommended"
+    }
+    review_pending = len(review_positions) + sum(
+        1
+        for entry in entries
+        if entry.get("spotify_match_status") == "review_recommended"
+        and int(entry.get("request_position") or 0) not in item_statuses
+    )
+    completed_positions = {
+        position
+        for position, status in item_statuses.items()
+        if status in ("completed", "duplicate")
+    }
+    update_job(
+        job_id,
+        total=total,
+        completed=len(completed_positions),
+        failed=len(skipped),
+    )
     log(
         f"  {total} faixas na fila (limite {MAX_TRACKS}); "
         f"{review_pending} aguardando revisão"
@@ -2793,7 +2935,7 @@ def process_job(job: dict):
         )
         return
 
-    completed = 0
+    completed = len(completed_positions)
     failed = len(skipped)
     first_error_code = skipped[0].get("code") if skipped else None
     first_error_message = skipped[0].get("reason") if skipped else None
@@ -3048,7 +3190,7 @@ def fail_job(job: dict, exc: Exception):
                 f"{delay_seconds}s [{code}]."
             )
         return
-    if code in SPOTIFY_TRANSIENT_JOB_CODES and attempts < 3:
+    if code in DELAYED_TRANSIENT_JOB_CODES and attempts < 3:
         retry_delay_seconds = 60 if attempts == 1 else 300
         next_attempt_at = (
             datetime.now(timezone.utc)
@@ -3074,13 +3216,13 @@ def fail_job(job: dict, exc: Exception):
         )
         log(
             f"Job {job['id']} aguardará {retry_delay_seconds}s após falha "
-            f"transitória do Spotify (tentativa {attempts}/3)."
+            f"transitória do importador (tentativa {attempts}/3)."
         )
         return
     # Volta para a fila se ainda tem tentativas; senao marca erro definitivo.
     if (
         code not in NON_RETRYABLE_JOB_CODES
-        and code not in SPOTIFY_TRANSIENT_JOB_CODES
+        and code not in DELAYED_TRANSIENT_JOB_CODES
         and attempts < MAX_ATTEMPTS
     ):
         update_job(

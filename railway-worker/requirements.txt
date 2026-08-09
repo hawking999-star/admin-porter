@@ -3,6 +3,6 @@ SpotipyFree==1.9.13
 # Dependência importada pelo spotapi, mas não declarada no wheel do SpotipyFree.
 redis==7.4.0
 boto3>=1.34.0
-supabase>=2.7.0
+supabase==2.31.0
 # Plugin de PO token (só age se POT_PROVIDER_BASE_URL estiver setado + provedor no ar).
 bgutil-ytdlp-pot-provider==1.3.1
