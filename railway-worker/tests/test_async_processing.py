@@ -170,6 +170,67 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertNotIn("track_id", payload)
         update_query.eq.assert_called_once_with("id", "item-processing")
 
+    def test_storage_key_reuse_only_accepts_available_track(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = Mock(data=[])
+
+        with patch.object(self.worker.supabase, "table", return_value=query):
+            result = self.worker.existing_available_track_by_storage_key(
+                "tracks/e_TAAedy0Y4.mp3"
+            )
+
+        self.assertIsNone(result)
+        self.assertIn(
+            ("status", "available"),
+            [call.args for call in query.eq.call_args_list],
+        )
+
+    def test_bound_single_track_uses_atomic_replacement(self):
+        tracks_query = MagicMock()
+        tracks_query.select.return_value = tracks_query
+        tracks_query.eq.return_value = tracks_query
+        tracks_query.limit.return_value = tracks_query
+        tracks_query.execute.return_value = Mock(data=[{"id": "track-existing"}])
+
+        with (
+            patch.object(
+                self.worker,
+                "_extract_single_video",
+                return_value={
+                    "id": "e_TAAedy0Y4",
+                    "title": "Faixa existente",
+                    "artist": "Artista",
+                    "duration": 180,
+                },
+            ),
+            patch.object(self.worker.supabase, "table", return_value=tracks_query),
+            patch.object(self.worker, "replace_playlist_request_track") as replace_track,
+            patch.object(self.worker, "_remove_skipped_from_playlist"),
+            patch.object(self.worker, "update_job"),
+            patch.object(self.worker, "set_request_item_status_by_youtube_id") as legacy_status,
+            patch.object(self.worker, "reconcile_playlist_job_after_manual_item"),
+        ):
+            self.worker.process_single_track_job(
+                {
+                    "id": "job-atomic",
+                    "playlist_id": "playlist-1",
+                    "playlist_request_id": "request-1",
+                    "playlist_request_item_id": "item-1",
+                    "replace_youtube_id": "oldVideo001",
+                },
+                "https://www.youtube.com/watch?v=e_TAAedy0Y4",
+            )
+
+        replace_track.assert_called_once_with(
+            "job-atomic",
+            "track-existing",
+            "e_TAAedy0Y4",
+        )
+        legacy_status.assert_not_called()
+
     def test_manual_retry_reconciles_fully_resolved_playlist_job(self):
         jobs_query = MagicMock()
         jobs_query.select.return_value = jobs_query
@@ -851,12 +912,8 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         tracks.execute.return_value = Mock(
             data=[{"id": "track-existing", "storage_object_key": "tracks/existing.mp3"}]
         )
-        playlist_tracks = MagicMock()
-        playlist_tracks.upsert.return_value = playlist_tracks
-        playlist_tracks.execute.return_value = Mock(data=[])
-
-        def table(name):
-            return tracks if name == "tracks" else playlist_tracks
+        def table(_name):
+            return tracks
 
         def download_file(_bucket, _key, path):
             with open(path, "wb") as source:
@@ -875,15 +932,14 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             patch.object(self.worker, "transcode_uploaded_audio", side_effect=transcode),
             patch.object(self.worker, "sha256_of", return_value="a" * 64),
             patch.object(self.worker.supabase, "table", side_effect=table),
+            patch.object(self.worker, "attach_music_upload_track") as attach,
             patch.object(self.worker, "finish_music_upload_task", return_value={"terminal": True}) as finish,
         ):
             self.worker.process_music_upload_task(task)
 
         tracks_upserts = tracks.upsert.call_count
         self.assertEqual(tracks_upserts, 0)
-        playlist_payload = playlist_tracks.upsert.call_args.args[0]
-        self.assertEqual(playlist_payload["track_id"], "track-existing")
-        self.assertEqual(playlist_payload["playlist_id"], "playlist-upload")
+        attach.assert_called_once_with("task-upload", "track-existing")
         finish.assert_called_once_with(
             "task-upload",
             True,

@@ -5,6 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 type PrepareBody = {
   action: "prepare";
   item_id?: string;
+  playlist_id?: string;
   filename?: string;
   mime?: string;
   size_bytes?: number;
@@ -85,6 +86,7 @@ function publicError(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const known = [
     "music_upload_item_not_found",
+    "music_upload_playlist_not_found",
     "music_upload_request_not_approved",
     "music_upload_size_invalid",
     "music_upload_mime_invalid",
@@ -143,7 +145,11 @@ async function authenticatedClient(req: Request) {
 }
 
 async function prepare(req: Request, body: PrepareBody, origin: string | null) {
-  if (!body.item_id || !UUID_PATTERN.test(body.item_id)) throw new Error("music_upload_item_not_found");
+  const itemId = body.item_id && UUID_PATTERN.test(body.item_id) ? body.item_id : null;
+  const playlistId = body.playlist_id && UUID_PATTERN.test(body.playlist_id) ? body.playlist_id : null;
+  if ((itemId ? 1 : 0) + (playlistId ? 1 : 0) !== 1) {
+    throw new Error(itemId ? "music_upload_playlist_not_found" : "music_upload_item_not_found");
+  }
   const filename = body.filename?.trim() ?? "";
   const mime = body.mime?.trim().toLowerCase() ?? "";
   const sizeBytes = Number(body.size_bytes);
@@ -152,8 +158,10 @@ async function prepare(req: Request, body: PrepareBody, origin: string | null) {
     throw new Error("music_upload_size_invalid");
   }
   const client = await authenticatedClient(req);
-  const { data, error } = await client.rpc("admin_prepare_music_upload", {
-    p_item_id: body.item_id,
+  const rpcName = itemId ? "admin_prepare_music_upload" : "admin_prepare_library_music_upload";
+  const target = itemId ? { p_item_id: itemId } : { p_playlist_id: playlistId };
+  const { data, error } = await client.rpc(rpcName, {
+    ...target,
     p_filename: filename,
     p_mime: mime,
     p_size_bytes: sizeBytes,

@@ -62,6 +62,7 @@ import {
   acceptPlaylistRequestItems,
   archiveSecondaryPlaylist,
   acknowledgePlaylistImportError,
+  clearOperatorPlaylistRequests,
   countPlaylistStats,
   dismissSkippedTrack,
   enqueueTrackReplacement,
@@ -80,6 +81,7 @@ import {
   reimportPlaylistRequest,
   retryPlaylistImport,
   uploadPlaylistRequestItem,
+  uploadMusicFilesToPlaylist,
   reviewPlaylist,
   savePlaylistAdminNote,
   playlistTypeLabel,
@@ -230,7 +232,10 @@ function latestLibraryJobStatus(p: MusicLibraryPlaylist): string | null {
 
 function playlistRefreshActive(p: MusicLibraryPlaylist): boolean {
   const status = latestLibraryJobStatus(p);
-  return p.import_status === "processing" || status === "queued" || status === "running";
+  return (p.pending_upload_count ?? 0) > 0
+    || p.import_status === "processing"
+    || status === "queued"
+    || status === "running";
 }
 
 function playlistRefreshFailed(p: MusicLibraryPlaylist): boolean {
@@ -275,6 +280,44 @@ function operatorLibraryUpdatedAt(operator: OperatorMusicLibrary): string {
   return latest;
 }
 
+const WINDOWS_1252_BYTES = new Map<number, number>([
+  [0x20ac, 0x80], [0x201a, 0x82], [0x0192, 0x83], [0x201e, 0x84],
+  [0x2026, 0x85], [0x2020, 0x86], [0x2021, 0x87], [0x02c6, 0x88],
+  [0x2030, 0x89], [0x0160, 0x8a], [0x2039, 0x8b], [0x0152, 0x8c],
+  [0x017d, 0x8e], [0x2018, 0x91], [0x2019, 0x92], [0x201c, 0x93],
+  [0x201d, 0x94], [0x2022, 0x95], [0x2013, 0x96], [0x2014, 0x97],
+  [0x02dc, 0x98], [0x2122, 0x99], [0x0161, 0x9a], [0x203a, 0x9b],
+  [0x0153, 0x9c], [0x017e, 0x9e], [0x0178, 0x9f],
+]);
+
+function repairBackendText(value?: string | null): string {
+  if (!value) return value ?? "";
+  let result = value;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (![...result].some((char) => [0xc2, 0xc3, 0xe2].includes(char.charCodeAt(0)))) break;
+    const bytes: number[] = [];
+    let valid = true;
+    for (const char of result) {
+      const code = char.charCodeAt(0);
+      const byte = code <= 0xff ? code : WINDOWS_1252_BYTES.get(code);
+      if (byte == null) {
+        valid = false;
+        break;
+      }
+      bytes.push(byte);
+    }
+    if (!valid) break;
+    try {
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+      if (decoded === result) break;
+      result = decoded;
+    } catch {
+      break;
+    }
+  }
+  return result;
+}
+
 const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
   SPOTIFY_PLAYLIST_EMPTY: "A playlist do Spotify não possui músicas disponíveis.",
   PLAYLIST_EMPTY: "A playlist não possui músicas disponíveis.",
@@ -298,6 +341,7 @@ const FRIENDLY_IMPORT_MESSAGES: Record<string, string> = {
   YOUTUBE_COOKIES_MISSING: "O YouTube está indisponível para o importador.",
   YOUTUBE_COOKIES_INVALID: "O YouTube está indisponível para o importador.",
   YOUTUBE_TOKEN_PROVIDER_UNAVAILABLE: "O YouTube está indisponível para o importador.",
+  TRACK_NOT_AVAILABLE: "A versão anterior desta faixa foi removida. Tente novamente para baixar a substituta.",
   IMPORTER_ERROR: "O serviço de importação está temporariamente indisponível.",
 };
 
@@ -308,10 +352,8 @@ const YOUTUBE_PAUSE_CODES = new Set([
 ]);
 
 function friendlyImportMessage(code?: string | null, fallback?: string | null): string | null {
-  if (code) {
-    return FRIENDLY_IMPORT_MESSAGES[code] ?? "O serviço de importação está temporariamente indisponível.";
-  }
-  return fallback?.trim() || null;
+  if (code && FRIENDLY_IMPORT_MESSAGES[code]) return FRIENDLY_IMPORT_MESSAGES[code];
+  return repairBackendText(fallback?.trim()) || null;
 }
 
 function playlistImportError(p: Playlist): string | null {
@@ -364,6 +406,7 @@ function technicalErrorText(p: Playlist): string | null {
 }
 
 type SkippedTrack = {
+  item_id?: string;
   title?: string;
   reason?: string;
   code?: string;
@@ -429,8 +472,8 @@ function ReplaceTrackDialog({
   const mutation = useMutation({
     mutationFn: () => enqueueTrackReplacement(playlistId, url.trim(), target?.youtube_id ?? null),
     onSuccess: () => {
-      toast.success("Troca enfileirada", {
-        description: "O worker vai baixar a nova versão em instantes.",
+      toast.success("Substituição enfileirada", {
+        description: "A nova versão será baixada e entrará na mesma posição da faixa anterior.",
       });
       qc.invalidateQueries();
       onClose();
@@ -670,6 +713,10 @@ export function MusicasPage() {
   } | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<MusicLibraryPlaylist | null>(null);
   const [reimportRequestTarget, setReimportRequestTarget] = useState<OperatorRequestHistory | null>(null);
+  const [clearRequestsTarget, setClearRequestsTarget] = useState<OperatorMusicLibrary | null>(null);
+  const [libraryUploadTarget, setLibraryUploadTarget] = useState<MusicLibraryPlaylist | null>(null);
+  const [libraryUploadFiles, setLibraryUploadFiles] = useState<File[]>([]);
+  const [libraryUploadRightsConfirmed, setLibraryUploadRightsConfirmed] = useState(false);
   const [confirmState, setConfirmState] = useState<{ id: string; action: "approve" | "reject" } | null>(
     null,
   );
@@ -1005,6 +1052,52 @@ export function MusicasPage() {
     onError: (err: unknown) => {
       const msg = err instanceof Error ? err.message : "Erro ao arquivar playlist";
       toast.error("Não foi possível arquivar", { description: msg });
+    },
+  });
+
+  const clearRequestsMutation = useMutation({
+    mutationFn: (operator: OperatorMusicLibrary) =>
+      clearOperatorPlaylistRequests(operator.id),
+    onSuccess: (result) => {
+      invalidateMusic();
+      setClearRequestsTarget(null);
+      toast.success(
+        result.cleared_count > 0
+          ? `${result.cleared_count} solicitação(ões) removida(s) da visualização`
+          : "Nenhuma solicitação concluída para limpar",
+        result.pending_preserved > 0
+          ? { description: `${result.pending_preserved} solicitação(ões) pendente(s) foram preservadas.` }
+          : undefined,
+      );
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível limpar as solicitações", { description: errorMessage(err) });
+    },
+  });
+
+  const libraryUploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!libraryUploadTarget || libraryUploadFiles.length === 0 || !libraryUploadRightsConfirmed) {
+        throw new Error("Selecione os arquivos e confirme a autorização de uso.");
+      }
+      return uploadMusicFilesToPlaylist(
+        libraryUploadTarget.id,
+        libraryUploadFiles,
+        "Declaro que possuo autorização para enviar e usar estes áudios nesta playlist.",
+      );
+    },
+    onSuccess: (queued) => {
+      invalidateMusic();
+      setLibraryUploadTarget(null);
+      setLibraryUploadFiles([]);
+      setLibraryUploadRightsConfirmed(false);
+      toast.success(`${queued} arquivo(s) enviado(s) para validação`, {
+        description: "A biblioteca será atualizada automaticamente quando o worker concluir.",
+      });
+    },
+    onError: (err: unknown) => {
+      toast.error("Não foi possível enviar todos os arquivos", { description: errorMessage(err) });
+      invalidateMusic();
     },
   });
 
@@ -1370,6 +1463,11 @@ export function MusicasPage() {
       {/* Drawer de detalhes */}
       <Sheet open={Boolean(detailId)} onOpenChange={(o) => !o && setDetailId(null)}>
         <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
+          {!detail && (
+            <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Carregando detalhes da solicitação...
+            </div>
+          )}
           {detail && (
             <DetailPanel
               p={detail}
@@ -1404,7 +1502,9 @@ export function MusicasPage() {
                 removeTrackMutation.isPending ||
                 archiveMutation.isPending ||
                 retryMutation.isPending ||
-                reimportRequestMutation.isPending
+                reimportRequestMutation.isPending ||
+                clearRequestsMutation.isPending ||
+                libraryUploadMutation.isPending
               }
               onSelectPlaylist={setSelectedPlaylistId}
               onRename={(playlist) => {
@@ -1413,12 +1513,117 @@ export function MusicasPage() {
               }}
               onRetry={(playlist) => retryMutation.mutate({ id: playlist.id })}
               onReimportRequest={setReimportRequestTarget}
+              onClearRequests={() => setClearRequestsTarget(selectedOperator)}
+              onUpload={setLibraryUploadTarget}
+              onReview={(playlist) => {
+                setSelectedOperatorId(null);
+                setOperatorRequestFilter(selectedOperator.id);
+                setActiveArea("requests");
+                setDetailId(playlist.id);
+              }}
               onArchive={setArchiveTarget}
               onRemoveTrack={(playlist, track) => setRemoveTrackTarget({ playlist, track })}
             />
           )}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(clearRequestsTarget)} onOpenChange={(open) => !open && setClearRequestsTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Limpar solicitações concluídas?</DialogTitle>
+            <DialogDescription>
+              As solicitações de {clearRequestsTarget?.display_name ?? "este operador"} deixarão de aparecer no Admin e no App. O histórico técnico e a auditoria serão preservados no banco. Solicitações ainda pendentes não serão removidas.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={clearRequestsMutation.isPending} onClick={() => setClearRequestsTarget(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!clearRequestsTarget || clearRequestsMutation.isPending}
+              onClick={() => clearRequestsTarget && clearRequestsMutation.mutate(clearRequestsTarget)}
+            >
+              {clearRequestsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              Limpar solicitações
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(libraryUploadTarget)}
+        onOpenChange={(open) => {
+          if (!open && !libraryUploadMutation.isPending) {
+            setLibraryUploadTarget(null);
+            setLibraryUploadFiles([]);
+            setLibraryUploadRightsConfirmed(false);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Enviar músicas para {libraryUploadTarget?.name ?? "a playlist"}</DialogTitle>
+            <DialogDescription>
+              Selecione vários arquivos MP3, M4A/AAC, OGG ou WAV. Cada arquivo pode ter até 50 MB e 16 minutos; o worker valida e converte para MP3 128 kbps.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <Input
+              type="file"
+              multiple
+              accept=".mp3,.m4a,.aac,.ogg,.wav,audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav"
+              disabled={libraryUploadMutation.isPending}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                const oversized = files.find((file) => file.size > 50 * 1024 * 1024);
+                if (oversized) {
+                  event.target.value = "";
+                  setLibraryUploadFiles([]);
+                  toast.error(`${oversized.name} ultrapassa 50 MB`);
+                  return;
+                }
+                setLibraryUploadFiles(files);
+              }}
+            />
+            {libraryUploadFiles.length > 0 && (
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-muted/20 p-3 text-sm">
+                <p className="mb-2 font-medium">{libraryUploadFiles.length} arquivo(s) selecionado(s)</p>
+                <ul className="space-y-1 text-xs text-muted-foreground">
+                  {libraryUploadFiles.map((file) => (
+                    <li key={`${file.name}-${file.size}`} className="flex justify-between gap-3">
+                      <span className="truncate">{file.name}</span>
+                      <span className="shrink-0">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <label className="flex items-start gap-2 rounded-lg border border-border bg-muted/20 p-3 text-sm">
+              <Checkbox
+                className="mt-0.5"
+                checked={libraryUploadRightsConfirmed}
+                onCheckedChange={(checked) => setLibraryUploadRightsConfirmed(checked === true)}
+                disabled={libraryUploadMutation.isPending}
+              />
+              <span>Declaro que possuo autorização para enviar e usar estes áudios nesta playlist. A declaração ficará registrada na auditoria.</span>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={libraryUploadMutation.isPending} onClick={() => setLibraryUploadTarget(null)}>
+              Cancelar
+            </Button>
+            <Button
+              disabled={libraryUploadFiles.length === 0 || !libraryUploadRightsConfirmed || libraryUploadMutation.isPending}
+              onClick={() => libraryUploadMutation.mutate()}
+            >
+              {libraryUploadMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {libraryUploadMutation.isPending ? "Enviando arquivos..." : `Enviar ${libraryUploadFiles.length || ""} arquivo(s)`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(reimportRequestTarget)} onOpenChange={(open) => !open && setReimportRequestTarget(null)}>
         <DialogContent>
@@ -2078,6 +2283,9 @@ function OperatorLibraryPanel({
   onRename,
   onRetry,
   onReimportRequest,
+  onClearRequests,
+  onUpload,
+  onReview,
   onArchive,
   onRemoveTrack,
 }: {
@@ -2088,6 +2296,9 @@ function OperatorLibraryPanel({
   onRename: (playlist: MusicLibraryPlaylist) => void;
   onRetry: (playlist: MusicLibraryPlaylist) => void;
   onReimportRequest: (request: OperatorRequestHistory) => void;
+  onClearRequests: () => void;
+  onUpload: (playlist: MusicLibraryPlaylist) => void;
+  onReview: (playlist: MusicLibraryPlaylist) => void;
   onArchive: (playlist: MusicLibraryPlaylist) => void;
   onRemoveTrack: (playlist: MusicLibraryPlaylist, track: MusicTrack) => void;
 }) {
@@ -2157,7 +2368,7 @@ function OperatorLibraryPanel({
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>{playlist.track_count} músicas</span>
+                    <span>{playlist.track_count} no App</span>
                     <span>·</span>
                     <ImportStatusText playlist={playlist} />
                   </div>
@@ -2167,9 +2378,16 @@ function OperatorLibraryPanel({
           )}
 
           <div className="pt-2">
-            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-              <History className="h-4 w-4" />
-              Solicitações da Principal
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <History className="h-4 w-4" />
+                Solicitações da Principal
+              </div>
+              {principalRequestHistory.length > 0 && (
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" onClick={onClearRequests} disabled={busy}>
+                  <Trash2 className="h-3.5 w-3.5" /> Limpar
+                </Button>
+              )}
             </div>
             <RequestHistoryList
               history={principalRequestHistory}
@@ -2193,6 +2411,8 @@ function OperatorLibraryPanel({
             busy={busy}
             onRename={() => onRename(selectedPlaylist)}
             onRetry={() => onRetry(selectedPlaylist)}
+            onUpload={() => onUpload(selectedPlaylist)}
+            onReview={() => onReview(selectedPlaylist)}
             onArchive={() => onArchive(selectedPlaylist)}
             onRemoveTrack={(track) => onRemoveTrack(selectedPlaylist, track)}
           />
@@ -2397,6 +2617,8 @@ function PlaylistLibraryDetail({
   busy,
   onRename,
   onRetry,
+  onUpload,
+  onReview,
   onArchive,
   onRemoveTrack,
 }: {
@@ -2404,6 +2626,8 @@ function PlaylistLibraryDetail({
   busy: boolean;
   onRename: () => void;
   onRetry: () => void;
+  onUpload: () => void;
+  onReview: () => void;
   onArchive: () => void;
   onRemoveTrack: (track: MusicTrack) => void;
 }) {
@@ -2429,7 +2653,10 @@ function PlaylistLibraryDetail({
             <span>·</span>
             <span>Atualizada {relOrDate(playlist.updated_at)}</span>
             <span>·</span>
-            <span>{playlist.track_count} músicas</span>
+            <span>{playlist.track_count} músicas disponíveis no App</span>
+            {(playlist.pending_upload_count ?? 0) > 0 && (
+              <><span>·</span><span>{playlist.pending_upload_count} upload(s) processando</span></>
+            )}
           </div>
           {playlist.source_url && (
             <div className="mt-2 flex min-w-0 items-center gap-1.5 text-sm">
@@ -2458,6 +2685,10 @@ function PlaylistLibraryDetail({
             <RefreshCw className="h-4 w-4" />
             Reimportar
           </Button>
+          <Button size="sm" variant="outline" onClick={onUpload} disabled={busy}>
+            <Upload className="h-4 w-4" />
+            Enviar músicas
+          </Button>
           {canArchive && (
             <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={onArchive} disabled={busy}>
               <Archive className="h-4 w-4" />
@@ -2468,9 +2699,11 @@ function PlaylistLibraryDetail({
       </div>
 
       {error && (
-        <div className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive ring-1 ring-destructive/20">
-          <span className="font-semibold">Falha ao importar: </span>
-          {error}
+        <div className="mt-3 flex flex-col gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive ring-1 ring-destructive/20 sm:flex-row sm:items-center sm:justify-between">
+          <p><span className="font-semibold">Falha ao importar: </span>{error}</p>
+          <Button size="sm" variant="outline" className="shrink-0" onClick={onReview} disabled={busy}>
+            <AlertTriangle className="h-3.5 w-3.5" /> Ver e resolver pendências
+          </Button>
         </div>
       )}
 
@@ -2965,20 +3198,55 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const detailQuery = useQuery({
-    queryKey: ["playlist-request-detail", p.id],
+    queryKey: [
+      "playlist-request-detail",
+      p.id,
+      p.download?.status ?? null,
+      p.download?.completed ?? 0,
+      p.download?.failed ?? 0,
+      p.download?.finished_at ?? null,
+    ],
     queryFn: () => getPlaylistRequestDetail(p.id),
     enabled: Boolean(p.source_url),
     staleTime: 10_000,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchInterval: (query) => {
+      const detail = query.state.data;
+      const itemStillActive = detail?.items.some(
+        (item) =>
+          item.status === "processing"
+          || (
+            item.status === "review_recommended"
+            && (!item.youtube_url || !item.youtube_video_id)
+          ),
+      );
+      const jobIsActive =
+        p.download?.status === "queued" || p.download?.status === "running";
+      return itemStillActive || jobIsActive ? 5000 : false;
+    },
   });
 
   const itemMutation = useMutation({
     mutationFn: ({ action, item, url }: { action: "ignore" | "replace_youtube" | "retry"; item: PlaylistRequestDetailItem; url?: string }) =>
       managePlaylistRequestItem(detailQuery.data!.request.id, action, item.id, url),
-    onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: ["playlist-request-detail", p.id] });
-      qc.invalidateQueries({ queryKey: ["playlists"] });
+    onSuccess: async (_data, variables) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["playlist-request-detail", p.id] }),
+        qc.invalidateQueries({ queryKey: ["playlists"] }),
+      ]);
       if (variables.action === "replace_youtube") setReplacement(null);
-      toast.success(variables.action === "ignore" ? "Faixa ignorada" : "Faixa reenfileirada");
+      toast.success(
+        variables.action === "ignore"
+          ? "Faixa ignorada"
+          : variables.action === "replace_youtube"
+            ? "Substituição enfileirada"
+            : "Faixa reenfileirada",
+        variables.action === "replace_youtube"
+          ? { description: "A nova versão entrará na mesma posição da faixa anterior." }
+          : undefined,
+      );
     },
     onError: (error: unknown) => toast.error("Não foi possível atualizar a faixa", { description: errorMessage(error) }),
   });
@@ -3094,7 +3362,9 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
             Atenção
           </p>
           <ul className="space-y-1 text-sm text-warning-foreground">
-            {(detail.request.operator_messages ?? []).map((message) => <li key={message}>{message}</li>)}
+            {(detail.request.operator_messages ?? []).map((message) => (
+              <li key={message}>{repairBackendText(message)}</li>
+            ))}
           </ul>
         </div>
       )}
@@ -3146,12 +3416,15 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
       <div className="space-y-2">
         {items.map((item) => {
           const review = item.status === "review_recommended";
+          const itemIsProcessing = item.status === "processing";
           const canUseCurrentResult =
             Boolean(item.youtube_url)
             && detail.operational?.provider.status === "healthy"
+            && !itemIsProcessing
             && !itemMutation.isPending
             && !acceptMutation.isPending;
           const canUploadItem = Boolean(detail.operational?.permissions.can_upload)
+            && !itemIsProcessing
             && !["completed", "duplicate", "skipped"].includes(item.status);
           const selectedForReview = selectedReviewItemIds.includes(item.id);
           return (
@@ -3179,15 +3452,19 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
                   </div>
                 </div>
                 <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", review ? "bg-warning/15 text-warning-foreground" : "bg-muted text-muted-foreground")}>
-                  {review ? "Revisão recomendada" : item.status}
+                  {review
+                    ? "Revisão recomendada"
+                    : itemIsProcessing
+                      ? "Substituição em andamento"
+                      : item.status}
                 </span>
               </div>
               <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
                 <p>Resultado no YouTube: <span className="text-foreground">{item.youtube_title ?? item.youtube_video_id ?? "não encontrado"}</span></p>
                 <p>Canal: {item.youtube_channel ?? "não informado"} · Diferença: {item.duration_difference_ms == null ? "—" : `${Math.round(item.duration_difference_ms / 1000)}s`}</p>
-                {item.operator_message && <p className="text-warning-foreground">{item.operator_message}</p>}
+                {item.operator_message && <p className="text-warning-foreground">{repairBackendText(item.operator_message)}</p>}
                 {item.review_reason && (
-                  <p className="text-muted-foreground">Detalhe da divergência: {item.review_reason}</p>
+                  <p className="text-muted-foreground">Detalhe da divergência: {repairBackendText(item.review_reason)}</p>
                 )}
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -3196,7 +3473,7 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
                   size="sm"
                   variant={item.status === "failed" || item.status === "not_found" ? "default" : "outline"}
                   onClick={() => { setReplacement(item); setYoutubeUrl(item.youtube_url ?? ""); }}
-                  disabled={itemMutation.isPending || detail.operational?.provider.status !== "healthy"}
+                  disabled={itemIsProcessing || itemMutation.isPending || detail.operational?.provider.status !== "healthy"}
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   {item.youtube_url ? "Substituir resultado" : "Escolher música no YouTube"}
@@ -3228,7 +3505,7 @@ function SpotifyRequestDetail({ p, onApprove }: { p: Playlist; onApprove: () => 
                     <RefreshCw className="h-3.5 w-3.5" /> Tentar novamente
                   </Button>
                 ) : null}
-                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => itemMutation.mutate({ action: "ignore", item })} disabled={itemMutation.isPending}>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => itemMutation.mutate({ action: "ignore", item })} disabled={itemIsProcessing || itemMutation.isPending}>
                   <X className="h-3.5 w-3.5" /> Ignorar faixa
                 </Button>
               </div>

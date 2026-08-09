@@ -85,6 +85,12 @@ begin
      and mode = 'single_track'
      and status = 'queued';
   if v_count <> 2 then raise exception 'expected two single-track jobs, got %', v_count; end if;
+  select count(*) into v_count
+    from public.download_jobs
+   where playlist_request_id = v_request
+     and playlist_request_item_id in (v_item_one, v_item_two)
+     and mode = 'single_track';
+  if v_count <> 2 then raise exception 'expected jobs bound to exact request items, got %', v_count; end if;
 
   select count(*) into v_count
     from public.playlist_request_tracks

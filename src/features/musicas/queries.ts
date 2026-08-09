@@ -496,10 +496,18 @@ export async function uploadPlaylistRequestItem(
   file: File,
   rightsStatement: string,
 ): Promise<void> {
+  return uploadMusicFile({ item_id: itemId }, file, rightsStatement);
+}
+
+async function uploadMusicFile(
+  target: { item_id: string } | { playlist_id: string },
+  file: File,
+  rightsStatement: string,
+): Promise<void> {
   const { data, error } = await supabase.functions.invoke<PreparedMusicUpload>("music-upload", {
     body: {
       action: "prepare",
-      item_id: itemId,
+      ...target,
       filename: file.name,
       mime: file.type,
       size_bytes: file.size,
@@ -520,6 +528,23 @@ export async function uploadPlaylistRequestItem(
     body: { action: "complete", session_id: data.session_id },
   });
   if (completeError) throw completeError;
+}
+
+export async function uploadMusicFilesToPlaylist(
+  playlistId: string,
+  files: File[],
+  rightsStatement: string,
+): Promise<number> {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(2, files.length) }, async () => {
+    while (cursor < files.length) {
+      const index = cursor;
+      cursor += 1;
+      await uploadMusicFile({ playlist_id: playlistId }, files[index], rightsStatement);
+    }
+  });
+  await Promise.all(workers);
+  return files.length;
 }
 
 export async function managePlaylistRequestItem(
@@ -696,6 +721,7 @@ export type MusicLibraryPlaylist = {
   error_message: string | null;
   last_error_at: string | null;
   track_count: number;
+  pending_upload_count?: number;
   latest_job: Record<string, unknown> | null;
   tracks: MusicTrack[];
 };
@@ -792,4 +818,22 @@ export async function reimportPlaylistRequest(id: string): Promise<void> {
     p_request: id,
   });
   if (error) throw error;
+}
+
+export type ClearPlaylistRequestsResult = {
+  success: boolean;
+  cleared_count: number;
+  pending_preserved: number;
+};
+
+export async function clearOperatorPlaylistRequests(
+  operatorId: string,
+  playlistId?: string | null,
+): Promise<ClearPlaylistRequestsResult> {
+  const { data, error } = await supabase.rpc("admin_clear_operator_playlist_requests", {
+    p_operator_id: operatorId,
+    p_playlist_id: playlistId ?? null,
+  });
+  if (error) throw error;
+  return data as ClearPlaylistRequestsResult;
 }
