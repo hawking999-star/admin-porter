@@ -1,5 +1,12 @@
 import { supabase } from "@/lib/supabase";
 import { unitLabel } from "@/lib/unit-label";
+import {
+  buildSessionActivityItems,
+  type RecentActivity,
+  type SessionActivityRow,
+} from "./session-activity";
+
+export type { ActivityKind, RecentActivity } from "./session-activity";
 
 /* ========================================================================== *
  * Visão Geral — agregações da operação (dados reais do Supabase).
@@ -423,16 +430,6 @@ export async function fetchOverviewActionCenter(unitId?: string): Promise<Overvi
 
 /* ---------------------------- Atividade recente -------------------------- */
 
-export type ActivityKind = "session" | "feedback" | "playlist" | "audit";
-
-export type RecentActivity = {
-  id: string;
-  kind: ActivityKind;
-  title: string;
-  detail: string | null;
-  occurred_at: string;
-};
-
 const AUDIT_VERB: Record<string, string> = {
   insert: "cadastrou",
   create: "cadastrou",
@@ -461,21 +458,6 @@ function formatAudit(action: string, entity: string | null): string {
   return `${verb} ${ent}`;
 }
 
-function formatSession(status: string): string {
-  switch (status) {
-    case "active":
-      return "iniciou uma sessão";
-    case "ended":
-      return "encerrou uma sessão";
-    case "expired":
-      return "teve a sessão expirada";
-    case "revoked":
-      return "teve a sessão revogada";
-    default:
-      return "atualizou a sessão";
-  }
-}
-
 const FEEDBACK_TYPE_PT: Record<string, string> = {
   suggestion: "Sugestão",
   problem: "Problema",
@@ -497,12 +479,20 @@ export async function fetchRecentActivity(sinceAt: string, untilAt: string, unit
         .lte("occurred_at", untilAt)
         .order("occurred_at", { ascending: false })
         .limit(8);
-  let sessionsQuery = supabase
+  let startedSessionsQuery = supabase
     .from("operator_sessions")
-    .select("id, status, started_at, ended_at, operators!inner(display_name, unit_id)")
+    .select("id, status, started_at, ended_at, end_reason, app_version, operators!inner(display_name, unit_id)")
     .gte("started_at", sinceAt)
     .lte("started_at", untilAt)
     .order("started_at", { ascending: false })
+    .limit(8);
+  let endedSessionsQuery = supabase
+    .from("operator_sessions")
+    .select("id, status, started_at, ended_at, end_reason, app_version, operators!inner(display_name, unit_id)")
+    .not("ended_at", "is", null)
+    .gte("ended_at", sinceAt)
+    .lte("ended_at", untilAt)
+    .order("ended_at", { ascending: false })
     .limit(8);
   let feedbackQuery = supabase
     .from("feedback")
@@ -521,14 +511,16 @@ export async function fetchRecentActivity(sinceAt: string, untilAt: string, unit
     .limit(6);
 
   if (unitId) {
-    sessionsQuery = sessionsQuery.eq("operators.unit_id", unitId);
+    startedSessionsQuery = startedSessionsQuery.eq("operators.unit_id", unitId);
+    endedSessionsQuery = endedSessionsQuery.eq("operators.unit_id", unitId);
     feedbackQuery = feedbackQuery.eq("unit_id", unitId);
     playlistsQuery = playlistsQuery.eq("unit_id", unitId);
   }
 
-  const [audits, sessions, feedback, playlists] = await Promise.all([
+  const [audits, startedSessions, endedSessions, feedback, playlists] = await Promise.all([
     auditsQuery,
-    sessionsQuery,
+    startedSessionsQuery,
+    endedSessionsQuery,
     feedbackQuery,
     playlistsQuery,
   ]);
@@ -546,17 +538,10 @@ export async function fetchRecentActivity(sinceAt: string, untilAt: string, unit
     });
   }
 
-  for (const s of sessions.data ?? []) {
-    const who = capitalizeName((s as any).operators?.display_name);
-    const when = s.status === "active" ? s.started_at : s.ended_at ?? s.started_at;
-    items.push({
-      id: `sess-${s.id}`,
-      kind: "session",
-      title: `${who} ${formatSession(s.status)}`,
-      detail: null,
-      occurred_at: when,
-    });
-  }
+  items.push(...buildSessionActivityItems(
+    (startedSessions.data ?? []) as SessionActivityRow[],
+    (endedSessions.data ?? []) as SessionActivityRow[],
+  ));
 
   for (const f of feedback.data ?? []) {
     const who = capitalizeName((f as any).operators?.display_name);
