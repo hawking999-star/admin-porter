@@ -499,6 +499,11 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
         )
     if "TRACK_DURATION_UNKNOWN" in raw:
         return "TRACK_DURATION_UNKNOWN", "Faixa ignorada: não foi possível confirmar a duração da faixa."
+    if "TRACK_NOT_AVAILABLE" in raw:
+        return (
+            "TRACK_NOT_AVAILABLE",
+            "A versão anterior desta faixa foi removida. Tente novamente para baixar a substituta.",
+        )
     if "PRINCIPAL_TRACK_LIMIT_REACHED" in raw:
         return (
             "PLAYLIST_LIMIT_EXCEEDED",
@@ -760,6 +765,17 @@ def finish_music_upload_task(
             "p_error_code": error_code,
             "p_error_message": error_message,
         },
+    ).execute()
+    data = result.data or {}
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    return data if isinstance(data, dict) else {}
+
+
+def attach_music_upload_track(task_id: str, track_id: str) -> dict:
+    result = supabase.rpc(
+        "worker_attach_music_upload_track",
+        {"p_task_id": task_id, "p_track_id": track_id},
     ).execute()
     data = result.data or {}
     if isinstance(data, list):
@@ -1437,6 +1453,21 @@ def set_request_item_status_by_youtube_id(request_id: str | None, youtube_id: st
 
     supabase.table("playlist_request_tracks").update(payload).eq(
         "id", target["id"]
+    ).execute()
+
+
+def set_request_item_status_by_id(item_id: str | None, status: str, **fields) -> None:
+    """Atualiza exatamente o item escolhido pelo Admin em uma troca manual."""
+    if not item_id:
+        return
+    payload = {
+        "item_status": status,
+        "locked_at": None,
+        "updated_at": now_iso(),
+        **fields,
+    }
+    supabase.table("playlist_request_tracks").update(payload).eq(
+        "id", item_id
     ).execute()
 
 
@@ -2123,6 +2154,7 @@ def process_single_track_job(job: dict, url: str):
     job_id = job["id"]
     playlist_id = job["playlist_id"]
     playlist_request_id = job.get("playlist_request_id")
+    playlist_request_item_id = job.get("playlist_request_item_id")
     replace_vid = job.get("replace_youtube_id")
     deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
     safe_url = require_youtube_video_url(url).normalized_url
@@ -2143,9 +2175,9 @@ def process_single_track_job(job: dict, url: str):
             vid = entry["id"]
             used_vid = vid
             key = f"tracks/{vid}.mp3"
-            found = supabase.table("tracks").select("id").eq("storage_object_key", key).limit(1).execute()
-            if found.data:
-                track_id = found.data[0]["id"]
+            found = existing_available_track_by_storage_key(key)
+            if found:
+                track_id = found["id"]
             else:
                 mp3, used_vid, substituted = download_with_global_slot(
                     entry,
@@ -2156,12 +2188,12 @@ def process_single_track_job(job: dict, url: str):
                 dl_key = f"tracks/{used_vid}.mp3"
                 try:
                     alt_found = (
-                        supabase.table("tracks").select("id").eq("storage_object_key", dl_key).limit(1).execute()
+                        existing_available_track_by_storage_key(dl_key)
                         if used_vid != vid
                         else None
                     )
-                    if alt_found and alt_found.data:
-                        track_id = alt_found.data[0]["id"]
+                    if alt_found:
+                        track_id = alt_found["id"]
                     else:
                         digest = sha256_of(mp3)
                         upload_to_r2(mp3, dl_key)
@@ -2196,24 +2228,29 @@ def process_single_track_job(job: dict, url: str):
                     if os.path.exists(mp3):
                         os.remove(mp3)
 
-            pos_res = (
-                supabase.table("playlist_tracks")
-                .select("position")
-                .eq("playlist_id", playlist_id)
-                .order("position", desc=True)
-                .limit(1)
-                .execute()
-            )
-            next_pos = ((pos_res.data[0]["position"] if pos_res.data else 0) or 0) + 1
-            supabase.table("playlist_tracks").upsert(
-                {
-                    "playlist_id": playlist_id,
-                    "track_id": track_id,
-                    "position": next_pos,
-                    "added_by_type": "system",
-                },
-                on_conflict="playlist_id,track_id",
-            ).execute()
+            if playlist_request_item_id:
+                replace_playlist_request_track(job_id, track_id, used_vid)
+            else:
+                # Backward compatibility for jobs created before request items
+                # were bound explicitly. New jobs use the atomic RPC above.
+                pos_res = (
+                    supabase.table("playlist_tracks")
+                    .select("position")
+                    .eq("playlist_id", playlist_id)
+                    .order("position", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                next_pos = ((pos_res.data[0]["position"] if pos_res.data else 0) or 0) + 1
+                supabase.table("playlist_tracks").upsert(
+                    {
+                        "playlist_id": playlist_id,
+                        "track_id": track_id,
+                        "position": next_pos,
+                        "added_by_type": "system",
+                    },
+                    on_conflict="playlist_id,track_id",
+                ).execute()
 
             _remove_skipped_from_playlist(playlist_id, replace_vid)
 
@@ -2230,21 +2267,34 @@ def process_single_track_job(job: dict, url: str):
                 error_details=None,
                 last_error_at=None,
             )
-            set_request_item_status_by_youtube_id(
-                playlist_request_id, used_vid, "completed", track_id=track_id, error_message=None
-            )
+            if not playlist_request_item_id:
+                set_request_item_status_by_youtube_id(
+                    playlist_request_id,
+                    used_vid,
+                    "completed",
+                    track_id=track_id,
+                    error_message=None,
+                )
             reconcile_playlist_job_after_manual_item(playlist_request_id)
             log(f"Job {job_id} — faixa trocada com sucesso ({entry['title'][:60]})")
     except Exception as exc:  # noqa: BLE001
         code, friendly = classify_error(exc)
         if code in YOUTUBE_CIRCUIT_CODES:
-            set_request_item_status_by_youtube_id(
-                playlist_request_id,
-                require_youtube_video_url(safe_url).resource_id,
-                "resolved",
-                error_message=friendly[:1000],
-                last_error_code=code,
-            )
+            if playlist_request_item_id:
+                set_request_item_status_by_id(
+                    playlist_request_item_id,
+                    "resolved",
+                    error_message=friendly[:1000],
+                    last_error_code=code,
+                )
+            else:
+                set_request_item_status_by_youtube_id(
+                    playlist_request_id,
+                    require_youtube_video_url(safe_url).resource_id,
+                    "resolved",
+                    error_message=friendly[:1000],
+                    last_error_code=code,
+                )
             raise
         update_job(
             job_id,
@@ -2259,12 +2309,21 @@ def process_single_track_job(job: dict, url: str):
             error_details=error_details(exc, playlist_id=playlist_id, job_id=job_id, url=url),
             last_error_at=now_iso(),
         )
-        set_request_item_status_by_youtube_id(
-            playlist_request_id,
-            require_youtube_video_url(safe_url).resource_id,
-            request_item_status_from_code(code),
-            error_message=friendly[:1000],
-        )
+        if playlist_request_item_id:
+            set_request_item_status_by_id(
+                playlist_request_item_id,
+                request_item_status_from_code(code),
+                error_message=friendly[:1000],
+                last_error_code=code,
+            )
+        else:
+            set_request_item_status_by_youtube_id(
+                playlist_request_id,
+                require_youtube_video_url(safe_url).resource_id,
+                request_item_status_from_code(code),
+                error_message=friendly[:1000],
+                last_error_code=code,
+            )
         log(f"Job {job_id} — troca de faixa falhou [{code}]: {exc}")
 
 
@@ -2309,6 +2368,22 @@ def existing_available_track_by_storage_key(storage_object_key: str) -> dict | N
         .execute()
     )
     return result.data[0] if result.data else None
+
+
+def replace_playlist_request_track(
+    job_id: str,
+    track_id: str,
+    youtube_video_id: str,
+) -> dict | None:
+    result = supabase.rpc(
+        "worker_replace_playlist_request_track",
+        {
+            "p_job_id": job_id,
+            "p_track_id": track_id,
+            "p_youtube_video_id": youtube_video_id,
+        },
+    ).execute()
+    return result.data if isinstance(result.data, dict) else None
 
 
 def principal_playlist_remaining_slots(playlist_id: str) -> int | None:
@@ -2866,6 +2941,17 @@ def process_job(job: dict):
     first_error_message = skipped[0].get("reason") if skipped else None
     first_error_details = {"source_url": url, "track": skipped[0]} if skipped else None
     reused = 0
+    item_statuses = (
+        current_job_request_item_statuses(job_id)
+        if playlist_request_id
+        else {}
+    )
+    completed_positions = {
+        position
+        for position, status in item_statuses.items()
+        if status in ("completed", "duplicate")
+    }
+    completed = len(completed_positions)
     already_limited_entries = [
         entry
         for entry in entries
@@ -3294,15 +3380,7 @@ def process_music_upload_task(task: dict) -> None:
                     )
                     track_id = inserted.data[0]["id"]
 
-            supabase.table("playlist_tracks").upsert(
-                {
-                    "playlist_id": playlist_id,
-                    "track_id": track_id,
-                    "position": max(int(task.get("position") or 0), 0),
-                    "added_by_type": "admin_upload",
-                },
-                on_conflict="playlist_id,track_id",
-            ).execute()
+            attach_music_upload_track(task_id, track_id)
             finish_music_upload_task(
                 task_id,
                 True,
