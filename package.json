@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test:overview-session-activity": "node --experimental-strip-types --test tests/overview-session-activity.test.ts",
     "test:music-url": "node --experimental-strip-types --test tests/music-url.test.ts"
   },
   "dependencies": {
