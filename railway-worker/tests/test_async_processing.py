@@ -844,7 +844,7 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         with (
             patch.object(self.worker, "list_source_entries", return_value=(entries, [])),
             patch.object(self.worker, "sync_request_items"),
-            patch.object(self.worker, "update_job"),
+            patch.object(self.worker, "update_job") as update_job,
             patch.object(
                 self.worker,
                 "principal_playlist_remaining_slots",
@@ -865,6 +865,11 @@ class AsyncTrackProcessingTests(unittest.TestCase):
 
         self.assertEqual(maximum_active, self.worker.TRACK_CONCURRENCY)
         self.assertLessEqual(maximum_active, 2)
+        final_fields = update_job.call_args.kwargs
+        self.assertEqual(final_fields["status"], "done")
+        self.assertEqual(final_fields["failed"], 0)
+        self.assertIsNone(final_fields["error_code"])
+        self.assertIsNone(final_fields["error_message"])
 
     def test_principal_playlist_stops_downloading_when_last_slot_is_filled(self):
         entries = [

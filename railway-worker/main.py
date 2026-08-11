@@ -3115,7 +3115,11 @@ def process_job(job: dict):
             if completed > 0
             else (first_error_message or "Nenhuma música foi baixada da playlist.")
         )
-    elif final_status == "done" and excluded_by_limit == failed:
+    elif (
+        final_status == "done"
+        and excluded_by_limit > 0
+        and excluded_by_limit == failed
+    ):
         final_error_code = "PLAYLIST_LIMIT_REACHED"
         final_error_message = (
             f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist principal "
