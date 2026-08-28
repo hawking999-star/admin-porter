@@ -457,6 +457,78 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             "YOUTUBE_FORMAT_UNAVAILABLE",
         )
 
+    def test_retry_history_prefers_decisive_state_over_reopened_review(self):
+        jobs_query = MagicMock()
+        jobs_query.select.return_value = jobs_query
+        jobs_query.eq.return_value = jobs_query
+        jobs_query.neq.return_value = jobs_query
+        jobs_query.order.return_value = jobs_query
+        jobs_query.limit.return_value = jobs_query
+        jobs_query.execute.return_value = Mock(
+            data=[
+                {"id": "job-newer", "mode": "playlist"},
+                {"id": "job-older", "mode": "playlist"},
+                {"id": "job-single", "mode": "single_track"},
+            ]
+        )
+        items_query = MagicMock()
+        items_query.select.return_value = items_query
+        items_query.eq.return_value = items_query
+        items_query.in_.return_value = items_query
+        items_query.execute.return_value = Mock(
+            data=[
+                {
+                    "download_job_id": "job-newer",
+                    "position": 1,
+                    "item_status": "review_recommended",
+                },
+                {
+                    "download_job_id": "job-older",
+                    "position": 1,
+                    "item_status": "completed",
+                },
+                {
+                    "download_job_id": "job-newer",
+                    "position": 2,
+                    "item_status": "review_recommended",
+                },
+                {
+                    "download_job_id": "job-older",
+                    "position": 2,
+                    "item_status": "failed",
+                },
+                {
+                    "download_job_id": "job-newer",
+                    "position": 3,
+                    "item_status": "duplicate",
+                },
+                {
+                    "download_job_id": "job-older",
+                    "position": 3,
+                    "item_status": "completed",
+                },
+            ]
+        )
+
+        with patch.object(
+            self.worker.supabase,
+            "table",
+            side_effect=[jobs_query, items_query],
+        ):
+            items = self.worker.previous_request_items_for_retry(
+                "request-1",
+                "job-current",
+            )
+
+        self.assertEqual(
+            [item["item_status"] for item in items],
+            ["completed", "review_recommended", "duplicate"],
+        )
+        items_query.in_.assert_called_once_with(
+            "download_job_id",
+            ["job-newer", "job-older"],
+        )
+
     def test_resume_preserves_resolved_youtube_match_and_diagnostics(self):
         query = Mock()
         query.select.return_value = query

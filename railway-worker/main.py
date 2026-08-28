@@ -1241,6 +1241,10 @@ RETRY_PRESERVED_ITEM_STATUSES = {
     "review_recommended",
 }
 
+RETRY_DECISIVE_ITEM_STATUSES = RETRY_PRESERVED_ITEM_STATUSES - {
+    "review_recommended",
+}
+
 
 def previous_request_items_for_retry(
     request_id: str,
@@ -1257,30 +1261,49 @@ def previous_request_items_for_retry(
         .execute()
     )
     jobs = jobs_result.data if isinstance(jobs_result.data, list) else []
-    previous_job = next(
-        (
-            job
-            for job in jobs
-            if job.get("id")
-            and (job.get("mode") or "playlist") == "playlist"
-        ),
-        None,
-    )
-    if not previous_job:
+    previous_jobs = [
+        job
+        for job in jobs
+        if job.get("id")
+        and (job.get("mode") or "playlist") == "playlist"
+    ]
+    if not previous_jobs:
         return []
+
+    previous_job_ids = [job["id"] for job in previous_jobs]
+    job_rank = {
+        job_id: rank
+        for rank, job_id in enumerate(previous_job_ids)
+    }
 
     items_result = (
         supabase.table("playlist_request_tracks")
         .select(
-            "position,item_status,error_message,last_error_code,track_id,"
+            "download_job_id,position,item_status,error_message,last_error_code,track_id,"
             "youtube_url,youtube_video_id,match_confidence,metadata"
         )
         .eq("playlist_request_id", request_id)
-        .eq("download_job_id", previous_job["id"])
-        .order("position")
+        .in_("download_job_id", previous_job_ids)
         .execute()
     )
-    return items_result.data if isinstance(items_result.data, list) else []
+    items = items_result.data if isinstance(items_result.data, list) else []
+    selected: dict[int, tuple[tuple[int, int], dict]] = {}
+    for item in items:
+        position = item.get("position")
+        source_job_id = item.get("download_job_id")
+        if position is None or source_job_id not in job_rank:
+            continue
+        status = item.get("item_status")
+        priority = (
+            0
+            if status in RETRY_DECISIVE_ITEM_STATUSES
+            else 1 if status == "review_recommended" else 2
+        )
+        key = (priority, job_rank[source_job_id])
+        current = selected.get(int(position))
+        if current is None or key < current[0]:
+            selected[int(position)] = (key, item)
+    return [selected[position][1] for position in sorted(selected)]
 
 
 def sync_request_items(
