@@ -1231,6 +1231,58 @@ def request_item_status_from_code(code: str | None) -> str:
     }.get(code or "", "failed")
 
 
+RETRY_PRESERVED_ITEM_STATUSES = {
+    "completed",
+    "duplicate",
+    "skipped",
+    "not_found",
+    "duration_exceeded",
+    "playlist_limit_exceeded",
+    "review_recommended",
+}
+
+
+def previous_request_items_for_retry(
+    request_id: str,
+    current_job_id: str,
+) -> list[dict]:
+    """Carrega a tentativa anterior do mesmo envio para uma retentativa aditiva."""
+    jobs_result = (
+        supabase.table("download_jobs")
+        .select("id,mode,created_at")
+        .eq("playlist_request_id", request_id)
+        .neq("id", current_job_id)
+        .order("created_at", desc=True)
+        .limit(20)
+        .execute()
+    )
+    jobs = jobs_result.data if isinstance(jobs_result.data, list) else []
+    previous_job = next(
+        (
+            job
+            for job in jobs
+            if job.get("id")
+            and (job.get("mode") or "playlist") == "playlist"
+        ),
+        None,
+    )
+    if not previous_job:
+        return []
+
+    items_result = (
+        supabase.table("playlist_request_tracks")
+        .select(
+            "position,item_status,error_message,last_error_code,track_id,"
+            "youtube_url,youtube_video_id,match_confidence,metadata"
+        )
+        .eq("playlist_request_id", request_id)
+        .eq("download_job_id", previous_job["id"])
+        .order("position")
+        .execute()
+    )
+    return items_result.data if isinstance(items_result.data, list) else []
+
+
 def sync_request_items(
     request_id: str | None,
     job_id: str,
@@ -1243,25 +1295,49 @@ def sync_request_items(
     existing_result = (
         supabase.table("playlist_request_tracks")
         .select(
-            "position,item_status,error_message,youtube_url,youtube_video_id,"
-            "match_confidence,metadata"
+            "position,item_status,error_message,last_error_code,track_id,"
+            "youtube_url,youtube_video_id,match_confidence,metadata"
         )
         .eq("download_job_id", job_id)
         .execute()
     )
+    existing_rows = (
+        existing_result.data
+        if isinstance(existing_result.data, list)
+        else []
+    )
+    if not existing_rows:
+        existing_rows = previous_request_items_for_retry(request_id, job_id)
+        if existing_rows:
+            log(
+                f"  retentativa preserva {len(existing_rows)} estado(s) "
+                "da tentativa anterior"
+            )
     existing = {
         int(item["position"]): item
-        for item in (existing_result.data or [])
+        for item in existing_rows
         if item.get("position") is not None
     }
     rows: list[dict] = []
     for entry in entries:
         position = int(entry.get("request_position", len(rows) + 1))
         previous = existing.get(position)
-        match_confidence = entry.get("spotify_match_confidence")
+        preserve_previous = bool(
+            previous
+            and previous.get("item_status") in RETRY_PRESERVED_ITEM_STATUSES
+        )
+        match_confidence = (
+            previous.get("match_confidence")
+            if preserve_previous
+            else entry.get("spotify_match_confidence")
+        )
         if match_confidence is None and previous:
             match_confidence = previous.get("match_confidence")
-        match_metadata = sanitize_json(entry.get("_match_metadata") or {})
+        match_metadata = (
+            sanitize_json(previous.get("metadata") or {})
+            if preserve_previous
+            else sanitize_json(entry.get("_match_metadata") or {})
+        )
         if not match_metadata and previous and isinstance(previous.get("metadata"), dict):
             match_metadata = previous["metadata"]
         rows.append(
@@ -1281,11 +1357,19 @@ def sync_request_items(
                 "source_track_id": entry.get("spotify_id"),
                 "source_url": entry.get("spotify_url"),
                 "youtube_url": (
-                    entry.get("youtube_url")
-                    or entry.get("matched_youtube_url")
-                    or ((previous or {}).get("youtube_url"))
+                    (previous or {}).get("youtube_url")
+                    if preserve_previous
+                    else (
+                        entry.get("youtube_url")
+                        or entry.get("matched_youtube_url")
+                        or ((previous or {}).get("youtube_url"))
+                    )
                 ),
-                "youtube_video_id": entry.get("id") or ((previous or {}).get("youtube_video_id")),
+                "youtube_video_id": (
+                    (previous or {}).get("youtube_video_id")
+                    if preserve_previous
+                    else entry.get("id") or ((previous or {}).get("youtube_video_id"))
+                ),
                 "title": sanitize_text(entry.get("title")),
                 "artists": sanitize_string_list(
                     entry.get("artists")
@@ -1294,6 +1378,8 @@ def sync_request_items(
                 "album": sanitize_text(entry.get("spotify_album"), 300) or None,
                 "duration_ms": int(float(entry["duration"]) * 1000) if entry.get("duration") is not None else None,
                 "match_confidence": match_confidence,
+                "track_id": (previous or {}).get("track_id"),
+                "last_error_code": (previous or {}).get("last_error_code"),
                 "metadata": match_metadata,
                 "error_message": (
                     previous.get("error_message")
@@ -1307,10 +1393,22 @@ def sync_request_items(
         code = entry.get("code")
         position = int(entry.get("request_position", len(rows) + 1))
         previous = existing.get(position)
-        match_confidence = entry.get("spotify_match_confidence")
+        preserve_previous = bool(
+            previous
+            and previous.get("item_status") in RETRY_PRESERVED_ITEM_STATUSES
+        )
+        match_confidence = (
+            previous.get("match_confidence")
+            if preserve_previous
+            else entry.get("spotify_match_confidence")
+        )
         if match_confidence is None and previous:
             match_confidence = previous.get("match_confidence")
-        match_metadata = sanitize_json(entry.get("_match_metadata") or {})
+        match_metadata = (
+            sanitize_json(previous.get("metadata") or {})
+            if preserve_previous
+            else sanitize_json(entry.get("_match_metadata") or {})
+        )
         if not match_metadata and previous and isinstance(previous.get("metadata"), dict):
             match_metadata = previous["metadata"]
         rows.append(
@@ -1322,14 +1420,22 @@ def sync_request_items(
                 "source_track_id": entry.get("spotify_id"),
                 "source_url": entry.get("spotify_url"),
                 "youtube_url": (
-                    entry.get("youtube_url")
-                    or entry.get("matched_youtube_url")
-                    or ((previous or {}).get("youtube_url"))
+                    (previous or {}).get("youtube_url")
+                    if preserve_previous
+                    else (
+                        entry.get("youtube_url")
+                        or entry.get("matched_youtube_url")
+                        or ((previous or {}).get("youtube_url"))
+                    )
                 ),
                 "youtube_video_id": (
-                    entry.get("youtube_id")
-                    or entry.get("id")
-                    or ((previous or {}).get("youtube_video_id"))
+                    (previous or {}).get("youtube_video_id")
+                    if preserve_previous
+                    else (
+                        entry.get("youtube_id")
+                        or entry.get("id")
+                        or ((previous or {}).get("youtube_video_id"))
+                    )
                 ),
                 "title": sanitize_text(entry.get("title")),
                 "artists": sanitize_string_list(
@@ -1339,6 +1445,8 @@ def sync_request_items(
                 "album": sanitize_text(entry.get("spotify_album"), 300) or None,
                 "duration_ms": int(float(entry["duration"]) * 1000) if entry.get("duration") is not None else None,
                 "match_confidence": match_confidence,
+                "track_id": (previous or {}).get("track_id"),
+                "last_error_code": (previous or {}).get("last_error_code"),
                 "metadata": match_metadata,
                 "error_message": (
                     previous.get("error_message")

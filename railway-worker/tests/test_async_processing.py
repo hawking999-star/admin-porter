@@ -361,7 +361,14 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             for position in range(1, 12)
         ]
 
-        with patch.object(self.worker.supabase, "table", return_value=query):
+        with (
+            patch.object(self.worker.supabase, "table", return_value=query),
+            patch.object(
+                self.worker,
+                "previous_request_items_for_retry",
+                return_value=[],
+            ),
+        ):
             self.worker.sync_request_items("request-1", "job-1", entries, [])
 
         payload = query.upsert.call_args.args[0]
@@ -370,6 +377,84 @@ class AsyncTrackProcessingTests(unittest.TestCase):
         self.assertEqual(
             [item["source_track_id"] for item in payload],
             [f"{position:022d}" for position in range(1, 12)],
+        )
+
+    def test_reimport_preserves_previous_terminal_states_and_track_identity(self):
+        query = Mock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.execute.return_value = Mock(data=[])
+        query.delete.return_value = query
+        query.is_.return_value = query
+        query.upsert.return_value = query
+        previous_items = [
+            {
+                "position": 1,
+                "item_status": "completed",
+                "error_message": None,
+                "last_error_code": None,
+                "track_id": "track-existing",
+                "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
+                "youtube_video_id": "abcdefghijk",
+                "match_confidence": 99.0,
+                "metadata": {"accepted_in_job": "job-old"},
+            },
+            {
+                "position": 2,
+                "item_status": "failed",
+                "error_message": "Falha temporária",
+                "last_error_code": "YOUTUBE_FORMAT_UNAVAILABLE",
+                "track_id": None,
+                "youtube_url": "https://www.youtube.com/watch?v=lmnopqrstuv",
+                "youtube_video_id": "lmnopqrstuv",
+                "match_confidence": 98.0,
+                "metadata": {},
+            },
+        ]
+        entries = [
+            {
+                "id": "newvideo001",
+                "request_position": 1,
+                "title": "Faixa concluída",
+                "artists": ["Artista"],
+                "duration": 180,
+                "spotify_match_status": "matched",
+            },
+            {
+                "id": "newvideo002",
+                "request_position": 2,
+                "title": "Faixa com falha",
+                "artists": ["Artista"],
+                "duration": 181,
+                "spotify_match_status": "matched",
+            },
+        ]
+
+        with (
+            patch.object(self.worker.supabase, "table", return_value=query),
+            patch.object(
+                self.worker,
+                "previous_request_items_for_retry",
+                return_value=previous_items,
+            ) as previous,
+        ):
+            self.worker.sync_request_items("request-1", "job-new", entries, [])
+
+        previous.assert_called_once_with("request-1", "job-new")
+        payload = query.upsert.call_args.args[0]
+        self.assertEqual(payload[0]["item_status"], "completed")
+        self.assertEqual(payload[0]["track_id"], "track-existing")
+        self.assertEqual(payload[0]["youtube_video_id"], "abcdefghijk")
+        self.assertEqual(
+            payload[0]["metadata"]["accepted_in_job"],
+            "job-old",
+        )
+        self.assertEqual(payload[0]["download_job_id"], "job-new")
+        self.assertEqual(payload[1]["item_status"], "failed")
+        self.assertEqual(payload[1]["youtube_video_id"], "newvideo002")
+        self.assertEqual(
+            payload[1]["last_error_code"],
+            "YOUTUBE_FORMAT_UNAVAILABLE",
         )
 
     def test_resume_preserves_resolved_youtube_match_and_diagnostics(self):
