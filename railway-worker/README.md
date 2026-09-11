@@ -13,8 +13,8 @@ coloca um pedido na fila (`download_jobs`) e este worker faz o resto sozinho:
 6. Processa a fila backend de exclusões R2; só remove o registro global depois
    de o banco confirmar que a faixa continua sem referências.
 
-Você acompanha o progresso na própria tela **Músicas** (selo "Baixando 12/170",
-"170 baixadas", etc.).
+Você acompanha o progresso na própria tela **Músicas** (por exemplo,
+"Baixando 12/400" para uma playlist de Super Admin).
 
 ---
 
@@ -102,8 +102,7 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 
 | Variável | Padrão | O que faz |
 |---|---|---|
-| `MAX_TRACKS` | 170 | Máx. de faixas por playlist |
-| `PRINCIPAL_TRACK_LIMIT` | 170 | Teto da playlist principal; o Worker para de baixar quando as vagas acabam |
+| `MAX_TRACKS` | 400 | Máximo técnico lido de uma playlist; a cota efetiva vem do Supabase |
 | `MAX_TRACK_DURATION_SECONDS` | 960 | Duração máxima de cada faixa, em segundos |
 | `MAX_FILE_MB` | 15 | Tamanho máximo de cada mp3 |
 | `AUDIO_BITRATE` | 128 | Qualidade do mp3, em kbps |
@@ -145,8 +144,8 @@ No `Variables` do Railway dá pra mudar sem tocar em código:
 
 ## Como ele respeita os limites
 
-- **170 faixas na principal:** consulta a ocupação atual, baixa somente enquanto
-  houver vagas e encerra o restante como limite atingido. Duplicadas não consomem vaga.
+- **170 ou 400 faixas na principal:** consulta no Supabase a cota do dono da playlist.
+  Contas Super Admin ativas recebem 400; as demais permanecem com 170. Duplicadas não consomem vaga.
 - **960 segundos/faixa:** descarta faixas sem duração confirmada ou acima desse teto.
 - **Spotify sem áudio:** SpotipyFree fornece somente metadados; busca e MP3 continuam vindo do YouTube.
 - **Um só importador:** Spotify e YouTube usam a mesma validação de duração, conversão MP3,
@@ -162,7 +161,7 @@ Um álbum ou playlist continua sendo uma única solicitação. O worker registra
 `playlist_request_tracks` uma linha por faixa encontrada, com estados como
 `resolved`, `processing`, `completed`, `not_found`, `duration_exceeded` e
 `playlist_limit_exceeded`. O Worker agenda um pequeno lote por vez e reconta a
-ocupação da playlist principal após cada inclusão. Ao chegar a 170, nenhuma nova
+ocupação da playlist principal após cada inclusão. Ao chegar à cota retornada pelo Supabase, nenhuma nova
 faixa chega ao downloader; as demais ficam registradas como fora do limite e o
 relatório exibido no Admin informa a quantidade excluída. Isso não falha a
 solicitação inteira.
