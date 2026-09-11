@@ -46,7 +46,8 @@ begin
 
   v_resp:=public.get_my_playlists(jsonb_build_object('request_id','test-read'));
   if not (v_resp->>'success')::boolean or (v_resp#>>'{data,secondary_limit}')::int<>2
-     or (v_resp#>>'{data,principal_track_limit}')::int<>170
+     or (v_resp#>>'{data,principal_track_limit}')::int
+        <> private.principal_track_limit_for_operator(v_op1.id)
      or (v_resp#>>'{data,track_duration_limit_seconds}')::int<>960 then
     raise exception 'READ_LIMITS_FAILED: %',v_resp;
   end if;
