@@ -3,7 +3,7 @@ Porter Music — Worker de download (Railway)
 
 O que faz, em uma frase: fica de olho na fila `download_jobs` no Supabase; quando
 aparece um link aprovado do YouTube ou Spotify, resolve as faixas no YouTube,
-baixa o áudio (máx. 170 faixas, cada uma <= 15 MB), sobe cada arquivo para o
+baixa o áudio (máx. 400 faixas, cada uma <= 15 MB), sobe cada arquivo para o
 Cloudflare R2 e grava em `tracks` + `playlist_tracks`.
 
 Não precisa mexer no código para operar. Tudo é controlado por variáveis de ambiente
@@ -69,8 +69,9 @@ R2_BUCKET = env("R2_BUCKET", required=True)
 # guardamos a URL completa em tracks.metadata.public_url.
 R2_PUBLIC_BASE_URL = env("R2_PUBLIC_BASE_URL", "").rstrip("/")
 
-MAX_TRACKS = int(env("MAX_TRACKS", "170"))
-PRINCIPAL_TRACK_LIMIT = int(env("PRINCIPAL_TRACK_LIMIT", "170"))
+# Garante que uma variavel antiga (170) no Railway nao corte playlists Super Admin.
+MAX_TRACKS = max(int(env("MAX_TRACKS", "400")), 400)
+DEFAULT_PRINCIPAL_TRACK_LIMIT = 170
 MAX_TRACK_DURATION_SECONDS = int(env("MAX_TRACK_DURATION_SECONDS", "960"))
 MAX_FILE_MB = float(env("MAX_FILE_MB", "15"))
 MAX_FILE_BYTES = int(MAX_FILE_MB * 1024 * 1024)
@@ -507,7 +508,7 @@ def classify_error(exc_or_message, context: str | None = None) -> tuple[str, str
     if "PRINCIPAL_TRACK_LIMIT_REACHED" in raw:
         return (
             "PLAYLIST_LIMIT_EXCEEDED",
-            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist principal do operador atingido.",
+            "O limite de músicas da playlist principal do operador foi atingido.",
         )
 
     if "SPOTIFY_MATCH_NOT_FOUND" in raw:
@@ -919,7 +920,7 @@ def list_playlist_entries(url: str) -> tuple[list[dict], list[dict]]:
                     **item,
                     "youtube_id": vid,
                     "code": "PLAYLIST_LIMIT_EXCEEDED",
-                    "reason": "A playlist ultrapassa o limite de 170 músicas.",
+                    "reason": "A playlist ultrapassa o limite técnico de músicas.",
                 }
             )
             continue
@@ -968,7 +969,7 @@ def list_spotify_entries(url: str) -> tuple[list[dict], list[dict]]:
                     **base_item,
                     "youtube_id": track.youtubeVideoId,
                     "code": "PLAYLIST_LIMIT_EXCEEDED",
-                    "reason": "A playlist ultrapassa o limite de 170 músicas.",
+                    "reason": "A playlist ultrapassa o limite técnico de músicas.",
                 }
             )
             continue
@@ -2517,8 +2518,8 @@ def replace_playlist_request_track(
     return result.data if isinstance(result.data, dict) else None
 
 
-def principal_playlist_remaining_slots(playlist_id: str) -> int | None:
-    """Retorna as vagas da playlist principal; secundarias nao usam esse teto."""
+def principal_playlist_capacity(playlist_id: str) -> tuple[int | None, int | None]:
+    """Retorna vagas e cota do banco; secundarias nao usam esse teto."""
     playlist_result = (
         supabase.table("playlists")
         .select("type")
@@ -2529,7 +2530,18 @@ def principal_playlist_remaining_slots(playlist_id: str) -> int | None:
     if not playlist_result.data:
         raise RuntimeError("PLAYLIST_NOT_FOUND")
     if playlist_result.data[0].get("type") != "principal":
-        return None
+        return None, None
+
+    limit_result = supabase.rpc(
+        "worker_get_principal_track_limit",
+        {"p_playlist_id": playlist_id},
+    ).execute()
+    try:
+        principal_limit = int(limit_result.data)
+    except (TypeError, ValueError):
+        principal_limit = DEFAULT_PRINCIPAL_TRACK_LIMIT
+    if principal_limit < 1 or principal_limit > MAX_TRACKS:
+        raise RuntimeError("PRINCIPAL_TRACK_LIMIT_INVALID")
 
     count_result = (
         supabase.table("playlist_tracks")
@@ -2538,10 +2550,10 @@ def principal_playlist_remaining_slots(playlist_id: str) -> int | None:
         .execute()
     )
     current_count = int(count_result.count or 0)
-    return max(PRINCIPAL_TRACK_LIMIT - current_count, 0)
+    return max(principal_limit - current_count, 0), principal_limit
 
 
-def playlist_limit_skip(entry: dict) -> dict:
+def playlist_limit_skip(entry: dict, principal_limit: int) -> dict:
     return {
         "youtube_id": entry.get("id"),
         "spotify_id": entry.get("spotify_id"),
@@ -2550,7 +2562,7 @@ def playlist_limit_skip(entry: dict) -> dict:
         "duration_seconds": entry.get("duration"),
         "code": "PLAYLIST_LIMIT_EXCEEDED",
         "reason": (
-            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist "
+            f"Limite de {principal_limit} músicas da playlist "
             "principal do operador atingido."
         ),
     }
@@ -2559,6 +2571,7 @@ def playlist_limit_skip(entry: dict) -> dict:
 def mark_entries_outside_principal_limit(
     job_id: str,
     entries: list[dict],
+    principal_limit: int,
 ) -> list[dict]:
     """Fecha em lote os itens que nao devem mais chegar ao downloader."""
     if not entries:
@@ -2574,7 +2587,7 @@ def mark_entries_outside_principal_limit(
         "locked_at": None,
         "last_error_code": "PLAYLIST_LIMIT_EXCEEDED",
         "error_message": (
-            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist "
+            f"Limite de {principal_limit} músicas da playlist "
             "principal do operador atingido."
         ),
         "updated_at": now_iso(),
@@ -2587,7 +2600,7 @@ def mark_entries_outside_principal_limit(
             .in_("position", positions[offset : offset + 100])
             .execute()
         )
-    return [playlist_limit_skip(entry) for entry in entries]
+    return [playlist_limit_skip(entry, principal_limit) for entry in entries]
 
 
 def current_job_request_item_statuses(job_id: str) -> dict[int, str]:
@@ -3083,6 +3096,7 @@ def process_job(job: dict):
         if status in ("completed", "duplicate")
     }
     completed = len(completed_positions)
+    remaining_slots, principal_limit = principal_playlist_capacity(playlist_id)
     already_limited_entries = [
         entry
         for entry in entries
@@ -3091,7 +3105,10 @@ def process_job(job: dict):
     ]
     if already_limited_entries:
         resumed_limit_skips = [
-            playlist_limit_skip(entry)
+            playlist_limit_skip(
+                entry,
+                principal_limit or DEFAULT_PRINCIPAL_TRACK_LIMIT,
+            )
             for entry in already_limited_entries
         ]
         skipped.extend(resumed_limit_skips)
@@ -3112,11 +3129,10 @@ def process_job(job: dict):
             int(entry.get("request_position") or 0)
         ) not in non_processable_statuses
     ]
-    remaining_slots = principal_playlist_remaining_slots(playlist_id)
     if remaining_slots is not None:
         log(
             f"  playlist principal com {remaining_slots} vaga(s) restante(s) "
-            f"de {PRINCIPAL_TRACK_LIMIT}"
+            f"de {principal_limit}"
         )
     abort_result = None
     next_entry_index = 0
@@ -3175,9 +3191,7 @@ def process_job(job: dict):
                     if status == "completed":
                         # Recontar evita consumir vaga duas vezes ao retomar um
                         # item que já estava concluído antes do restart.
-                        remaining_slots = principal_playlist_remaining_slots(
-                            playlist_id
-                        )
+                        remaining_slots, principal_limit = principal_playlist_capacity(playlist_id)
                     elif result.get("code") == "PLAYLIST_LIMIT_EXCEEDED":
                         remaining_slots = 0
                 if result.get("skipped"):
@@ -3204,12 +3218,16 @@ def process_job(job: dict):
 
     if remaining_slots == 0 and next_entry_index < len(eligible_entries):
         outside_limit = eligible_entries[next_entry_index:]
-        limit_skips = mark_entries_outside_principal_limit(job_id, outside_limit)
+        limit_skips = mark_entries_outside_principal_limit(
+            job_id,
+            outside_limit,
+            principal_limit or DEFAULT_PRINCIPAL_TRACK_LIMIT,
+        )
         skipped.extend(limit_skips)
         failed += len(limit_skips)
         update_job(job_id, completed=completed, failed=failed, locked_at=now_iso())
         log(
-            f"  limite de {PRINCIPAL_TRACK_LIMIT} atingido; "
+            f"  limite de {principal_limit} atingido; "
             f"{len(limit_skips)} faixa(s) encerrada(s) sem download"
         )
 
@@ -3253,7 +3271,7 @@ def process_job(job: dict):
     ):
         final_error_code = "PLAYLIST_LIMIT_REACHED"
         final_error_message = (
-            f"Limite de {PRINCIPAL_TRACK_LIMIT} músicas da playlist principal "
+            f"Limite de {principal_limit or DEFAULT_PRINCIPAL_TRACK_LIMIT} músicas da playlist principal "
             "do operador atingido; nenhuma faixa adicional será baixada."
         )
     elif final_status == "done" and failed > 0:
