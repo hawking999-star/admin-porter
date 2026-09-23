@@ -10,6 +10,7 @@ Preparação local concluída em 23/09/2026. Nenhum deploy, merge em `main` ou m
 - Exportação da auditoria em lotes, ordenados por data e ID. Teto de 5.000 registros com aviso quando houver mais resultados; falhas não geram um arquivo parcial.
 - Atualização das dependências do frontend, ferramentas, funções Supabase e worker Python; adaptações de gráficos, calendário e ícones.
 - Testes reunidos em `npm test`, incluindo CSV. CI do GitHub para admin e worker.
+- Saúde do R2: quando o Worker está offline, mostra “Sem verificação” e separa o último resultado histórico da disponibilidade atual, tanto no menu quanto em Integrações. O Worker permanece desligado conforme planejado.
 - Arquivos temporários do Supabase deixam de ser versionados, mas continuam no computador. Áudios e SQLs locais de distribuição ficam ignorados pelo Git.
 
 `package.json` continua sendo a fonte única da versão exibida. O salto de 2.0.9 para 2.1.0 identifica a atualização ampla das dependências e as correções de estabilidade. As versões do app operador e seus registros de atualização não foram alterados.
@@ -33,7 +34,7 @@ A divisão manual antiga dos bundles provocou uma falha de execução nos gráfi
 ## Validação concluída
 
 - Instalação limpa com `npm ci`.
-- **38 testes do admin**: 14 testes Node, incluindo CSV, e 24 testes de estabilidade/calendário.
+- **41 testes do admin**: 14 testes Node, incluindo CSV, e 27 testes de estabilidade/calendário/status do R2.
 - Build de produção e TypeScript aprovados.
 - Auditoria npm completa: **zero vulnerabilidades conhecidas reportadas**.
 - **62 testes do worker** aprovados e `pip check` sem conflitos, usando Python 3.13 local.
