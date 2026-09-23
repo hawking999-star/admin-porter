@@ -242,6 +242,97 @@ async function complete(req: Request, body: CompleteBody, origin: string | null)
   return response(origin, queued, 202);
 }
 
+function sha256Hex(buffer: ArrayBuffer) {
+  return crypto.subtle.digest("SHA-256", buffer).then((digest) =>
+    Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+  );
+}
+
+async function completeThroughSupabaseStorage(
+  service: ReturnType<typeof createClient>,
+  session: UploadSession,
+  target: UploadTarget,
+  file: File,
+  bytes: ArrayBuffer,
+) {
+  if (!target.item_id) throw new Error("music_upload_item_not_found");
+  if (file.type !== "audio/mpeg") throw new Error("music_upload_mime_invalid");
+
+  const { data: item, error: itemError } = await service
+    .from("playlist_request_tracks")
+    .select("id,title,artists,duration_ms")
+    .eq("id", target.item_id)
+    .single();
+  if (itemError || !item) throw itemError ?? new Error("music_upload_item_not_found");
+
+  const bucket = "music-fallback";
+  const { data: existingBucket } = await service.storage.getBucket(bucket);
+  if (!existingBucket) {
+    const { error: bucketError } = await service.storage.createBucket(bucket, {
+      public: true,
+      fileSizeLimit: MAX_UPLOAD_BYTES,
+      allowedMimeTypes: ["audio/mpeg"],
+    });
+    if (bucketError && !/already exists/i.test(bucketError.message)) throw bucketError;
+  }
+
+  const digest = await sha256Hex(bytes);
+  const objectKey = `tracks/upload-${digest.slice(0, 32)}.mp3`;
+  const { error: uploadError } = await service.storage.from(bucket).upload(
+    objectKey,
+    new Uint8Array(bytes),
+    { contentType: "audio/mpeg", upsert: false },
+  );
+  if (uploadError && !/already exists|duplicate/i.test(uploadError.message)) throw uploadError;
+  const publicUrl = service.storage.from(bucket).getPublicUrl(objectKey).data.publicUrl;
+  const artists = Array.isArray(item.artists) ? item.artists.join(", ") : String(item.artists ?? "");
+  const { data: track, error: trackError } = await service
+    .from("tracks")
+    .upsert({
+      title: String(item.title || file.name).slice(0, 300),
+      artist: artists.slice(0, 300) || null,
+      duration_ms: Number(item.duration_ms) || null,
+      storage_object_key: `supabase-storage/${bucket}/${objectKey}`,
+      content_hash: digest,
+      mime_type: "audio/mpeg",
+      status: "available",
+      metadata: {
+        source: "admin_upload",
+        storage_provider: "supabase_storage",
+        public_url: publicUrl,
+        size_bytes: file.size,
+        content_sha256: digest,
+        rights_attested: true,
+        upload_session_id: session.session_id,
+      },
+    }, { onConflict: "storage_object_key" })
+    .select("id")
+    .single();
+  if (trackError || !track?.id) throw trackError ?? new Error("music_upload_track_create_failed");
+
+  const { data: queued, error: queueError } = await service.rpc("worker_complete_music_upload_session", {
+    p_session_id: session.session_id,
+    p_verified_size_bytes: file.size,
+    p_etag: `supabase-storage:${digest}`,
+  });
+  if (queueError || !queued?.task_id) throw queueError ?? new Error("music_upload_task_create_failed");
+  const { error: attachError } = await service.rpc("worker_attach_music_upload_track", {
+    p_task_id: queued.task_id,
+    p_track_id: track.id,
+  });
+  if (attachError) throw attachError;
+  const { error: finishError } = await service.rpc("worker_finish_music_upload_task", {
+    p_task_id: queued.task_id,
+    p_success: true,
+    p_track_id: track.id,
+    p_content_sha256: digest,
+    p_error_code: null,
+    p_error_message: null,
+  });
+  if (finishError) throw finishError;
+  return { task_id: queued.task_id, status: "completed", storage_provider: "supabase_storage" };
+}
+
 async function directUpload(req: Request, form: FormData, origin: string | null) {
   const file = form.get("file");
   if (!(file instanceof File)) throw new Error("music_upload_size_invalid");
@@ -254,13 +345,22 @@ async function directUpload(req: Request, form: FormData, origin: string | null)
     rights_statement: String(form.get("rights_statement") ?? ""),
   };
   const session = await createUploadSession(req, target);
-  await r2Client().send(new PutObjectCommand({
-    Bucket: requiredEnv("R2_BUCKET"),
-    Key: session.staging_object_key,
-    Body: new Uint8Array(await file.arrayBuffer()),
-    ContentType: session.declared_mime,
-    ContentLength: session.declared_size_bytes,
-  }));
+  const bytes = await file.arrayBuffer();
+  try {
+    await r2Client().send(new PutObjectCommand({
+      Bucket: requiredEnv("R2_BUCKET"),
+      Key: session.staging_object_key,
+      Body: new Uint8Array(bytes),
+      ContentType: session.declared_mime,
+      ContentLength: session.declared_size_bytes,
+    }));
+  } catch (error) {
+    const service = createClient(requiredEnv("SUPABASE_URL"), serviceKey(), {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const completed = await completeThroughSupabaseStorage(service, session, target, file, bytes);
+    return response(origin, completed, 200);
+  }
   const queued = await queueCompletedUpload(req, session.session_id);
   return response(origin, queued, 202);
 }
