@@ -537,7 +537,18 @@ async function uploadMusicFile(
     form.append("rights_statement", rightsStatement);
     form.append("file", file, file.name);
     const { error: directError } = await supabase.functions.invoke("music-upload", { body: form });
-    if (directError) throw directError;
+    if (directError) {
+      const context = (directError as { context?: unknown }).context;
+      if (context instanceof Response) {
+        const payload = await context.clone().json().catch(() => null) as
+          | { error?: string; diagnostic?: string }
+          | null;
+        if (payload?.error || payload?.diagnostic) {
+          throw new Error([payload.error, payload.diagnostic].filter(Boolean).join(": "));
+        }
+      }
+      throw directError;
+    }
     return;
   }
 

@@ -112,6 +112,12 @@ function publicError(error: unknown) {
   return known ?? "music_upload_unavailable";
 }
 
+function publicDiagnostic(error: unknown) {
+  const name = error instanceof Error ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return `${name}: ${message}`.replace(/[\r\n]+/g, " ").slice(0, 500);
+}
+
 function statusForCode(code: string) {
   if (code === "acesso_negado") return 401;
   if (code === "fora_do_escopo_da_unidade" || code === "permissao_insuficiente") return 403;
@@ -278,6 +284,6 @@ Deno.serve(async (req) => {
   } catch (error) {
     const code = publicError(error);
     console.error("music-upload", code);
-    return response(origin, { error: code }, statusForCode(code));
+    return response(origin, { error: code, diagnostic: publicDiagnostic(error) }, statusForCode(code));
   }
 });
