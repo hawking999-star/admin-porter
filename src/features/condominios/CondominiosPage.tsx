@@ -53,7 +53,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useDebounce } from "@/hooks/useDebounce";
-import { useUrlFilterState } from "@/hooks/useUrlFilterState";
+import { useUrlFilterState, useUrlFilterPatch } from "@/hooks/useUrlFilterState";
 import { countUnitStats, listUnits, setUnitActive, timezoneLabel, type Unit } from "./queries";
 import { CondominioFormDialog } from "./CondominioFormDialog";
 import type { CsvColumn } from "@/lib/csv";
@@ -69,6 +69,7 @@ const UNIT_EXPORT_COLUMNS: CsvColumn<Unit>[] = [
 ];
 
 export function CondominiosPage() {
+  const patchFilters = useUrlFilterPatch();
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [pageSize, setPageSize] = useState(25);
@@ -118,8 +119,8 @@ export function CondominiosPage() {
   const hasFilters = Boolean(debouncedSearch.trim()) || activeFilter !== "all";
 
   const clearFilters = () => {
-    setSearch("");
-    setActiveFilter("all");
+    patchFilters({ q: null, active: null });
+    setPage(1);
   };
   const openNew = () => {
     setEditing(null);

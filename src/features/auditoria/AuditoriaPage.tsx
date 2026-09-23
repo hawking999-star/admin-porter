@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, ErrorState, PaginationFooter, RetryButton, StatusBadge } from "@/components/shared";
 import { useDebounce } from "@/hooks/useDebounce";
-import { useUrlFilterState } from "@/hooks/useUrlFilterState";
+import { useUrlFilterState, useUrlFilterPatch } from "@/hooks/useUrlFilterState";
 import { errorMessage } from "@/lib/errors";
 import {
   actionLabel,
@@ -74,6 +74,7 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
 }
 
 export function AuditoriaPage() {
+  const patchFilters = useUrlFilterPatch();
   const queryClient = useQueryClient();
   const [search, setSearch] = useUrlFilterState("q", "");
   const [action, setAction] = useUrlFilterState("action", "all");
@@ -102,20 +103,20 @@ export function AuditoriaPage() {
   const hasFilters = Boolean(debouncedSearch || dateFrom || dateTo || action !== "all" || entityType !== "all" || adminId !== "all");
 
   const clearFilters = () => {
-    setSearch("");
-    setAction("all");
-    setEntityType("all");
-    setAdminId("all");
-    setDateFrom("");
-    setDateTo("");
+    patchFilters({ q: null, action: null, area: null, admin: null, from: null, to: null });
+    setPage(1);
   };
 
   const exportCsv = async () => {
     setExporting(true);
     try {
-      const exportRows = await exportAuditLogs(filters);
-      downloadAuditCsv(exportRows);
-      toast.success(`${exportRows.length} registro(s) exportado(s).`);
+      const result = await exportAuditLogs(filters);
+      downloadAuditCsv(result.rows);
+      if (result.truncated) {
+        toast.warning(`${result.rows.length} registro(s) exportado(s). O limite de 5.000 foi atingido e há mais resultados. Reduza o período para exportar os demais.`);
+      } else {
+        toast.success(`${result.rows.length} registro(s) exportado(s).`);
+      }
     } catch (error) {
       toast.error(errorMessage(error, "Não foi possível exportar a auditoria."));
     } finally {

@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 
 const AUTHORIZED_ADMIN_ROLES = new Set([
@@ -81,6 +83,7 @@ async function fetchAdminUser(session: Session | null): Promise<{
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,13 +94,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
+    let requestedUserId: string | null = null;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
 
-    async function loadSession(nextSession: Session | null) {
-      const loadId = ++loadIdRef.current;
-      setLoading(true);
-      setAuthError(null);
-      setAdminUser(null);
-
+    async function loadSession(nextSession: Session | null, loadId: number) {
       try {
         const result = await fetchAdminUser(nextSession);
         if (!mounted || loadId !== loadIdRef.current) return;
@@ -119,35 +119,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (error) {
-        setAuthError(error.message);
-        setLoading(false);
-        return;
-      }
-      void loadSession(data.session);
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    function acceptSession(next: Session | null) {
+      if (!mounted) return;
       const nextUserId = next?.user?.id ?? null;
       // Mesmo usuário (token renovado ou volta para a aba): atualiza a sessão
       // em silêncio, sem voltar para a tela de "Carregando" nem refazer as consultas.
-      if (nextUserId && nextUserId === loadedUserIdRef.current) {
+      if (nextUserId && nextUserId === requestedUserId && nextUserId === loadedUserIdRef.current) {
         setSession(next);
         return;
       }
-      // Login novo, logout ou troca de usuário: recarrega de fato.
-      setTimeout(() => void loadSession(next), 0);
+
+      // Bloqueia a tela e invalida respostas antigas antes de adiar a consulta
+      // ao perfil (consultas Supabase não devem rodar dentro do callback de auth).
+      const loadId = ++loadIdRef.current;
+      setLoading(true);
+      setAuthError(null);
+      setAdminUser(null);
+      setSession(null);
+      loadedUserIdRef.current = null;
+      if (nextUserId !== requestedUserId || nextUserId === null) {
+        void queryClient.cancelQueries();
+        queryClient.clear();
+      }
+      requestedUserId = nextUserId;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        if (mounted && loadId === loadIdRef.current) void loadSession(next, loadId);
+      }, 0);
+      timers.add(timer);
+    }
+
+    const initialLoadId = loadIdRef.current;
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+      acceptSession(next);
+    });
+    // Uma leitura inicial atrasada não pode desfazer um login/logout mais recente.
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted || loadIdRef.current !== initialLoadId) return;
+      if (error) throw error;
+      acceptSession(data.session);
+    }).catch((error: unknown) => {
+      if (!mounted || loadIdRef.current !== initialLoadId) return;
+      setAuthError(error instanceof Error ? error.message : "Falha ao carregar a sessão.");
+      setLoading(false);
     });
 
     return () => {
       mounted = false;
+      ++loadIdRef.current;
+      loadedUserIdRef.current = null;
+      timers.forEach(clearTimeout);
       sub.subscription.unsubscribe();
     };
-  }, []);
+  }, [queryClient]);
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível sair. Tente novamente.";
+      setAuthError(message);
+      toast.error(message);
+    }
   };
 
   const isAuthorizedAdmin = Boolean(session && adminUser && !permissionError);

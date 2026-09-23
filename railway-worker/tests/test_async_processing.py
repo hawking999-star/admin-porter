@@ -947,8 +947,8 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             patch.object(self.worker, "update_job") as update_job,
             patch.object(
                 self.worker,
-                "principal_playlist_remaining_slots",
-                return_value=None,
+                "principal_playlist_capacity",
+                return_value=(None, 100),
             ),
             patch.object(self.worker, "process_playlist_entry") as process_entry,
         ):
@@ -1004,8 +1004,8 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             patch.object(self.worker, "update_job") as update_job,
             patch.object(
                 self.worker,
-                "principal_playlist_remaining_slots",
-                return_value=None,
+                "principal_playlist_capacity",
+                return_value=(None, 100),
             ),
             patch.object(self.worker, "process_playlist_entry", side_effect=fake_process),
         ):
@@ -1039,9 +1039,9 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             for i in range(1, 5)
         ]
 
-        def limit_skips(_job_id, outside_limit):
+        def limit_skips(_job_id, outside_limit, principal_limit):
             return [
-                self.worker.playlist_limit_skip(entry)
+                self.worker.playlist_limit_skip(entry, principal_limit)
                 for entry in outside_limit
             ]
 
@@ -1051,8 +1051,8 @@ class AsyncTrackProcessingTests(unittest.TestCase):
             patch.object(self.worker, "update_job") as update_job,
             patch.object(
                 self.worker,
-                "principal_playlist_remaining_slots",
-                side_effect=[1, 0],
+                "principal_playlist_capacity",
+                side_effect=[(1, 400), (0, 400)],
             ),
             patch.object(
                 self.worker,
@@ -1082,6 +1082,7 @@ class AsyncTrackProcessingTests(unittest.TestCase):
 
         process_entry.assert_called_once()
         outside_limit = mark_limit.call_args.args[1]
+        self.assertEqual(mark_limit.call_args.args[2], 400)
         self.assertEqual(
             [entry["request_position"] for entry in outside_limit],
             [2, 3, 4],

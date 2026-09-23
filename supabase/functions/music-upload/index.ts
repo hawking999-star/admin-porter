@@ -1,6 +1,6 @@
 import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 type PrepareBody = {
   action: "prepare";
@@ -249,7 +249,7 @@ function sha256Hex(buffer: ArrayBuffer) {
 }
 
 async function completeThroughSupabaseStorage(
-  service: ReturnType<typeof createClient>,
+  service: SupabaseClient,
   session: UploadSession,
   target: UploadTarget,
   file: File,

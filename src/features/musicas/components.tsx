@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Youtube, Link2, Music2, type LucideProps } from "lucide-react";
+import { SquarePlay, Link2, Music2, type LucideProps } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseMusicUrl } from "@/lib/music-url";
 
@@ -85,7 +85,7 @@ const PLATFORM_META: Record<
   },
   youtube: {
     label: "YouTube",
-    icon: (p) => <Youtube {...p} />,
+    icon: (p) => <SquarePlay {...p} />,
     fg: "text-[#FF0000]",
     bg: "bg-[#FF0000]/10",
     ring: "ring-[#FF0000]/20",

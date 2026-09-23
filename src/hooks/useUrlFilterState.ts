@@ -1,6 +1,21 @@
 import { useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 
+/** Vários filtros devem mudar em uma única navegação. null remove a chave. */
+export function useUrlFilterPatch() {
+  const [, setSearchParams] = useSearchParams();
+  return useCallback((patch: Record<string, string | null>) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null || value === "") next.delete(key);
+        else next.set(key, value);
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+}
+
 export function useUrlFilterState<T extends string = string>(
   key: string,
   fallback: NoInfer<T>,

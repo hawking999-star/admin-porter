@@ -5,6 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { UpdatedAt } from "@/components/shared/UpdatedAt";
 import { getOperationalHealth, type HealthState } from "@/lib/operational";
 import { cn } from "@/lib/utils";
+import { describeR2Health } from "@/lib/r2-health";
 
 const stateMeta: Record<HealthState, { label: string; className: string }> = {
   healthy: { label: "Saudável", className: "bg-success text-success-foreground" },
@@ -19,11 +20,15 @@ function HealthRow({
   label,
   state,
   detail,
+  stateLabel,
+  wrapDetail = false,
 }: {
   icon: React.ReactNode;
   label: string;
   state: HealthState;
   detail: string;
+  stateLabel?: string;
+  wrapDetail?: boolean;
 }) {
   const meta = stateMeta[state];
   return (
@@ -32,9 +37,9 @@ function HealthRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-semibold">{label}</span>
-          <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", meta.className)}>{meta.label}</span>
+          <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold", meta.className)}>{stateLabel ?? meta.label}</span>
         </div>
-        <p className="mt-1 truncate text-xs text-muted-foreground" title={detail}>{detail}</p>
+        <p className={cn("mt-1 text-xs text-muted-foreground", wrapDetail ? "break-words" : "truncate")} title={detail}>{detail}</p>
       </div>
     </div>
   );
@@ -50,7 +55,8 @@ export function SystemHealthPopover() {
   });
   const data = health.data;
   const workerState = data?.worker?.state ?? "unknown";
-  const r2State = data?.r2?.state ?? "unknown";
+  const r2 = describeR2Health(data);
+  const r2State = r2.state;
   const queueState: HealthState = (data?.storage_cleanup?.with_errors ?? 0) > 0
     ? "degraded"
     : data?.imports?.state ?? "unknown";
@@ -81,7 +87,7 @@ export function SystemHealthPopover() {
         <div className="space-y-2">
           <HealthRow icon={<Database className="h-4 w-4" />} label="Supabase" state={data?.database_connected ? "healthy" : "offline"} detail={data?.database_connected ? "RPC autenticada respondendo" : "Sem resposta do banco"} />
           <HealthRow icon={<ServerCog className="h-4 w-4" />} label="Worker" state={workerState} detail={data?.worker?.last_seen_at ? `Último sinal há ${data.worker.age_seconds ?? 0}s · ${data.worker.details?.activity ?? data.worker.status ?? "ativo"}` : "Heartbeat ainda não recebido"} />
-          <HealthRow icon={<Cloud className="h-4 w-4" />} label="Cloudflare R2" state={r2State} detail={data?.r2?.message ?? "Aguardando teste do Worker"} />
+          <HealthRow icon={<Cloud className="h-4 w-4" />} label="Cloudflare R2" state={r2State} stateLabel={r2State === "unknown" ? r2.label : undefined} detail={r2.detail} wrapDetail />
           <HealthRow icon={<HardDrive className="h-4 w-4" />} label="Filas" state={queueState} detail={data?.imports ? `Importação: ${data.imports.queued} na fila, ${data.imports.running} processando, ${data.imports.with_errors} com erro · Limpeza R2: ${data.storage_cleanup.queued} na fila, ${data.storage_cleanup.with_errors} com erro` : "Aguardando métricas"} />
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-3">

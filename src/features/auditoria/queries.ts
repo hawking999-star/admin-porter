@@ -100,11 +100,31 @@ export async function listAuditFilterOptions(): Promise<AuditFilterOptions> {
   };
 }
 
-export async function exportAuditLogs(filters: AuditFilters): Promise<AuditLogRow[]> {
-  const query = applyAuditFilters(supabase.from("admin_audit_logs").select(AUDIT_SELECT), filters);
-  const { data, error } = await query.order("occurred_at", { ascending: false }).range(0, 4999);
-  if (error) throw error;
-  return (data ?? []).map(mapAuditRow);
+export async function exportAuditLogs(filters: AuditFilters): Promise<{ rows: AuditLogRow[]; truncated: boolean }> {
+  const limit = 5000;
+  const rows: AuditLogRow[] = [];
+  const snapshot = { ...filters };
+  let cursor: AuditLogRow | undefined;
+
+  // Cursor evita deslocar os lotes quando novas ações entram durante a exportação.
+  // Busca um registro extra para detectar o corte, inclusive se a API limitar o lote.
+  while (rows.length <= limit) {
+    let query = applyAuditFilters(supabase.from("admin_audit_logs").select(AUDIT_SELECT), snapshot);
+    if (cursor) {
+      query = query.or(`occurred_at.lt.${cursor.occurred_at},and(occurred_at.eq.${cursor.occurred_at},id.lt.${cursor.id})`);
+    }
+    const { data, error } = await query
+      .order("occurred_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(Math.min(500, limit + 1 - rows.length));
+    if (error) throw error;
+    if (!data?.length) break;
+    const batch = data.map(mapAuditRow) as AuditLogRow[];
+    rows.push(...batch);
+    cursor = batch[batch.length - 1];
+  }
+
+  return { rows: rows.slice(0, limit), truncated: rows.length > limit };
 }
 
 const ACTION_LABELS: Record<string, string> = {

@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorState, RetryButton, StatCard, UpdatedAt } from "@/components/shared";
 import { cn } from "@/lib/utils";
+import { describeR2Health } from "@/lib/r2-health";
 import { parseMusicUrl } from "@/lib/music-url";
 import {
   acknowledgeImportError,
@@ -174,6 +175,7 @@ export function IntegracaoPage() {
     onError: (error: unknown) => toast.error("Não foi possível solicitar o teste", { description: errorMessage(error) }),
   });
   const status = statusQuery.data;
+  const r2 = describeR2Health(status);
   const importHealth = status?.music_import;
   const errors = errorsQuery.data ?? [];
   const isRefreshing = statusQuery.isFetching || errorsQuery.isFetching;
@@ -215,7 +217,7 @@ export function IntegracaoPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <StatCard icon={<Database className="h-5 w-5" />} iconClassName="bg-success/25 text-success-foreground" label="Supabase" value={status?.database_connected ? "Conectado" : "Verificando"} hint="Leitura autenticada pelo painel" loading={statusQuery.isLoading} />
             <StatCard icon={<ServerCog className="h-5 w-5" />} iconClassName={status?.worker?.state === "healthy" ? "bg-success/25 text-success-foreground" : "bg-warning/20 text-warning-foreground"} label="Worker" value={status?.worker?.state === "healthy" ? "Online" : status?.worker?.state === "offline" ? "Offline" : "Verificando"} hint={status?.worker?.last_seen_at ? `Heartbeat há ${status.worker.age_seconds ?? 0}s` : "Aguardando heartbeat"} loading={statusQuery.isLoading} />
-            <StatCard icon={<Cloud className="h-5 w-5" />} iconClassName={status?.r2?.state === "healthy" ? "bg-success/25 text-success-foreground" : "bg-warning/20 text-warning-foreground"} label="Cloudflare R2" value={status?.r2?.state === "healthy" ? "Acessível" : status?.r2?.state === "degraded" ? "Atenção" : "Verificando"} hint={status?.r2?.message ?? "Teste executado pelo Worker"} loading={statusQuery.isLoading} />
+            <StatCard icon={<Cloud className="h-5 w-5" />} iconClassName={r2.state === "healthy" ? "bg-success/25 text-success-foreground" : r2.state === "unknown" ? "bg-muted text-muted-foreground" : "bg-warning/20 text-warning-foreground"} label="Cloudflare R2" value={r2.label} hint={<span title={r2.detail}>{r2.detail}</span>} loading={statusQuery.isLoading} />
             <StatCard icon={<TriangleAlert className="h-5 w-5" />} iconClassName="bg-warning/20 text-warning-foreground" label="Falhas de importação" value={status?.imports.with_errors ?? 0} hint="Erros pendentes de tratamento" loading={statusQuery.isLoading} />
             <StatCard icon={<HardDrive className="h-5 w-5" />} iconClassName="bg-primary/10 text-primary" label="Limpeza no R2" value={status?.storage_cleanup.queued ?? 0} hint="Arquivos aguardando remoção segura" loading={statusQuery.isLoading} />
           </div>
