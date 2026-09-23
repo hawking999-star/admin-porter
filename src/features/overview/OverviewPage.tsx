@@ -57,7 +57,7 @@ import { buildPeriodRange, todayInput, type PeriodPreset } from "@/lib/period";
 import { effectiveStatisticsStart, fetchStatisticsResetInfo } from "@/lib/statistics";
 import { listUnitOptions } from "@/features/usuarios/queries";
 import { unitLabel } from "@/lib/unit-label";
-import { useUrlFilterState } from "@/hooks/useUrlFilterState";
+import { useUrlFilterState, useUrlFilterPatch } from "@/hooks/useUrlFilterState";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { errorMessage } from "@/lib/errors";
 import { ActionCenter } from "./ActionCenter";
@@ -577,6 +577,7 @@ function OverviewFilters({
 const CALL_RECOVERY_ROLES = new Set(["superadmin", "unit_manager", "operations_manager"]);
 
 export function OverviewPage() {
+  const patchFilters = useUrlFilterPatch();
   const queryClient = useQueryClient();
   const { adminUser } = useAuth();
   const [recoverTarget, setRecoverTarget] = useState<AttentionOperator | null>(null);
@@ -743,9 +744,7 @@ export function OverviewPage() {
         onCustomFromChange={setCustomFrom}
         onCustomToChange={setCustomTo}
         onClear={() => {
-          setUnitFilter("all");
-          setStatusFilter("all");
-          setPeriod("7d");
+          patchFilters({ unit: null, status: null, period: null, from: null, to: null });
         }}
       />
 

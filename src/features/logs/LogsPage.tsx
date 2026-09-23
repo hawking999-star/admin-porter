@@ -21,7 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ExportCsvButton, StatCard, StatusBadge, EmptyState, ErrorState, RetryButton, PaginationFooter } from "@/components/shared";
 import type { CsvColumn } from "@/lib/csv";
 import { useDebounce } from "@/hooks/useDebounce";
-import { useUrlFilterState } from "@/hooks/useUrlFilterState";
+import { useUrlFilterState, useUrlFilterPatch } from "@/hooks/useUrlFilterState";
 import {
   Select,
   SelectContent,
@@ -64,6 +64,7 @@ const LOG_EXPORT_COLUMNS: CsvColumn<LogEntry>[] = [
 ];
 
 export function LogsPage() {
+  const patchFilters = useUrlFilterPatch();
   const qc = useQueryClient();
   const [search, setSearch] = useUrlFilterState("q", "");
   const [actor, setActor] = useUrlFilterState("actor", "");
@@ -118,12 +119,8 @@ export function LogsPage() {
   );
 
   const clearFilters = () => {
-    setSearch("");
-    setActor("");
-    setCategory("all");
-    setLevel("all");
-    setDateFrom("");
-    setDateTo("");
+    patchFilters({ q: null, actor: null, category: null, level: null, from: null, to: null });
+    setPage(1);
   };
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["logs"] });

@@ -1,5 +1,10 @@
 node_modules
 dist
+/.venv-worker/
+supabase/.temp/
+output/upload-ready/
+output/release-*.sql
+
 .vercel
 .env
 .env.*
@@ -8,5 +13,3 @@ dist
 *.log
 __pycache__/
 tsconfig.tsbuildinfo
-
-.vercel
