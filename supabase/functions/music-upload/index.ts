@@ -17,6 +17,15 @@ type CompleteBody = {
   session_id?: string;
 };
 
+type UploadTarget = {
+  item_id?: string;
+  playlist_id?: string;
+  filename?: string;
+  mime?: string;
+  size_bytes?: number;
+  rights_statement?: string;
+};
+
 type UploadSession = {
   session_id: string;
   staging_object_key: string;
@@ -123,6 +132,8 @@ function r2Client() {
   return new S3Client({
     region: "auto",
     endpoint: `https://${requiredEnv("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
     credentials: {
       accessKeyId: requiredEnv("R2_ACCESS_KEY_ID"),
       secretAccessKey: requiredEnv("R2_SECRET_ACCESS_KEY"),
@@ -144,7 +155,7 @@ async function authenticatedClient(req: Request) {
   return client;
 }
 
-async function prepare(req: Request, body: PrepareBody, origin: string | null) {
+async function createUploadSession(req: Request, body: UploadTarget) {
   const itemId = body.item_id && UUID_PATTERN.test(body.item_id) ? body.item_id : null;
   const playlistId = body.playlist_id && UUID_PATTERN.test(body.playlist_id) ? body.playlist_id : null;
   if ((itemId ? 1 : 0) + (playlistId ? 1 : 0) !== 1) {
@@ -168,7 +179,11 @@ async function prepare(req: Request, body: PrepareBody, origin: string | null) {
     p_rights_statement: rightsStatement,
   });
   if (error) throw error;
-  const session = data as UploadSession;
+  return data as UploadSession;
+}
+
+async function prepare(req: Request, body: PrepareBody, origin: string | null) {
+  const session = await createUploadSession(req, body);
   const uploadUrl = await getSignedUrl(
     r2Client(),
     new PutObjectCommand({
@@ -186,11 +201,11 @@ async function prepare(req: Request, body: PrepareBody, origin: string | null) {
   });
 }
 
-async function complete(req: Request, body: CompleteBody, origin: string | null) {
-  if (!body.session_id || !UUID_PATTERN.test(body.session_id)) throw new Error("music_upload_session_not_found");
+async function queueCompletedUpload(req: Request, sessionId: string) {
+  if (!UUID_PATTERN.test(sessionId)) throw new Error("music_upload_session_not_found");
   const client = await authenticatedClient(req);
   const { data, error } = await client.rpc("admin_confirm_music_upload_session", {
-    p_session_id: body.session_id,
+    p_session_id: sessionId,
   });
   if (error) throw error;
   const session = data as UploadSession;
@@ -207,11 +222,40 @@ async function complete(req: Request, body: CompleteBody, origin: string | null)
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const { data: queued, error: queueError } = await service.rpc("worker_complete_music_upload_session", {
-    p_session_id: body.session_id,
+    p_session_id: sessionId,
     p_verified_size_bytes: actualSize,
     p_etag: head.ETag ?? null,
   });
   if (queueError) throw queueError;
+  return queued;
+}
+
+async function complete(req: Request, body: CompleteBody, origin: string | null) {
+  if (!body.session_id) throw new Error("music_upload_session_not_found");
+  const queued = await queueCompletedUpload(req, body.session_id);
+  return response(origin, queued, 202);
+}
+
+async function directUpload(req: Request, form: FormData, origin: string | null) {
+  const file = form.get("file");
+  if (!(file instanceof File)) throw new Error("music_upload_size_invalid");
+  const target: UploadTarget = {
+    item_id: String(form.get("item_id") ?? "") || undefined,
+    playlist_id: String(form.get("playlist_id") ?? "") || undefined,
+    filename: file.name,
+    mime: file.type,
+    size_bytes: file.size,
+    rights_statement: String(form.get("rights_statement") ?? ""),
+  };
+  const session = await createUploadSession(req, target);
+  await r2Client().send(new PutObjectCommand({
+    Bucket: requiredEnv("R2_BUCKET"),
+    Key: session.staging_object_key,
+    Body: new Uint8Array(await file.arrayBuffer()),
+    ContentType: session.declared_mime,
+    ContentLength: session.declared_size_bytes,
+  }));
+  const queued = await queueCompletedUpload(req, session.session_id);
   return response(origin, queued, 202);
 }
 
@@ -222,6 +266,11 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return response(origin, { error: "method_not_allowed" }, 405);
 
   try {
+    if ((req.headers.get("content-type") ?? "").toLowerCase().includes("multipart/form-data")) {
+      const form = await req.formData();
+      if (form.get("action") === "direct_upload") return await directUpload(req, form, origin);
+      return response(origin, { error: "invalid_action" }, 400);
+    }
     const body = await req.json() as PrepareBody | CompleteBody;
     if (body.action === "prepare") return await prepare(req, body, origin);
     if (body.action === "complete") return await complete(req, body, origin);

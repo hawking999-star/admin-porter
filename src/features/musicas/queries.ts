@@ -517,12 +517,29 @@ async function uploadMusicFile(
   if (error) throw error;
   if (!data?.session_id || !data.upload_url) throw new Error("MUSIC_UPLOAD_PREPARE_INVALID_RESPONSE");
 
-  const uploaded = await fetch(data.upload_url, {
-    method: "PUT",
-    headers: data.required_headers,
-    body: file,
-  });
-  if (!uploaded.ok) throw new Error(`MUSIC_UPLOAD_R2_${uploaded.status}`);
+  let uploaded = false;
+  try {
+    const response = await fetch(data.upload_url, {
+      method: "PUT",
+      headers: data.required_headers,
+      body: file,
+    });
+    uploaded = response.ok;
+  } catch {
+    uploaded = false;
+  }
+
+  if (!uploaded) {
+    const form = new FormData();
+    form.append("action", "direct_upload");
+    if ("item_id" in target) form.append("item_id", target.item_id);
+    else form.append("playlist_id", target.playlist_id);
+    form.append("rights_statement", rightsStatement);
+    form.append("file", file, file.name);
+    const { error: directError } = await supabase.functions.invoke("music-upload", { body: form });
+    if (directError) throw directError;
+    return;
+  }
 
   const { error: completeError } = await supabase.functions.invoke("music-upload", {
     body: { action: "complete", session_id: data.session_id },
